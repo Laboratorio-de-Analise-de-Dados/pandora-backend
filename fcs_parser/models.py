@@ -2,7 +2,7 @@ from django.db import models
 
 from django.core.exceptions import ValidationError
 
-MB = 2
+MB = 5
 MAX_SIZE = MB * 1024 * 1024
 
 
@@ -17,4 +17,6 @@ class FCSFile(models.Model):
     """Model for FCS file"""
 
     title = models.CharField(max_length=50, unique=True)
-    file = models.FileField(validators=[validate_file_size])
+    file = models.FileField(upload_to='fcs_files/', validators=[validate_file_size])
+
+
