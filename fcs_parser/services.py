@@ -1,5 +1,4 @@
 import os
-from io import BytesIO
 import json
 from django.http import HttpResponse, HttpResponseBadRequest
 from fcsparser import parse
@@ -11,7 +10,7 @@ def serialize_value(value):
     if isinstance(value, (bytes, bytearray)):
         return value.decode('utf-8')
     elif isinstance(value, dict):
-        return {key: serialize_value(val) for key, val in value.items()}
+        return {key.replace("_", "").replace(" ", "_"): serialize_value(val) for key, val in value.items()}
     else:
         try:
             json.dumps(value)
@@ -31,7 +30,7 @@ def process_fcs_file(fcs_file):
         data_set.columns = data_set.columns.str.replace(' ', '_')
         print(type(data_set))
         json_dataset = data_set.to_json(orient='records')
-        serialized_header = {key: serialize_value(value) for key, value in headers.items()}
+        serialized_header = {key.replace("_", "").replace(" ", "_").lower(): serialize_value(value) for key, value in headers.items()}
        
         json_header = json.dumps(serialized_header, indent=2)
 
