@@ -27,7 +27,9 @@ def process_fcs_file(fcs_file):
                 f.write(chunk)
         headers, data_set = parse(experiment_directory)
         data_set['id'] = range(1, len(data_set) + 1)
-        data_set.columns = data_set.columns.str.replace(' ', '').replace('-', '_').lower()
+        data_set.columns = data_set.columns.str.replace(' ', '')
+        data_set.columns = data_set.columns.str.replace('-', '_')
+        data_set.columns = data_set.columns.str.lower()
         print(type(data_set))
         json_dataset = data_set.to_json(orient='records')
         serialized_header = {key.replace("_", "").replace(" ", "_").lower(): serialize_value(value) for key, value in headers.items()}
