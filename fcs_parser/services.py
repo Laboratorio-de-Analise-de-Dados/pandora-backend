@@ -9,18 +9,14 @@ FILEPATH = 'loadedData'
 
 def serialize_value(value):
     if isinstance(value, (bytes, bytearray)):
-        # Se for bytes, decodifique para string usando UTF-8
         return value.decode('utf-8')
     elif isinstance(value, dict):
-        # Se for um dict, chame recursivamente a função para cada valor
         return {key: serialize_value(val) for key, val in value.items()}
     else:
-        # Se for outro tipo, tente serializar diretamente
         try:
             json.dumps(value)
             return value
         except TypeError:
-            # Se a serialização direta falhar, converta para string
             return str(value)
 
 def process_fcs_file(fcs_file):
@@ -31,7 +27,9 @@ def process_fcs_file(fcs_file):
             for chunk in fcs_file.chunks():
                 f.write(chunk)
         headers, data_set = parse(experiment_directory)
-    
+        data_set['id'] = range(1, len(data_set) + 1)
+        data_set.columns = data_set.columns.str.replace(' ', '_')
+        print(type(data_set))
         json_dataset = data_set.to_json(orient='records')
         serialized_header = {key: serialize_value(value) for key, value in headers.items()}
        
