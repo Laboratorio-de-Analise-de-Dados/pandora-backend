@@ -20,5 +20,5 @@ from django.urls import path, include
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path('fcs_parser/', include('fcs_parser.urls')),  
+    path('experiment/', include('fcs_parser.urls')),  
 ]
