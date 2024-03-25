@@ -7,21 +7,21 @@ class ExperimentSerializer(serializers.ModelSerializer):
     
   file = serializers.FileField(allow_empty_file=False, write_only=True)
 
+  
   class Meta:
     model = ExperimentModel
     fields = ['id', 'title', 'file']
     read_only_fields = ['id'] 
 
   def is_valid(self, *, raise_exception=False):
-    # validate_file_size(self.initial_data.get('file'))
     validate_zip_file(self.initial_data.get('file'))
     return super().is_valid(raise_exception=raise_exception)
   
-class FileDataSerializer(serializers.ModelSerializer):
+class ListFileDataSerializer(serializers.ModelSerializer):
 
   class Meta:
     model = FileDataModel
-    fields = ['id', 'experiment_id', 'headers', 'data_set']
+    fields = ['id', 'file_name']
     read_only_fields = ['id'] 
 
   def is_valid(self, raise_exception=False):
@@ -42,3 +42,15 @@ class FileDataSerializer(serializers.ModelSerializer):
         return True
     except ValueError:
         return False
+    
+class ParamListDataSerializer(serializers.ModelSerializer):
+
+  class Meta:
+    model = FileDataModel
+    fields = ['id', 'data_set', 'file_name']
+    
+
+class ListExperimentSerializer(serializers.ModelSerializer):
+   class Meta:
+      model = ExperimentModel
+      fields = "__all__"

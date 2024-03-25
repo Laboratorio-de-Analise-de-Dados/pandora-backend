@@ -4,13 +4,15 @@ class ExperimentModel(models.Model):
     """Model for FCS file"""
     id = models.BigAutoField(primary_key=True)
     title = models.CharField(max_length=50, unique=True)
-
+    values = models.TextField()
+    
     class Meta:
       db_table='experiment'
 
 class FileDataModel(models.Model):
   """Model for Data on each file"""
   id = models.BigAutoField(primary_key=True)
+  file_name = models.CharField(max_length=256, null=True)
   experiment = models.ForeignKey(ExperimentModel, on_delete=models.CASCADE)
   headers = models.JSONField()
   data_set = models.JSONField()
