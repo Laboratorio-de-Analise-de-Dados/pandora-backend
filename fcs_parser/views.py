@@ -13,6 +13,7 @@ from fcs_parser.models import ExperimentModel, FileDataModel
 from fcs_parser.serializers import ExperimentSerializer, ListExperimentSerializer, ListFileDataSerializer, ParamListDataSerializer
 from fcs_parser.services.decompressor import decompres_file
 from fcs_parser.services.process_fcs import process_fcs_file
+from django.forms.models import model_to_dict
 
 
 class ExperimentCreateView(APIView):
@@ -21,11 +22,12 @@ class ExperimentCreateView(APIView):
     @csrf_exempt
     def post(self, request):
         serializer = ExperimentSerializer(data=request.data)
+        is_valid = serializer.is_valid()
         try:
-            if serializer.is_valid():
+            if is_valid:
                 title = serializer.validated_data.get('title').replace(' ', '_')
                 file = serializer.validated_data.get('file')
-                
+                experiment_type = serializer.validated_data.get('type')
                 directory_path = os.path.join(settings.BASE_DIR, 'assets', 'fcs_files', title)
                 os.makedirs(directory_path, exist_ok=True)
                 decompres_file(file, directory_path)
@@ -33,21 +35,28 @@ class ExperimentCreateView(APIView):
                     if file_name.endswith(".fcs"):
                         complete_path: str = os.path.join(directory_path, file_name)
                         processed_file = process_fcs_file(complete_path)
-                        experiment_instance, created = ExperimentModel.objects.get_or_create(title=title, values=processed_file[2])
+                        experiment_instance, created = ExperimentModel.objects.get_or_create(title=title, values=processed_file[2], type=experiment_type)
                         experiment_id = experiment_instance.id
-                        FileDataModel.objects.get_or_create(headers=processed_file[0], data_set=processed_file[1], experiment_id=experiment_id, file_name=file_name)            
-                return Response(serializer.data, status=status.HTTP_200_OK)
+                        FileDataModel.objects.get_or_create(headers=processed_file[0], data_set=processed_file[1], experiment_id=experiment_id, file_name=file_name) 
+                return Response(model_to_dict(experiment_instance), status=status.HTTP_200_OK)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)    
         except:
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class ListExperimentView(generics.ListAPIView):
     serializer_class = ListExperimentSerializer
+    queryset = ExperimentModel.objects.all()
 
-    def get_queryset(self):
-        queryset = ExperimentModel.objects.all()
-        return queryset
-        
+    
+class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
+    lookup_url_kwarg = "experiment_id"
+    serializer_class = ListExperimentSerializer
+    queryset = ExperimentModel.objects.all()
+
+    def perform_destroy(self, instance):
+        return instance.delete()
+   
+
 class GetExperimentFiles(generics.ListAPIView):
     lookup_url_kwarg = "experiment_id"
     serializer_class = ListFileDataSerializer
@@ -55,8 +64,7 @@ class GetExperimentFiles(generics.ListAPIView):
     def get_queryset(self):
         experiment_id = self.kwargs.get('experiment_id')
         queryset = FileDataModel.objects.filter(experiment_id=experiment_id)
-
-        return queryset
+        return queryset    
         
 class ListFileParams(generics.ListAPIView):
     lookup_field = "file_id"
