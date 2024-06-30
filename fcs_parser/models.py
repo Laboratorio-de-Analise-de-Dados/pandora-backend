@@ -25,6 +25,7 @@ class FileDataModel(models.Model):
   experiment = models.ForeignKey(ExperimentModel, on_delete=models.CASCADE)
   headers = models.JSONField()
   data_set = models.JSONField()
+  file = models.ForeignKey("FileModel", on_delete=models.CASCADE, related_name='extracted_data')
   
   class Meta:
       db_table='file_data'
@@ -41,3 +42,10 @@ class FileDataModel(models.Model):
     return super().is_valid(raise_exception)
 
 
+class FileModel(models.Model):
+  """Model for FCS Files"""
+  class Meta:
+      db_table='experiment_files'
+  id = models.BigAutoField(primary_key=True)
+  file_name = models.CharField(max_length=256, null=True)
+  file = models.FileField(null=True)
