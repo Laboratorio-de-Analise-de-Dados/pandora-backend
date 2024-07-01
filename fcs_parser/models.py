@@ -1,14 +1,26 @@
 from typing import Any
+from django.conf import settings
 from django.db import models
 from django.contrib.postgres.fields import ArrayField
+from django.core.files.uploadedfile import TemporaryUploadedFile
 
 class ExperimentModel(models.Model):
     """Model for FCS file"""
+
+    STATUS_CHOICES = [
+      ('new', 'New'),
+      ('processing', 'Processing'),
+      ('done', 'Done'),
+      ('error', 'Error'),
+    ]
+
     id = models.BigAutoField(primary_key=True)
     title = models.CharField(max_length=50, unique=True)
     type = models.CharField(max_length=100, null=True)
     values = ArrayField(models.TextField(), blank=True, default=list)
     active = models.BooleanField(default=True)
+    status = models.CharField(max_length=50,choices=STATUS_CHOICES ,default='new')
+    error_info = models.JSONField(blank=True, default=dict)
     
     class Meta:
       db_table='experiment'
@@ -18,6 +30,20 @@ class ExperimentModel(models.Model):
        self.save()
        return 
 
+
+class FileModel(models.Model):
+  """Model for Experiment Files"""
+  class Meta:
+    db_table='experiment_files'
+
+  id = models.BigAutoField(primary_key=True)
+  file_name = models.CharField(max_length=256, null=True)
+  file = models.FileField(upload_to='storage',null=True)
+  experiment = models.OneToOneField(ExperimentModel, on_delete=models.CASCADE)
+
+  def get_file_url(self):
+    return settings.MEDIA_URL + str(self.file)
+
 class FileDataModel(models.Model):
   """Model for Data on each file"""
   id = models.BigAutoField(primary_key=True)
@@ -25,7 +51,7 @@ class FileDataModel(models.Model):
   experiment = models.ForeignKey(ExperimentModel, on_delete=models.CASCADE)
   headers = models.JSONField()
   data_set = models.JSONField()
-  file = models.ForeignKey("FileModel", on_delete=models.CASCADE, related_name='extracted_data')
+  file = models.ForeignKey(FileModel, on_delete=models.CASCADE, related_name='extracted_data')
   
   class Meta:
       db_table='file_data'
@@ -42,10 +68,4 @@ class FileDataModel(models.Model):
     return super().is_valid(raise_exception)
 
 
-class FileModel(models.Model):
-  """Model for FCS Files"""
-  class Meta:
-      db_table='experiment_files'
-  id = models.BigAutoField(primary_key=True)
-  file_name = models.CharField(max_length=256, null=True)
-  file = models.FileField(null=True)
+
