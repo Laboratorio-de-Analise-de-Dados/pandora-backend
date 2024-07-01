@@ -1,15 +1,12 @@
 
 
 import json
-import os
-import ipdb
 import pandas as pd
 from django.shortcuts import get_object_or_404
-from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.views import APIView, Response, status
 from rest_framework import generics
-from fcs_parser.models import ExperimentModel, FileDataModel
+from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
 from fcs_parser.serializers import ExperimentSerializer, ListExperimentSerializer, ListFileDataSerializer, ParamListDataSerializer
 from fcs_parser.services.decompressor import decompres_file
 from fcs_parser.services.process_fcs import process_fcs_file
@@ -22,26 +19,24 @@ class ExperimentCreateView(APIView):
     @csrf_exempt
     def post(self, request):
         serializer = ExperimentSerializer(data=request.data)
-        is_valid = serializer.is_valid()
-        try:
-            if is_valid:
-                title = serializer.validated_data.get('title').replace(' ', '_')
-                file = serializer.validated_data.get('file')
-                experiment_type = serializer.validated_data.get('type')
-                directory_path = os.path.join(settings.BASE_DIR, 'assets', 'fcs_files', title)
-                os.makedirs(directory_path, exist_ok=True)
-                decompres_file(file, directory_path)
-                for file_name in os.listdir(directory_path):
-                    if file_name.endswith(".fcs"):
-                        complete_path: str = os.path.join(directory_path, file_name)
-                        processed_file = process_fcs_file(complete_path)
-                        experiment_instance, created = ExperimentModel.objects.get_or_create(title=title, values=processed_file[2], type=experiment_type)
-                        experiment_id = experiment_instance.id
-                        FileDataModel.objects.get_or_create(headers=processed_file[0], data_set=processed_file[1], experiment_id=experiment_id, file_name=file_name) 
-                return Response(model_to_dict(experiment_instance), status=status.HTTP_200_OK)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)    
-        except:
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if serializer.is_valid():
+            title = serializer.validated_data.get('title').replace(' ', '_')
+            file = serializer.validated_data.get('file')
+            experiment_type = serializer.validated_data.get('type')
+            try:
+                experiment_instance, created = ExperimentModel.objects.get_or_create(
+                    title=title,
+                    type=experiment_type
+                )
+                FileModel.objects.create(
+                    file=file, 
+                    file_name=file.name, 
+                    experiment=experiment_instance
+                )
+                return Response(model_to_dict(experiment_instance), status=status.HTTP_201_CREATED)
+            except Exception as e:
+                return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class ListExperimentView(generics.ListAPIView):
     serializer_class = ListExperimentSerializer
@@ -85,6 +80,6 @@ class ListFileParams(generics.ListAPIView):
         dataset.columns = dataset.columns.str.replace(' ', '')
         dataset.columns = dataset.columns.str.replace('-', '_')
         dataset.columns = dataset.columns.str.lower()
-        file_data.data_set = json.loads(dataset.to_json(orient='records'))
+        file_data.data_set = json.loads(dataset.to_json(orient='records'))   
         serializer = self.serializer_class(file_data)
         return Response(serializer.data, status=status.HTTP_200_OK)
