@@ -12,7 +12,7 @@ class ExperimentSerializer(serializers.ModelSerializer):
   class Meta:
     model = ExperimentModel
     fields = ['id', 'title', 'file', 'type', 'values']
-    read_only_fields = ['id', 'active', 'values'] 
+    read_only_fields = ['id', 'active', 'values', 'status'] 
 
   def is_valid(self, *, raise_exception=False):
     validate_zip_file(self.initial_data.get('file'))
@@ -48,7 +48,7 @@ class ParamListDataSerializer(serializers.ModelSerializer):
 
   class Meta:
     model = FileDataModel
-    fields = ['id', 'data_set', 'file_name']
+    fields = ['id', 'file_name', 'data_set']
     
 
 class ListExperimentSerializer(serializers.ModelSerializer):
@@ -56,3 +56,9 @@ class ListExperimentSerializer(serializers.ModelSerializer):
   class Meta:
     model = ExperimentModel
     fields = "__all__"
+
+class CreateFileModelSerializer(serializers.ModelSerializer):
+  class Meta:
+    model= FileDataModel
+    fields = ["id", "file_name", "file"]
+    read_only_fields = ["id"]
