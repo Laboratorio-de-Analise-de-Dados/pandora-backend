@@ -4,35 +4,53 @@ from utils.validators import validate_zip_file
 from .models import ExperimentModel, FileDataModel, GateModel
 
 
-class GateSerializer(serializers.ModelSerializer):
+class GateModelSerializer(serializers.ModelSerializer):
+    file_data = serializers.PrimaryKeyRelatedField(
+        queryset=FileDataModel.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
     class Meta:
         model = GateModel
-        fields = [
-            "id",
-            "experiment",
-            "file_data",
-            "x_min",
-            "x_max",
-            "y_min",
-            "y_max",
-            "created_at",
-        ]
+        fields = "__all__"
+
+
+class ListGateSerializer(serializers.ModelSerializer):
+    children = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GateModel
+        fields = "__all__"
+
+    def get_children(self, obj):
+        return ListGateSerializer(obj.children.all(), many=True).data
 
 
 class ExperimentSerializer(serializers.ModelSerializer):
-
     file = serializers.FileField(allow_empty_file=False, write_only=True)
     type = serializers.CharField(allow_null=True, required=False)
     values = serializers.ListField(child=serializers.CharField(), required=False)
+    error_info = serializers.JSONField(read_only=True)
 
     class Meta:
         model = ExperimentModel
-        fields = ["id", "title", "file", "type", "values"]
-        read_only_fields = ["id", "active", "values", "status"]
+        fields = [
+            "id",
+            "title",
+            "file",
+            "type",
+            "values",
+            "active",
+            "status",
+            "error_info",
+        ]
+        read_only_fields = ["id", "active", "status", "error_info"]
 
-    def is_valid(self, *, raise_exception=False):
-        validate_zip_file(self.initial_data.get("file"))
-        return super().is_valid(raise_exception=raise_exception)
+    def validate(self, data):
+        if "file" in data:
+            validate_zip_file(data["file"])
+        return super().validate(data)
 
 
 class ListFileDataSerializer(serializers.ModelSerializer):

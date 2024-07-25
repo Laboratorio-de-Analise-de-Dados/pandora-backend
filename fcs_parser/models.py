@@ -75,15 +75,21 @@ class FileDataModel(models.Model):
         return super().is_valid(raise_exception)
 
 
-class GateModel:
+class GateModel(models.Model):
     experiment = models.ForeignKey(
         ExperimentModel, related_name="gates", on_delete=models.CASCADE
     )
     file_data = models.ForeignKey(
-        FileDataModel, related_name="gates", on_delete=models.CASCADE
+        FileDataModel, related_name="gates", on_delete=models.CASCADE, null=True
     )
+    name = models.CharField(unique=True)
     x_min = models.FloatField()
     x_max = models.FloatField()
     y_min = models.FloatField()
     y_max = models.FloatField()
+    x_axis = models.CharField()
+    y_axis = models.CharField()
     created_at = models.DateTimeField(auto_now_add=True)
+    parent = models.ForeignKey(
+        "self", related_name="children", on_delete=models.CASCADE, null=True, blank=True
+    )
