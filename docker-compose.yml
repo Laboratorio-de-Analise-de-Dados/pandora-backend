@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:latest
+    env_file: .env
+    ports:
+      - 5431:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  migration:
+    build: .
+    env_file: .env
+    command: bash -c 'while !</dev/tcp/db/5432; do sleep 1; done; python manage.py migrate'
+    volumes:
+      - .:/code
+    depends_on:
+      - db
+
+  web:
+    build: .
+    env_file: .env
+    command: bash -c 'while !</dev/tcp/db/5432; do sleep 1; done; python manage.py runserver 0.0.0.0:8000'
+    volumes:
+      - .:/code
+    stdin_open: true
+    tty: true
+    ports:
+      - 8000:8000
+
+    depends_on:
+      - db
+      - migration
+  listener:
+    build: .
+    command: python manage.py listen_pg_notifications
+    depends_on:
+      - db
+      - migration
+      - web
+
+volumes:
+  pgdata:

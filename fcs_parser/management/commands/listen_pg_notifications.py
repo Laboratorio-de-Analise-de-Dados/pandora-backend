@@ -1,4 +1,4 @@
-# your_app/management/commands/listen_notifications.py
+
 import json
 import os
 import select
@@ -9,10 +9,8 @@ import psycopg2
 from django.conf import settings
 
 from fcs_parser.models import FileDataModel, FileModel
-from fcs_parser.services import process_experiment_file
 from fcs_parser.services.decompressor import decompres_file
 from fcs_parser.services.header_parser import serialize_value
-from fcs_parser.services.process_fcs import process_fcs_file
 
 class Command(BaseCommand):
     help = 'Listen for PostgreSQL notifications'

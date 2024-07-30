@@ -76,6 +76,10 @@ class FileDataModel(models.Model):
 
 
 class GateModel(models.Model):
+
+    class Meta:
+        db_table = "gate"
+
     experiment = models.ForeignKey(
         ExperimentModel, related_name="gates", on_delete=models.CASCADE
     )

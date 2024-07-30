@@ -5,6 +5,7 @@ from .views import (
     ExperimentListCreateView,
     GetExperimentFiles,
     ListFileParams,
+    ProcessFileDataView,
     RetrieveDeleteExperimentView,
 )
 
@@ -16,4 +17,5 @@ urlpatterns = [
     path("file/<str:file_id>/list", ListFileParams.as_view()),
     path("<str:experiment_id>/", RetrieveDeleteExperimentView.as_view()),
     path("gate", CreateListGateView.as_view()),
+    path("file/process", ProcessFileDataView.as_view()),
 ]

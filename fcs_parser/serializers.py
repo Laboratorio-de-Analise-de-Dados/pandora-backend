@@ -29,7 +29,7 @@ class ListGateSerializer(serializers.ModelSerializer):
 
 class ExperimentSerializer(serializers.ModelSerializer):
     file = serializers.FileField(allow_empty_file=False, write_only=True)
-    type = serializers.CharField(allow_null=True, required=False)
+    type = serializers.CharField(allow_null=True, required=True)
     values = serializers.ListField(child=serializers.CharField(), required=False)
     error_info = serializers.JSONField(read_only=True)
 
@@ -52,12 +52,19 @@ class ExperimentSerializer(serializers.ModelSerializer):
             validate_zip_file(data["file"])
         return super().validate(data)
 
+class GateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GateModel
+        fields = ['id', 'name', 'x_min', 'x_max', 'y_min', 'y_max', 'x_axis', 'y_axis']
+        read_only_fields = ['id']
 
 class ListFileDataSerializer(serializers.ModelSerializer):
 
+    gates = GateSerializer(many=True, read_only=True, source='gates_set')
+
     class Meta:
         model = FileDataModel
-        fields = ["id", "file_name"]
+        fields = ["id", "file_name", "gates"]
         read_only_fields = ["id"]
 
     def is_valid(self, raise_exception=False):

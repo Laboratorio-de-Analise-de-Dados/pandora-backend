@@ -1,4 +1,7 @@
 import json
+import os
+import traceback
+from django.conf import settings
 import pandas as pd
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
@@ -15,6 +18,8 @@ from fcs_parser.serializers import (
 )
 from django.forms.models import model_to_dict
 
+from fcs_parser.services.decompressor import decompres_file
+from fcs_parser.services.process_fcs import process_fcs_file
 from utils.mixins import SerializerByMethodMixin
 
 
@@ -43,39 +48,6 @@ class ExperimentListCreateView(SerializerByMethodMixin, generics.ListCreateAPIVi
                     {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-# class ExperimentCreateView(APIView):
-
-#     serializer_class = ExperimentSerializer
-
-#     @csrf_exempt
-#     def post(self, request):
-#         serializer = ExperimentSerializer(data=request.data)
-#         if serializer.is_valid():
-#             title = serializer.validated_data.get("title").replace(" ", "_")
-#             file = serializer.validated_data.get("file")
-#             experiment_type = serializer.validated_data.get("type")
-#             try:
-#                 experiment_instance, created = ExperimentModel.objects.get_or_create(
-#                     title=title, type=experiment_type
-#                 )
-#                 FileModel.objects.create(
-#                     file=file, file_name=file.name, experiment=experiment_instance
-#                 )
-#                 return Response(
-#                     model_to_dict(experiment_instance), status=status.HTTP_201_CREATED
-#                 )
-#             except Exception as e:
-#                 return Response(
-#                     {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
-#                 )
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-# class ListExperimentView(generics.ListAPIView):
-#     serializer_class = ListExperimentSerializer
-#     queryset = ExperimentModel.objects.all()
 
 
 class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
@@ -133,3 +105,48 @@ class CreateListGateView(SerializerByMethodMixin, generics.ListCreateAPIView):
         if file_id is not None:
             queryset = queryset.filter(file_data_id=file_id)
         return queryset
+
+class ProcessFileDataView(generics.CreateAPIView):
+
+    def post(self, request):
+        file_id = request.query_params.get("file_id")
+        file = get_object_or_404(FileModel, id=file_id)
+        experiment = file.experiment
+        if experiment.status != 'processing':
+            experiment.status = 'processing'
+            experiment.save()
+            experiment_title = file.file_name
+            directory_path = os.path.join(settings.BASE_DIR, 'assets', 'fcs_files', experiment_title)
+            file_path = os.path.join(settings.BASE_DIR,'storage', file.file_name)
+            file_path = os.path.join(settings.BASE_DIR,'storage', file.file_name)
+            os.makedirs(directory_path, exist_ok=True)
+            decompres_file(file_path, directory_path)
+            values = []
+            try:
+                for file_name in os.listdir(directory_path):
+                    if file_name.endswith(".fcs"):
+                        complete_path: str = os.path.join(directory_path, file_name)
+                        processed_file = process_fcs_file(complete_path)
+                        if len(values) == 0:
+                            values = processed_file[2]
+                        print(f'creating')
+                        file_data_model = FileDataModel.objects.create(headers=processed_file[0], data_set=processed_file[1], experiment=experiment, file_name=file_name, file=file)
+                        file_data_model.save()
+                        print(f'created')
+                        os.remove(complete_path)
+                experiment.values = values
+                experiment.status = 'done'
+                experiment.save()
+
+                return Response({"message": "File processing was successfull."}, status=status.HTTP_200_OK)
+
+            except Exception as e:
+                error_info = {
+                    'error_message': str(e),
+                    'details': traceback.format_exc()
+                }
+                experiment.status = 'error'
+                experiment.error_info = error_info
+                experiment.save()
+        else:
+            return Response({"message": "The file is still being processed."}, status=status.HTTP_400_BAD_REQUEST)
