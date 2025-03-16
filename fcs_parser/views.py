@@ -105,11 +105,51 @@ class CreateListGateView(SerializerByMethodMixin, generics.ListCreateAPIView):
         if file_id is not None:
             queryset = queryset.filter(file_data_id=file_id)
         return queryset
+    
+    def list(self, request, *args, **kwargs):
+        file_id = request.query_params.get("file_id", None)
+        if not file_id:
+            return Response(
+                {"detail": "Missing 'file_id' parameter"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Recuperar informações do arquivo
+        try:
+            file_data = FileDataModel.objects.get(id=file_id)
+        except FileDataModel.DoesNotExist:
+            return Response(
+                {"detail": f"File with id {file_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Recuperar gates associados ao arquivo
+        gates = self.get_queryset().values(
+            "id", "name", "parent_id", "gate_coordinates"
+        )
+        gate_map = {gate["id"]: {**gate, "children": []} for gate in gates}
+
+        roots = []
+        for gate in gates:
+            parent_id = gate["parent_id"]
+            if parent_id:
+                gate_map[parent_id]["children"].append(gate_map[gate["id"]])
+            else:
+                roots.append(gate_map[gate["id"]])
+
+        tree = {
+            "id": file_data.id,
+            "file_name": file_data.file_name,
+            "data_set": file_data.data_set,  
+            "gates": roots,
+        }
+
+        return Response(tree, status=status.HTTP_200_OK)
 
 class ProcessFileDataView(generics.CreateAPIView):
 
-    def post(self, request):
-        file_id = request.query_params.get("file_id")
+    def post(self, request, *args, **kwargs):
+        file_id = kwargs.get('file_id')
         file = get_object_or_404(FileModel, id=file_id)
         experiment = file.experiment
         if experiment.status != 'processing':
