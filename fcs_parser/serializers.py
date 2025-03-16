@@ -7,24 +7,36 @@ from .models import ExperimentModel, FileDataModel, GateModel
 class GateModelSerializer(serializers.ModelSerializer):
     file_data = serializers.PrimaryKeyRelatedField(
         queryset=FileDataModel.objects.all(),
-        required=False,
         allow_null=True,
     )
-
-    class Meta:
+    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False)
+    class Meta: 
         model = GateModel
-        fields = "__all__"
+        fields = '__all__'
+        read_only_fields = ['id', 'created_at']
+    def get_children(self, obj):
+        # Serializa os filhos do gate
+        children = obj.children.all()
+        return GateModelSerializer(children, many=True).data
 
 
 class ListGateSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
+    file_data = serializers.PrimaryKeyRelatedField(
+        queryset=FileDataModel.objects.all(),
+        allow_null=True,
+    )
+    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False)
+   
 
     class Meta:
         model = GateModel
-        fields = "__all__"
+        fields = ['id', 'created_at', 'data_set', 'parent', 'children', 'file_data', 'name', 'gate_coordinates']
 
     def get_children(self, obj):
-        return ListGateSerializer(obj.children.all(), many=True).data
+         # Serializa os filhos do gate
+        children = obj.children.all()
+        return GateModelSerializer(children, many=True).data
 
 
 class ExperimentSerializer(serializers.ModelSerializer):
@@ -52,15 +64,22 @@ class ExperimentSerializer(serializers.ModelSerializer):
             validate_zip_file(data["file"])
         return super().validate(data)
 
-class GateSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = GateModel
-        fields = ['id', 'name', 'x_min', 'x_max', 'y_min', 'y_max', 'x_axis', 'y_axis']
-        read_only_fields = ['id']
+
+# class GateSerializer(serializers.ModelSerializer):
+#     parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False)
+#     class Meta:
+#         model = GateModel
+#         fields = '__all__'
+#         read_only_fields = ['id', 'created_at']
+#     def get_children(self, obj):
+#         # Serializa os filhos do gate
+#         children = obj.children.all()
+#         return GateSerializer(children, many=True).data
+
 
 class ListFileDataSerializer(serializers.ModelSerializer):
 
-    gates = GateSerializer(many=True, read_only=True, source='gates_set')
+    gates = GateModelSerializer(many=True, read_only=True, source='gates_set')
 
     class Meta:
         model = FileDataModel
@@ -88,10 +107,11 @@ class ListFileDataSerializer(serializers.ModelSerializer):
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):
-
+    gates = GateModelSerializer(many=True, read_only=True)
+    
     class Meta:
         model = FileDataModel
-        fields = ["id", "file_name", "data_set"]
+        fields = ["id", "file_name", "data_set", "gates"]
 
 
 class ListExperimentSerializer(serializers.ModelSerializer):

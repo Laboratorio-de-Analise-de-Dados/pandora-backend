@@ -86,14 +86,34 @@ class GateModel(models.Model):
     file_data = models.ForeignKey(
         FileDataModel, related_name="gates", on_delete=models.CASCADE, null=True
     )
-    name = models.CharField(unique=True)
-    x_min = models.FloatField()
-    x_max = models.FloatField()
-    y_min = models.FloatField()
-    y_max = models.FloatField()
-    x_axis = models.CharField()
-    y_axis = models.CharField()
+    name = models.CharField(unique=True, max_length=50)
+    gate_coordinates = models.JSONField(default=dict)
+    data_set = models.JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
+    
     parent = models.ForeignKey(
         "self", related_name="children", on_delete=models.CASCADE, null=True, blank=True
     )
+
+    @classmethod
+    def build_tree(cls, file_data_id):
+        # Filtra os gates relacionados ao file_data específico
+        gates = cls.objects.filter(file_data_id=file_data_id).values(
+            "id", "name", "parent_id", "gate_coordinates"
+        )
+        
+        # Cria um dicionário com os gates
+        gate_map = {gate["id"]: {**gate, "children": []} for gate in gates}
+
+        # Lista para armazenar as raízes
+        roots = []
+
+        # Monta a árvore
+        for gate in gates:
+            parent_id = gate["parent_id"]
+            if parent_id:
+                gate_map[parent_id]["children"].append(gate_map[gate["id"]])
+            else:
+                roots.append(gate_map[gate["id"]])
+
+        return roots
