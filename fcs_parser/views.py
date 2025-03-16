@@ -1,53 +1,55 @@
-
-
 import json
 import os
-import ipdb
+import traceback
+from django.conf import settings
 import pandas as pd
 from django.shortcuts import get_object_or_404
-from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.views import APIView, Response, status
 from rest_framework import generics
-from fcs_parser.models import ExperimentModel, FileDataModel
-from fcs_parser.serializers import ExperimentSerializer, ListExperimentSerializer, ListFileDataSerializer, ParamListDataSerializer
-from fcs_parser.services.decompressor import decompres_file
-from fcs_parser.services.process_fcs import process_fcs_file
+from fcs_parser.models import ExperimentModel, FileDataModel, FileModel, GateModel
+from fcs_parser.serializers import (
+    ExperimentSerializer,
+    GateModelSerializer,
+    ListExperimentSerializer,
+    ListFileDataSerializer,
+    ListGateSerializer,
+    ParamListDataSerializer,
+)
 from django.forms.models import model_to_dict
 
+from fcs_parser.services.decompressor import decompres_file
+from fcs_parser.services.process_fcs import process_fcs_file
+from utils.mixins import SerializerByMethodMixin
 
-class ExperimentCreateView(APIView):
 
-    serializer_class = ExperimentSerializer 
-    @csrf_exempt
-    def post(self, request):
-        serializer = ExperimentSerializer(data=request.data)
-        is_valid = serializer.is_valid()
-        try:
-            if is_valid:
-                title = serializer.validated_data.get('title').replace(' ', '_')
-                file = serializer.validated_data.get('file')
-                experiment_type = serializer.validated_data.get('type')
-                directory_path = os.path.join(settings.BASE_DIR, 'assets', 'fcs_files', title)
-                os.makedirs(directory_path, exist_ok=True)
-                decompres_file(file, directory_path)
-                for file_name in os.listdir(directory_path):
-                    if file_name.endswith(".fcs"):
-                        complete_path: str = os.path.join(directory_path, file_name)
-                        processed_file = process_fcs_file(complete_path)
-                        experiment_instance, created = ExperimentModel.objects.get_or_create(title=title, values=processed_file[2], type=experiment_type)
-                        experiment_id = experiment_instance.id
-                        FileDataModel.objects.get_or_create(headers=processed_file[0], data_set=processed_file[1], experiment_id=experiment_id, file_name=file_name) 
-                return Response(model_to_dict(experiment_instance), status=status.HTTP_200_OK)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)    
-        except:
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class ListExperimentView(generics.ListAPIView):
-    serializer_class = ListExperimentSerializer
+class ExperimentListCreateView(SerializerByMethodMixin, generics.ListCreateAPIView):
+    serializer_map = {"GET": ListExperimentSerializer, "POST": ExperimentSerializer}
     queryset = ExperimentModel.objects.all()
 
-    
+    def post(self, request):
+        serializer = ExperimentSerializer(data=request.data)
+        if serializer.is_valid():
+            title = serializer.validated_data.get("title").replace(" ", "_")
+            file = serializer.validated_data.get("file")
+            experiment_type = serializer.validated_data.get("type")
+            try:
+                experiment_instance, created = ExperimentModel.objects.get_or_create(
+                    title=title, type=experiment_type
+                )
+                FileModel.objects.create(
+                    file=file, file_name=file.name, experiment=experiment_instance
+                )
+                return Response(
+                    model_to_dict(experiment_instance), status=status.HTTP_201_CREATED
+                )
+            except Exception as e:
+                return Response(
+                    {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
     lookup_url_kwarg = "experiment_id"
     serializer_class = ListExperimentSerializer
@@ -55,36 +57,136 @@ class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
 
     def perform_destroy(self, instance):
         return instance.delete()
-   
+
 
 class GetExperimentFiles(generics.ListAPIView):
     lookup_url_kwarg = "experiment_id"
     serializer_class = ListFileDataSerializer
 
     def get_queryset(self):
-        experiment_id = self.kwargs.get('experiment_id')
+        experiment_id = self.kwargs.get("experiment_id")
         queryset = FileDataModel.objects.filter(experiment_id=experiment_id)
-        return queryset    
-        
+        return queryset
+
+
 class ListFileParams(generics.ListAPIView):
     lookup_field = "file_id"
     serializer_class = ParamListDataSerializer
 
     def get_queryset(self):
-        file_id = self.kwargs.get('file_id')
+        file_id = self.kwargs.get("file_id")
         queryset = get_object_or_404(FileDataModel, id=file_id)
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        limit = request.query_params.get("limit", 10000)
+        try:
+            limit = int(limit)
+        except ValueError:
+            limit = 10000
+
+        file_data = self.get_queryset()
+        dataset = pd.DataFrame(file_data.data_set)
+        dataset.columns = dataset.columns.str.replace(" ", "")
+        dataset.columns = dataset.columns.str.replace("-", "_")
+        dataset.columns = dataset.columns.str.lower()
+        dataset = dataset.head(limit)
+        file_data.data_set = json.loads(dataset.to_json(orient="records"))
+        serializer = self.serializer_class(file_data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class CreateListGateView(SerializerByMethodMixin, generics.ListCreateAPIView):
+    serializer_map = {"GET": ListGateSerializer, "POST": GateModelSerializer}
+
+    def get_queryset(self):
+        queryset = GateModel.objects.all()
+        file_id = self.request.query_params.get("file_id", None)
+        if file_id is not None:
+            queryset = queryset.filter(file_data_id=file_id)
         return queryset
     
     def list(self, request, *args, **kwargs):
-        x_axis = request.query_params.get('x_axis', 'SSC-A')
-        y_axis = request.query_params.get('y_axis', 'FSC-A')
-        file_data = self.get_queryset()
-        dataset = pd.DataFrame(file_data.data_set)
-        params = ['id', x_axis, y_axis]
-        dataset = dataset[params]
-        dataset.columns = dataset.columns.str.replace(' ', '')
-        dataset.columns = dataset.columns.str.replace('-', '_')
-        dataset.columns = dataset.columns.str.lower()
-        file_data.data_set = json.loads(dataset.to_json(orient='records'))
-        serializer = self.serializer_class(file_data)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        file_id = request.query_params.get("file_id", None)
+        if not file_id:
+            return Response(
+                {"detail": "Missing 'file_id' parameter"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Recuperar informações do arquivo
+        try:
+            file_data = FileDataModel.objects.get(id=file_id)
+        except FileDataModel.DoesNotExist:
+            return Response(
+                {"detail": f"File with id {file_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Recuperar gates associados ao arquivo
+        gates = self.get_queryset().values(
+            "id", "name", "parent_id", "gate_coordinates"
+        )
+        gate_map = {gate["id"]: {**gate, "children": []} for gate in gates}
+
+        roots = []
+        for gate in gates:
+            parent_id = gate["parent_id"]
+            if parent_id:
+                gate_map[parent_id]["children"].append(gate_map[gate["id"]])
+            else:
+                roots.append(gate_map[gate["id"]])
+
+        tree = {
+            "id": file_data.id,
+            "file_name": file_data.file_name,
+            "data_set": file_data.data_set,  
+            "gates": roots,
+        }
+
+        return Response(tree, status=status.HTTP_200_OK)
+
+class ProcessFileDataView(generics.CreateAPIView):
+
+    def post(self, request, *args, **kwargs):
+        file_id = kwargs.get('file_id')
+        file = get_object_or_404(FileModel, id=file_id)
+        experiment = file.experiment
+        if experiment.status != 'processing':
+            experiment.status = 'processing'
+            experiment.save()
+            experiment_title = file.file_name
+            directory_path = os.path.join(settings.BASE_DIR, 'assets', 'fcs_files', experiment_title)
+            file_path = os.path.join(settings.BASE_DIR,'storage', file.file_name)
+            file_path = os.path.join(settings.BASE_DIR,'storage', file.file_name)
+            os.makedirs(directory_path, exist_ok=True)
+            decompres_file(file_path, directory_path)
+            values = []
+            try:
+                for file_name in os.listdir(directory_path):
+                    if file_name.endswith(".fcs"):
+                        complete_path: str = os.path.join(directory_path, file_name)
+                        processed_file = process_fcs_file(complete_path)
+                        if len(values) == 0:
+                            values = processed_file[2]
+                        print(f'creating')
+                        file_data_model = FileDataModel.objects.create(headers=processed_file[0], data_set=processed_file[1], experiment=experiment, file_name=file_name, file=file)
+                        file_data_model.save()
+                        print(f'created')
+                        os.remove(complete_path)
+                experiment.values = values
+                experiment.status = 'done'
+                experiment.save()
+
+                return Response({"message": "File processing was successfull."}, status=status.HTTP_200_OK)
+
+            except Exception as e:
+                error_info = {
+                    'error_message': str(e),
+                    'details': traceback.format_exc()
+                }
+                experiment.status = 'error'
+                experiment.error_info = error_info
+                experiment.save()
+        else:
+            return Response({"message": "The file is still being processed."}, status=status.HTTP_400_BAD_REQUEST)
