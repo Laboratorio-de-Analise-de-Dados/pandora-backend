@@ -1,11 +1,17 @@
 services:
   db:
     image: postgres:latest
+    container_name: citosharp_db
     env_file: .env
     ports:
       - 5431:5432
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   migration:
     build: .
@@ -15,6 +21,11 @@ services:
       - .:/code
     depends_on:
       - db
+    healthcheck:
+      test: ["CMD", "./check_migration.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   web:
     build: .
@@ -30,13 +41,6 @@ services:
     depends_on:
       - db
       - migration
-  listener:
-    build: .
-    command: python manage.py listen_pg_notifications
-    depends_on:
-      - db
-      - migration
-      - web
 
 volumes:
   pgdata:
