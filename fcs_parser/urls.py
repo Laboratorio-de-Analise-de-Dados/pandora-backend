@@ -17,5 +17,5 @@ urlpatterns = [
     path("file/<str:file_id>/list", ListFileParams.as_view()),
     path("<str:experiment_id>/", RetrieveDeleteExperimentView.as_view()),
     path("gate", CreateListGateView.as_view()),
-    path("file/process", ProcessFileDataView.as_view()),
+    path("file/<int:file_id>/process", ProcessFileDataView.as_view()),
 ]
