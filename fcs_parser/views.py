@@ -5,15 +5,14 @@ from django.conf import settings
 import pandas as pd
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
-from rest_framework.views import APIView, Response, status
+from rest_framework.views import  Response, status
 from rest_framework import generics
-from fcs_parser.models import ExperimentModel, FileDataModel, FileModel, GateModel
+from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
 from fcs_parser.serializers import (
     ExperimentSerializer,
-    GateModelSerializer,
     ListExperimentSerializer,
     ListFileDataSerializer,
-    ListGateSerializer,
+
     ParamListDataSerializer,
 )
 from django.forms.models import model_to_dict
@@ -95,56 +94,6 @@ class ListFileParams(generics.ListAPIView):
         serializer = self.serializer_class(file_data)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-
-class CreateListGateView(SerializerByMethodMixin, generics.ListCreateAPIView):
-    serializer_map = {"GET": ListGateSerializer, "POST": GateModelSerializer}
-
-    def get_queryset(self):
-        queryset = GateModel.objects.all()
-        file_id = self.request.query_params.get("file_id", None)
-        if file_id is not None:
-            queryset = queryset.filter(file_data_id=file_id)
-        return queryset
-    
-    def list(self, request, *args, **kwargs):
-        file_id = request.query_params.get("file_id", None)
-        if not file_id:
-            return Response(
-                {"detail": "Missing 'file_id' parameter"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Recuperar informações do arquivo
-        try:
-            file_data = FileDataModel.objects.get(id=file_id)
-        except FileDataModel.DoesNotExist:
-            return Response(
-                {"detail": f"File with id {file_id} not found"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        # Recuperar gates associados ao arquivo
-        gates = self.get_queryset().values(
-            "id", "name", "parent_id", "gate_coordinates"
-        )
-        gate_map = {gate["id"]: {**gate, "children": []} for gate in gates}
-
-        roots = []
-        for gate in gates:
-            parent_id = gate["parent_id"]
-            if parent_id:
-                gate_map[parent_id]["children"].append(gate_map[gate["id"]])
-            else:
-                roots.append(gate_map[gate["id"]])
-
-        tree = {
-            "id": file_data.id,
-            "file_name": file_data.file_name,
-            "data_set": file_data.data_set,  
-            "gates": roots,
-        }
-
-        return Response(tree, status=status.HTTP_200_OK)
 
 class ProcessFileDataView(generics.CreateAPIView):
 

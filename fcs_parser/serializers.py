@@ -1,42 +1,10 @@
 import json
 from rest_framework import serializers
+from analytics.serializers import ListGateSerializer
 from utils.validators import validate_zip_file
-from .models import ExperimentModel, FileDataModel, GateModel
+from .models import ExperimentModel, FileDataModel
 
 
-class GateModelSerializer(serializers.ModelSerializer):
-    file_data = serializers.PrimaryKeyRelatedField(
-        queryset=FileDataModel.objects.all(),
-        allow_null=True,
-    )
-    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False)
-    class Meta: 
-        model = GateModel
-        fields = '__all__'
-        read_only_fields = ['id', 'created_at']
-    def get_children(self, obj):
-        # Serializa os filhos do gate
-        children = obj.children.all()
-        return GateModelSerializer(children, many=True).data
-
-
-class ListGateSerializer(serializers.ModelSerializer):
-    children = serializers.SerializerMethodField()
-    file_data = serializers.PrimaryKeyRelatedField(
-        queryset=FileDataModel.objects.all(),
-        allow_null=True,
-    )
-    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False)
-   
-
-    class Meta:
-        model = GateModel
-        fields = ['id', 'created_at', 'data_set', 'parent', 'children', 'file_data', 'name', 'gate_coordinates']
-
-    def get_children(self, obj):
-         # Serializa os filhos do gate
-        children = obj.children.all()
-        return GateModelSerializer(children, many=True).data
 
 
 class ExperimentSerializer(serializers.ModelSerializer):
@@ -79,7 +47,7 @@ class ExperimentSerializer(serializers.ModelSerializer):
 
 class ListFileDataSerializer(serializers.ModelSerializer):
 
-    gates = GateModelSerializer(many=True, read_only=True, source='gates_set')
+    gates = ListGateSerializer(many=True, read_only=True, source='gates_set')
 
     class Meta:
         model = FileDataModel
@@ -107,7 +75,7 @@ class ListFileDataSerializer(serializers.ModelSerializer):
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):
-    gates = GateModelSerializer(many=True, read_only=True)
+    gates = ListGateSerializer(many=True, read_only=True)
     
     class Meta:
         model = FileDataModel
