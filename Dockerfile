@@ -1,13 +1,15 @@
-FROM python:3.10
+FROM python:3.13
 
-ENV PYTHONDONTWRITEBYTECODE 1
+RUN mkdir /app
 
-ENV PYTHONNUNBUFFERED 1
+WORKDIR /app
 
-WORKDIR /code
+ENV PYTHONDONTWRITEBYTECODE=1
 
-COPY . /code/
+ENV PYTHONNUNBUFFERED=1
 
 RUN pip install -U pip
 
-RUN pip install -r requirements.txt
+COPY . /app/
+
+RUN pip install --no-cache-dir -r requirements.txt
