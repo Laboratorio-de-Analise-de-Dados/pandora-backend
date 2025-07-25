@@ -107,22 +107,31 @@ class ProcessFileDataView(generics.CreateAPIView):
             experiment_title = file.file_name
             directory_path = os.path.join(settings.BASE_DIR, 'assets', 'fcs_files', experiment_title)
             file_path = os.path.join(settings.BASE_DIR,'storage', file.file_name)
-            file_path = os.path.join(settings.BASE_DIR,'storage', file.file_name)
             os.makedirs(directory_path, exist_ok=True)
             decompres_file(file_path, directory_path)
             values = []
+            file_data_models = []
             try:
-                for file_name in os.listdir(directory_path):
-                    if file_name.endswith(".fcs"):
-                        complete_path: str = os.path.join(directory_path, file_name)
-                        processed_file = process_fcs_file(complete_path)
-                        if len(values) == 0:
-                            values = processed_file[2]
-                        print(f'creating')
-                        file_data_model = FileDataModel.objects.create(headers=processed_file[0], data_set=processed_file[1], experiment=experiment, file_name=file_name, file=file)
-                        file_data_model.save()
-                        print(f'created')
-                        os.remove(complete_path)
+                for root, dirs, files in os.walk(directory_path): 
+                    for file_name in files:
+                        if file_name.endswith(".fcs"):
+                            complete_path: str = os.path.join(root, file_name)
+                            processed_file = process_fcs_file(complete_path)
+                            if len(values) == 0:
+                                values = processed_file[2]
+                            file_data_model = FileDataModel(
+                                headers=processed_file[0],
+                                data_set=processed_file[1],
+                                experiment=experiment,
+                                file_name=file_name,
+                                file=file
+                            )
+                            file_data_models.append(file_data_model)
+                            if len(file_data_models) == 10:
+                                FileDataModel.objects.bulk_create(file_data_models)
+                                file_data_models = []
+                if len(file_data_models) > 0:
+                    FileDataModel.objects.bulk_create(file_data_models)
                 experiment.values = values
                 experiment.status = 'done'
                 experiment.save()
