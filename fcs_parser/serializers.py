@@ -9,7 +9,6 @@ from .models import ExperimentModel, FileDataModel
 
 class ExperimentSerializer(serializers.ModelSerializer):
     file = serializers.FileField(allow_empty_file=False, write_only=True)
-    type = serializers.CharField(allow_null=True, required=True)
     values = serializers.ListField(child=serializers.CharField(), required=False)
     error_info = serializers.JSONField(read_only=True)
 
@@ -47,7 +46,7 @@ class ExperimentSerializer(serializers.ModelSerializer):
 
 class ListFileDataSerializer(serializers.ModelSerializer):
 
-    gates = ListGateSerializer(many=True, read_only=True, source='gates_set')
+    gates = ListGateSerializer(many=True, read_only=True)
 
     class Meta:
         model = FileDataModel
