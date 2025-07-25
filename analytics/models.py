@@ -7,14 +7,12 @@ class GateModel(models.Model):
 
     class Meta:
         db_table = "gate"
+        unique_together = ('name', 'file_data')
 
-    experiment = models.ForeignKey(
-        ExperimentModel, related_name="gates", on_delete=models.CASCADE
-    )
     file_data = models.ForeignKey(
         FileDataModel, related_name="gates", on_delete=models.CASCADE, null=True
     )
-    name = models.CharField(unique=True, max_length=50, db_index=True)
+    name = models.CharField(max_length=50, db_index=True)
     gate_coordinates = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
     dashboard = models.ForeignKey(
@@ -53,16 +51,18 @@ class DashboardModel(models.Model):
 
     class Meta:
         db_table = "dashboard"
-        indexes = [
-            models.Index(fields=["dashboard_data", "name"]),
-        ]
+        unique_together = ('name', 'file_data')
 
-    experiment = models.ForeignKey(
-        ExperimentModel, related_name="dashboards", on_delete=models.CASCADE
-    )
-    file_data = models.ForeignKey(
-        FileDataModel, related_name="dashboards", on_delete=models.CASCADE, null=True
-    )
-    name = models.CharField(unique=True, max_length=50)
-    dashboard_data = models.JSONField(default=dict)
+    name = models.CharField(max_length=50)
+    dashboard_config = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
+    file_data = models.ForeignKey(
+        FileDataModel, related_name="dashboards", on_delete=models.CASCADE, null=True, blank=True
+    )
+
+class AnalysisResult(models.Model):
+    class Meta:
+        db_table = 'analysis_result'
+        
+    gate = models.OneToOneField(GateModel, on_delete=models.CASCADE, primary_key=True)
+    analysis_result = models.JSONField(default=dict)
