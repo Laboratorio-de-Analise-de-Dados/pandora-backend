@@ -64,5 +64,5 @@ class AnalysisResult(models.Model):
     class Meta:
         db_table = 'analysis_result'
         
-    gate = models.OneToOneField(GateModel, on_delete=models.CASCADE, primary_key=True)
+    gate = models.OneToOneField(GateModel, on_delete=models.CASCADE, primary_key=True, related_name='analysis_result')
     analysis_result = models.JSONField(default=dict)
