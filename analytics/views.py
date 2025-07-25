@@ -1,6 +1,6 @@
 
 from django.shortcuts import get_object_or_404
-from fcs_parser.serializers import ListFileDataSerializer
+from fcs_parser.serializers import ListFileDataSerializer, ParamListDataSerializer
 from rest_framework import generics
 from analytics.models import GateModel
 from analytics.serializers import DashboardSerializer, GateSerializer, ListGateSerializer
@@ -137,9 +137,8 @@ class GetGateDataView(generics.ListAPIView):
             limit = int(limit)
         except ValueError:
             limit = 10000 
-        print(dataset)
         dataset = dataset.head(limit)
         file_data_instance.data_set = json.loads(dataset.to_json(orient="records"))
-        serializer = ListFileDataSerializer(file_data_instance)
+        serializer = ParamListDataSerializer(file_data_instance)
         return Response(serializer.data, status=status.HTTP_200_OK) 
 # class CreateDashboardView(generics.CreateAPIView):
