@@ -5,6 +5,8 @@ from django.conf import settings
 import pandas as pd
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
+from analytics.models import GateModel
+from fcs_parser.tasks import process_experiment_files_task
 from rest_framework.views import  Response, status
 from rest_framework import generics
 from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
@@ -36,9 +38,10 @@ class ExperimentListCreateView(SerializerByMethodMixin, generics.ListCreateAPIVi
                 experiment_instance, created = ExperimentModel.objects.get_or_create(
                     title=title, type=experiment_type
                 )
-                FileModel.objects.create(
+                file_instance = FileModel.objects.create(
                     file=file, file_name=file.name, experiment=experiment_instance
-                )
+                ) 
+                process_experiment_files_task.delay(file_instance.id)
                 return Response(
                     model_to_dict(experiment_instance), status=status.HTTP_201_CREATED
                 )
@@ -66,7 +69,25 @@ class GetExperimentFiles(generics.ListAPIView):
         experiment_id = self.kwargs.get("experiment_id")
         queryset = FileDataModel.objects.filter(experiment_id=experiment_id)
         return queryset
+    def list(self, request, *args, **kwargs):
+        # Retrieve the queryset of files
+        queryset = self.get_queryset()
 
+        # Manually create the response data with the gate tree
+        data = []
+        for file in queryset:
+            # Get the flat serialized data for the file
+            file_serializer = self.get_serializer(file)
+            file_data = file_serializer.data
+
+            # Build the gate tree for the current file
+            gate_tree = GateModel.build_tree(file_data_id=file.id)
+
+            # Add the built tree to the file data
+            file_data['gates'] = gate_tree
+            data.append(file_data)
+        
+        return Response(data)
 
 class ListFileParams(generics.ListAPIView):
     lookup_field = "file_id"
