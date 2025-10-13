@@ -28,7 +28,13 @@ DEBUG = True
 
 ALLOWED_HOSTS = []
 
-
+CELERY_BROKER_URL = 'redis://redis:6379/0'
+CELERY_RESULT_BACKEND = 'redis://redis:6379/0' # Onde os resultados das tasks são armazenados (opcional, mas bom para depuração)
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'America/Sao_Paulo'
+CELERY_TASK_TRACK_STARTED = True
 # Application definition
 
 INSTALLED_APPS = [
@@ -40,6 +46,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     'fcs_parser',
+    'analytics'
 ]
 
 MIDDLEWARE = [

@@ -5,15 +5,16 @@ from django.conf import settings
 import pandas as pd
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
-from rest_framework.views import APIView, Response, status
+from analytics.models import GateModel
+from fcs_parser.tasks import process_experiment_files_task
+from rest_framework.views import  Response, status
 from rest_framework import generics
-from fcs_parser.models import ExperimentModel, FileDataModel, FileModel, GateModel
+from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
 from fcs_parser.serializers import (
     ExperimentSerializer,
-    GateModelSerializer,
     ListExperimentSerializer,
     ListFileDataSerializer,
-    ListGateSerializer,
+
     ParamListDataSerializer,
 )
 from django.forms.models import model_to_dict
@@ -37,9 +38,10 @@ class ExperimentListCreateView(SerializerByMethodMixin, generics.ListCreateAPIVi
                 experiment_instance, created = ExperimentModel.objects.get_or_create(
                     title=title, type=experiment_type
                 )
-                FileModel.objects.create(
+                file_instance = FileModel.objects.create(
                     file=file, file_name=file.name, experiment=experiment_instance
-                )
+                ) 
+                process_experiment_files_task.delay(file_instance.id)
                 return Response(
                     model_to_dict(experiment_instance), status=status.HTTP_201_CREATED
                 )
@@ -67,7 +69,25 @@ class GetExperimentFiles(generics.ListAPIView):
         experiment_id = self.kwargs.get("experiment_id")
         queryset = FileDataModel.objects.filter(experiment_id=experiment_id)
         return queryset
+    def list(self, request, *args, **kwargs):
+        # Retrieve the queryset of files
+        queryset = self.get_queryset()
 
+        # Manually create the response data with the gate tree
+        data = []
+        for file in queryset:
+            # Get the flat serialized data for the file
+            file_serializer = self.get_serializer(file)
+            file_data = file_serializer.data
+
+            # Build the gate tree for the current file
+            gate_tree = GateModel.build_tree(file_data_id=file.id)
+
+            # Add the built tree to the file data
+            file_data['gates'] = gate_tree
+            data.append(file_data)
+        
+        return Response(data)
 
 class ListFileParams(generics.ListAPIView):
     lookup_field = "file_id"
@@ -96,56 +116,6 @@ class ListFileParams(generics.ListAPIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class CreateListGateView(SerializerByMethodMixin, generics.ListCreateAPIView):
-    serializer_map = {"GET": ListGateSerializer, "POST": GateModelSerializer}
-
-    def get_queryset(self):
-        queryset = GateModel.objects.all()
-        file_id = self.request.query_params.get("file_id", None)
-        if file_id is not None:
-            queryset = queryset.filter(file_data_id=file_id)
-        return queryset
-    
-    def list(self, request, *args, **kwargs):
-        file_id = request.query_params.get("file_id", None)
-        if not file_id:
-            return Response(
-                {"detail": "Missing 'file_id' parameter"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Recuperar informações do arquivo
-        try:
-            file_data = FileDataModel.objects.get(id=file_id)
-        except FileDataModel.DoesNotExist:
-            return Response(
-                {"detail": f"File with id {file_id} not found"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        # Recuperar gates associados ao arquivo
-        gates = self.get_queryset().values(
-            "id", "name", "parent_id", "gate_coordinates"
-        )
-        gate_map = {gate["id"]: {**gate, "children": []} for gate in gates}
-
-        roots = []
-        for gate in gates:
-            parent_id = gate["parent_id"]
-            if parent_id:
-                gate_map[parent_id]["children"].append(gate_map[gate["id"]])
-            else:
-                roots.append(gate_map[gate["id"]])
-
-        tree = {
-            "id": file_data.id,
-            "file_name": file_data.file_name,
-            "data_set": file_data.data_set,  
-            "gates": roots,
-        }
-
-        return Response(tree, status=status.HTTP_200_OK)
-
 class ProcessFileDataView(generics.CreateAPIView):
 
     def post(self, request, *args, **kwargs):
@@ -158,22 +128,31 @@ class ProcessFileDataView(generics.CreateAPIView):
             experiment_title = file.file_name
             directory_path = os.path.join(settings.BASE_DIR, 'assets', 'fcs_files', experiment_title)
             file_path = os.path.join(settings.BASE_DIR,'storage', file.file_name)
-            file_path = os.path.join(settings.BASE_DIR,'storage', file.file_name)
             os.makedirs(directory_path, exist_ok=True)
             decompres_file(file_path, directory_path)
             values = []
+            file_data_models = []
             try:
-                for file_name in os.listdir(directory_path):
-                    if file_name.endswith(".fcs"):
-                        complete_path: str = os.path.join(directory_path, file_name)
-                        processed_file = process_fcs_file(complete_path)
-                        if len(values) == 0:
-                            values = processed_file[2]
-                        print(f'creating')
-                        file_data_model = FileDataModel.objects.create(headers=processed_file[0], data_set=processed_file[1], experiment=experiment, file_name=file_name, file=file)
-                        file_data_model.save()
-                        print(f'created')
-                        os.remove(complete_path)
+                for root, dirs, files in os.walk(directory_path): 
+                    for file_name in files:
+                        if file_name.endswith(".fcs"):
+                            complete_path: str = os.path.join(root, file_name)
+                            processed_file = process_fcs_file(complete_path)
+                            if len(values) == 0:
+                                values = processed_file[2]
+                            file_data_model = FileDataModel(
+                                headers=processed_file[0],
+                                data_set=processed_file[1],
+                                experiment=experiment,
+                                file_name=file_name,
+                                file=file
+                            )
+                            file_data_models.append(file_data_model)
+                            if len(file_data_models) == 10:
+                                FileDataModel.objects.bulk_create(file_data_models)
+                                file_data_models = []
+                if len(file_data_models) > 0:
+                    FileDataModel.objects.bulk_create(file_data_models)
                 experiment.values = values
                 experiment.status = 'done'
                 experiment.save()
