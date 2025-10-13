@@ -5,7 +5,6 @@ from .header_parser import serialize_value
 
 def process_fcs_file(fcs_file_path: str):
     try:
-        print(fcs_file_path)
         headers, _ = readfcs.view(fcs_file_path)
         fcsfile = readfcs.ReadFCS(fcs_file_path)
         data_set = fcsfile.data

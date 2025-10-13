@@ -22,7 +22,6 @@ def process_experiment_files_task(file_id: int):
         if experiment.status != 'processing':
             experiment.status = 'processing'
             experiment.save()
-            print(file.file_name)
             experiment_title = file.file_name
             directory_path = os.path.join(settings.BASE_DIR, 'assets', 'fcs_files', experiment_title)
             file_path = os.path.join(settings.BASE_DIR,'storage', file.file_name)
@@ -30,12 +29,9 @@ def process_experiment_files_task(file_id: int):
             decompres_file(file_path, directory_path)
             values = []
             file_data_models = []
-            print(directory_path)
             try:
                 for root, dirs, files in os.walk(directory_path): 
-                    print(root)
                     for file_name in files:
-                        print(file_name)
                         if file_name.endswith(".fcs"):
                             complete_path: str = os.path.join(root, file_name)
                             processed_file = process_fcs_file(complete_path)
