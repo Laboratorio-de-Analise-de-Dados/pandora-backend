@@ -41,7 +41,7 @@ class FileModel(models.Model):
 
     id = models.BigAutoField(primary_key=True)
     file_name = models.CharField(max_length=256, null=True)
-    file = models.FileField(upload_to="storage", null=True)
+    file = models.FileField(upload_to="", null=True)
     experiment = models.OneToOneField(ExperimentModel, on_delete=models.CASCADE)
 
     def get_file_url(self):

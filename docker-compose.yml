@@ -35,6 +35,7 @@ services:
       - .:/app
       - ./storage:/app/storage
       - ./assets:/app/assets
+      - uploads_data:/app/uploads # novo volume compartilhado para uploads
     stdin_open: true
     tty: true
     ports:
@@ -52,6 +53,7 @@ services:
       - .:/app
       - ./storage:/app/storage
       - ./assets:/app/assets
+      - uploads_data:/app/uploads # compartilha uploads com web
     depends_on:
       - db
       - redis
@@ -61,6 +63,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
 volumes:
   pgdata:
-  redis_data: # Novo volume para persistir os dados do Redis
+  redis_data:
+  uploads_data:

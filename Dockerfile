@@ -1,15 +1,30 @@
-FROM python:3.13
+# Dockerfile de produção para Django
+FROM python:3.10.15-slim
 
-RUN mkdir /app
-
+# Diretório de trabalho
 WORKDIR /app
 
+# Evitar arquivos .pyc e buffer no stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-ENV PYTHONNUNBUFFERED=1
+# Atualizar pip
+RUN pip install --upgrade pip
 
-RUN pip install -U pip
+# Copiar apenas requirements primeiro para aproveitar cache
+COPY requirements.txt /app/
 
+# Instalar dependências
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copiar o restante do projeto
 COPY . /app/
 
-RUN pip install -r requirements.txt
+# Coletar arquivos estáticos
+RUN python manage.py collectstatic --noinput
+
+# Expor a porta que o Gunicorn vai usar
+EXPOSE 8000
+
+# Comando padrão: roda Gunicorn em produção
+CMD ["gunicorn", "citosharp.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4"]

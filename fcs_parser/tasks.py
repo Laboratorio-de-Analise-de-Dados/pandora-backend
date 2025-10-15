@@ -22,9 +22,8 @@ def process_experiment_files_task(file_id: int):
         if experiment.status != 'processing':
             experiment.status = 'processing'
             experiment.save()
-            experiment_title = file.file_name
-            directory_path = os.path.join(settings.BASE_DIR, 'assets', 'fcs_files', experiment_title)
-            file_path = os.path.join(settings.BASE_DIR,'storage', file.file_name)
+            directory_path = os.path.join(settings.MEDIA_ROOT, "fcs_files", file.file_name)
+            file_path = os.path.join(settings.MEDIA_ROOT, file.file_name)
             os.makedirs(directory_path, exist_ok=True)
             decompres_file(file_path, directory_path)
             values = []
