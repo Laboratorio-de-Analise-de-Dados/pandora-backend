@@ -38,8 +38,10 @@ jobs:
             export POSTGRES_USER=${{ secrets.POSTGRES_USER }}
             export POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             export POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-            export PORT=${{ secrets.PORT }}
-            export HOST=${{ secrets.HOST }}
+            export DATABSE_HOST=${{ secrets.DATABSE_HOST }}
+            export DATABASE_PORT=${{ secrets.DATABASE_PORT }}
+            export REDIS_HOST=${{ secrets.REDIS_HOST }}
+            export REDIS_PORT=${{ secrets.REDIS_PORT }}
             export DEBUG=${{ secrets.DEBUG }}
             export SECRET_KEY=${{ secrets.SECRET_KEY }}
             export ALLOWED_HOSTS=${{ secrets.ALLOWED_HOSTS }}
