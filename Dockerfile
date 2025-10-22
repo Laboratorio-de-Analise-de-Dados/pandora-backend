@@ -1,5 +1,5 @@
 # Dockerfile de produção para Django
-FROM python:3.10.15-slim
+FROM python:3.13-slim
 
 # Diretório de trabalho
 WORKDIR /app
