@@ -1,18 +1,24 @@
-name: 🚀 Deploy Pandora Backend
+name: 🚀 CI/CD Pandora Backend
 
-# disparo manual
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: "Branch para deploy"
-        required: true
-        default: "main"
 
 jobs:
+  # 1️⃣ Build
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Test build Docker image
+        run: |
+          docker build -t pandora-backend:test .
+
+  # 2️⃣ Deploy
   deploy:
     runs-on: ubuntu-latest
-
+    needs: build
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -21,6 +27,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
+            set -e
             cd /home/ubuntu/pandora-backend
 
             echo "→ Atualizando código"
@@ -40,4 +47,4 @@ jobs:
             docker compose -f docker-compose.prod.yml down
             docker compose -f docker-compose.prod.yml up -d --build
 
-            echo "✅ Deploy concluído com sucesso!"
+            echo "✅ Deploy concluído!"
