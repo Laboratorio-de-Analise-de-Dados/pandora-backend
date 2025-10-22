@@ -15,19 +15,21 @@ import os
 from dotenv import load_dotenv
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-load_dotenv()
+env_path = BASE_DIR / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-k%4*$!vvf+b&+=g(n9@*f1u(@qg*i1fkuw#8_@&2-afi%s_sko"
+SECRET_KEY = os.getenv('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 't', 'yes')
 
-ALLOWED_HOSTS = []
-
+ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
+MEDIA_ROOT = os.environ.get("MEDIA_ROOT", BASE_DIR / "uploads")
+MEDIA_URL = "/media/"
 CELERY_BROKER_URL = 'redis://redis:6379/0'
 CELERY_RESULT_BACKEND = 'redis://redis:6379/0' # Onde os resultados das tasks são armazenados (opcional, mas bom para depuração)
 CELERY_ACCEPT_CONTENT = ['json']
