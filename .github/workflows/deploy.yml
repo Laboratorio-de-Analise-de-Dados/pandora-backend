@@ -3,6 +3,11 @@ name: 🚀 Deploy Pandora Backend
 # disparo manual
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch para deploy"
+        required: true
+        default: "main"
 
 jobs:
   deploy:
