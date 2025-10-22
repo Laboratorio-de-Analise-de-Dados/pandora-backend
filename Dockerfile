@@ -20,12 +20,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar o restante do projeto
 COPY . /app/
 
+
+# Definir explicitamente o settings do Django
+ENV DJANGO_SETTINGS_MODULE=citosharp.settings
+
 # DEBUG: verificar se a variável está definida
 RUN echo "DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE"
 
-# DEBUG: verificar STATIC_ROOT que Django vai usar (opcional)
-RUN python -c "import os; from django.conf import settings; print('STATIC_ROOT:', getattr(settings, 'STATIC_ROOT', None))"
-
+# DEBUG: verificar STATIC_ROOT
+RUN python -c "from django.conf import settings; print('STATIC_ROOT:', settings.STATIC_ROOT)"
 
 RUN mkdir -p /app/staticfiles
 
