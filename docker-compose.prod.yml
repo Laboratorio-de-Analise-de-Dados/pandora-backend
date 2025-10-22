@@ -1,0 +1,89 @@
+version: "3.9"
+
+volumes:
+  pgdata:
+  redis_data:
+  uploads_data:
+
+services:
+  db:
+    image: postgres:latest
+    container_name: pandora_db
+    ports:
+      - 5432:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:6-alpine
+    container_name: pandora_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build: .
+    container_name: pandora_web
+    command: bash -c "python manage.py migrate && gunicorn pandora.wsgi:application --bind 0.0.0.0:8000 --workers 4"
+    ports:
+      - 8085:8080
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - uploads_data:/app/uploads # pasta de uploads compartilhada
+    environment:
+      DEBUG: "${DEBUG}"
+      SECRET_KEY: "${SECRET_KEY}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS}" # ex: 'meudominio.com,localhost'
+      DATABASE_NAME: "${POSTGRES_DB}"
+      DATABASE_USER: "${POSTGRES_USER}"
+      DATABASE_PASSWORD: "${POSTGRES_PASSWORD}"
+      DATABASE_HOST: "${HOST}"
+      DATABASE_PORT: "${PORT}"
+      REDIS_HOST: "${HOST}"
+      REDIS_PORT: "${PORT}"
+      MEDIA_ROOT: "/app/uploads" # mesma pasta que o volume
+
+  celery_worker:
+    build: .
+    container_name: pandora_celery_worker
+    command: celery -A pandora worker -l info
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - uploads_data:/app/uploads # compartilha os uploads com web
+    environment:
+      DEBUG: "${DEBUG}"
+      SECRET_KEY: "${SECRET_KEY}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS}"
+      DATABASE_NAME: "${POSTGRES_DB}"
+      DATABASE_USER: "${POSTGRES_USER}"
+      DATABASE_PASSWORD: "${POSTGRES_PASSWORD}"
+      DATABASE_HOST: "${HOST}"
+      DATABASE_PORT: "${PORT}"
+      REDIS_HOST: "${HOST}"
+      REDIS_PORT: "${PORT}"
+      MEDIA_ROOT: "/app/uploads"
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A pandora inspect ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

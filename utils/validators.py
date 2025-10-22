@@ -13,6 +13,5 @@ def validate_file_size(file):
   """Validation file size function, take a file as argument"""
 
   dir(file)
-  print(file.size)
   if file.size > MAX_SIZE:
       raise ValidationError(f"File exceed maximum size {MB}mb")

@@ -1,0 +1,70 @@
+services:
+  db:
+    image: postgres:latest
+    container_name: pandora_db
+    env_file: .env
+    ports:
+      - 5432:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:6-alpine
+    container_name: pandora_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build: .
+    container_name: pandora_web
+    env_file: .env
+    command: bash -c 'while !</dev/tcp/db/5432; do sleep 1; done; while !</dev/tcp/redis/6379; do sleep 1; done; python manage.py migrate && python manage.py runserver 0.0.0.0:8000'
+    volumes:
+      - .:/app
+      - ./storage:/app/storage
+      - ./assets:/app/assets
+      - uploads_data:/app/uploads # novo volume compartilhado para uploads
+    stdin_open: true
+    tty: true
+    ports:
+      - 8000:8000
+    depends_on:
+      - db
+      - redis
+
+  celery_worker:
+    build: .
+    container_name: pandora_celery_worker
+    env_file: .env
+    command: celery -A pandora worker -l info
+    volumes:
+      - .:/app
+      - ./storage:/app/storage
+      - ./assets:/app/assets
+      - uploads_data:/app/uploads # compartilha uploads com web
+    depends_on:
+      - db
+      - redis
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A seu_projeto_django inspect ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  pgdata:
+  redis_data:
+  uploads_data:
