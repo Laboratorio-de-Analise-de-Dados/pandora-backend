@@ -25,7 +25,7 @@ services:
 
   redis:
     image: redis:6-alpine
-    container_name: citosharp_redis
+    container_name: pandora_redis
     ports:
       - "6379:6379"
     volumes:
@@ -38,8 +38,8 @@ services:
 
   web:
     build: .
-    container_name: citosharp_web
-    command: bash -c "python manage.py migrate && gunicorn citosharp.wsgi:application --bind 0.0.0.0:8000 --workers 4"
+    container_name: pandora_web
+    command: bash -c "python manage.py migrate && gunicorn pandora.wsgi:application --bind 0.0.0.0:8000 --workers 4"
     ports:
       - 8085:8080
     depends_on:
@@ -62,8 +62,8 @@ services:
 
   celery_worker:
     build: .
-    container_name: citosharp_celery_worker
-    command: celery -A citosharp worker -l info
+    container_name: pandora_celery_worker
+    command: celery -A pandora worker -l info
     depends_on:
       - db
       - redis
@@ -82,7 +82,7 @@ services:
       REDIS_PORT: "${PORT}"
       MEDIA_ROOT: "/app/uploads"
     healthcheck:
-      test: ["CMD-SHELL", "celery -A citosharp inspect ping"]
+      test: ["CMD-SHELL", "celery -A pandora inspect ping"]
       interval: 30s
       timeout: 10s
       retries: 3

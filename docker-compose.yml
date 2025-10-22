@@ -15,7 +15,7 @@ services:
 
   redis:
     image: redis:6-alpine
-    container_name: citosharp_redis
+    container_name: pandora_redis
     ports:
       - "6379:6379"
     volumes:
@@ -28,7 +28,7 @@ services:
 
   web:
     build: .
-    container_name: citosharp_web
+    container_name: pandora_web
     env_file: .env
     command: bash -c 'while !</dev/tcp/db/5432; do sleep 1; done; while !</dev/tcp/redis/6379; do sleep 1; done; python manage.py migrate && python manage.py runserver 0.0.0.0:8000'
     volumes:
@@ -46,9 +46,9 @@ services:
 
   celery_worker:
     build: .
-    container_name: citosharp_celery_worker
+    container_name: pandora_celery_worker
     env_file: .env
-    command: celery -A citosharp worker -l info
+    command: celery -A pandora worker -l info
     volumes:
       - .:/app
       - ./storage:/app/storage
