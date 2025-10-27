@@ -61,7 +61,7 @@ services:
   celery_worker:
     build: .
     container_name: pandora_celery_worker
-    command: celery -A pandora worker -l info
+    command: celery -A citosharp worker -l info
     depends_on:
       - db
       - redis
@@ -80,7 +80,7 @@ services:
       REDIS_PORT: "${REDIS_PORT}"
       MEDIA_ROOT: "/app/uploads"
     healthcheck:
-      test: ["CMD-SHELL", "celery -A pandora inspect ping"]
+      test: ["CMD-SHELL", "celery -A citosharp inspect ping"]
       interval: 30s
       timeout: 10s
       retries: 3
