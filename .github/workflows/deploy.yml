@@ -40,5 +40,5 @@ jobs:
             docker compose -f docker-compose.prod.yml up -d
 
             cd ..
-            rm - rf pandora-backend
+            rm -rf pandora-backend/
             echo "✅ Deploy concluído!"
