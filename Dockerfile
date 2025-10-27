@@ -1,42 +1,30 @@
-# Dockerfile de produção para Django
 FROM python:3.13-slim
 
-# Diretório de trabalho
 WORKDIR /app
 
-# Evitar arquivos .pyc e buffer no stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Atualizar pip
 RUN pip install --upgrade pip
 
-# Copiar apenas requirements primeiro para aproveitar cache
-COPY requirements.txt /app/
-
-# Instalar dependências
+# Copiar requirements e instalar dependências
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar o restante do projeto
-COPY . /app/
+COPY . .
 
-
-# Definir explicitamente o settings do Django
+# Definir settings do Django
 ENV DJANGO_SETTINGS_MODULE=citosharp.settings
 
-# DEBUG: verificar se a variável está definida
-RUN echo "DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE"
-
-# DEBUG: verificar STATIC_ROOT
-RUN python -c "from django.conf import settings; print('STATIC_ROOT:', settings.STATIC_ROOT)"
-
+# Criar pasta de estáticos
 RUN mkdir -p /app/staticfiles
 
 # Coletar arquivos estáticos
 RUN python manage.py collectstatic --noinput
 
-# Expor a porta que o Gunicorn vai usar
+# Expor porta
 EXPOSE 8000
 
-# Comando padrão: roda Gunicorn em produção
+# Comando padrão
 CMD ["gunicorn", "citosharp.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4"]

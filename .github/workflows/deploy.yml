@@ -34,7 +34,7 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            echo "→ Subindo containers"
+            docker compose -f docker-compose.prod.yml build --no-cache
             docker compose -f docker-compose.prod.yml up -d
 
             echo "✅ Deploy concluído!"
