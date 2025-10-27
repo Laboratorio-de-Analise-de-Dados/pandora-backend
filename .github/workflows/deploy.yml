@@ -28,13 +28,17 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             set -e
-            cd /home/ubuntu/pandora-backend
+            cd /home/ubuntu/
 
-            echo "→ Atualizando código"
-            git fetch origin main
-            git reset --hard origin/main
+            git clone git@github.com:Laboratorio-de-Analise-de-Dados/pandora-backend.git
+
+            cd pandora-backend
+
+            git checkout main
 
             docker compose -f docker-compose.prod.yml build --no-cache
             docker compose -f docker-compose.prod.yml up -d
 
+            cd ..
+            rm - rf pandora-backend
             echo "✅ Deploy concluído!"
