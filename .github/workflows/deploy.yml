@@ -13,14 +13,14 @@ jobs:
         env:
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          DATABASE_HOST: ${{ secrets.DATABASE_HOST }}
-          DATABASE_PORT: ${{ secrets.DATABASE_PORT }}
+          POSTGRES_DB: ${{ vars.POSTGRES_DB }}
+          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
+          DATABASE_PORT: ${{ vars.DATABASE_PORT }}
           REDIS_HOST: ${{ vars.REDIS_HOST }}
-          REDIS_PORT: ${{ secrets.REDIS_PORT }}
-          DEBUG: ${{ secrets.DEBUG }}
+          REDIS_PORT: ${{ vars.REDIS_PORT }}
+          DEBUG: ${{ vars.DEBUG }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          ALLOWED_HOSTS: ${{ secrets.ALLOWED_HOSTS }}
+          ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
         with:
           envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,REDIS_HOST,REDIS_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS
           host: ${{ secrets.SERVER_HOST }}
