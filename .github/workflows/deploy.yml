@@ -7,48 +7,32 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: production
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.2.0
-        env:
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          DATABASE_HOST: ${{ secrets.DATABASE_HOST }}
-          DATABASE_PORT: ${{ secrets.DATABASE_PORT }}
-          REDIS_HOST: ${{ secrets.REDIS_HOST }}
-          REDIS_PORT: ${{ secrets.REDIS_PORT }}
-          DEBUG: ${{ secrets.DEBUG }}
-          SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          ALLOWED_HOSTS: ${{ secrets.ALLOWED_HOSTS }}
-        with:
-          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,REDIS_HOST,REDIS_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            set -e
-            cd /home/ubuntu/pandora-backend
+    script: |
+      set -e
+      cd /home/ubuntu/pandora-backend
 
-            export POSTGRES_USER=$POSTGRES_USER
-            export POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-            export POSTGRES_DB=$POSTGRES_DB
-            export DATABASE_HOST=$DATABASE_HOST
-            export DATABASE_PORT=$DATABASE_PORT
-            export REDIS_HOST=$REDIS_HOST
-            export REDIS_PORT=$REDIS_PORT
-            export DEBUG=$DEBUG
-            export SECRET_KEY=$SECRET_KEY
-            export ALLOWED_HOSTS=$ALLOWED_HOSTS
+      echo "→ Atualizando código"
+      git fetch origin main
+      git reset --hard origin/main
 
-            echo "→ Atualizando código"
-            git fetch origin main
-            git reset --hard origin/main
+      echo "→ Gerando .env temporário"
+      cat <<EOF > .env
+      POSTGRES_USER=$POSTGRES_USER
+      POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+      POSTGRES_DB=$POSTGRES_DB
+      DATABASE_HOST=$DATABASE_HOST
+      DATABASE_PORT=$DATABASE_PORT
+      REDIS_HOST=$REDIS_HOST
+      REDIS_PORT=$REDIS_PORT
+      DEBUG=$DEBUG
+      SECRET_KEY=$SECRET_KEY
+      ALLOWED_HOSTS=$ALLOWED_HOSTS
+      EOF
 
-            echo "→ Buildando imagem no servidor"
-            docker compose -f docker-compose.prod.yml build
+      echo "→ Buildando imagem no servidor"
+      docker compose --env-file .env -f docker-compose.prod.yml build
 
-            echo "→ Subindo containers"
-            docker compose -f docker-compose.prod.yml up -d
-
-            echo "✅ Deploy concluído!"
+      echo "→ Subindo containers"
+      docker compose --env-file .env -f docker-compose.prod.yml up -d
+      rm .env
+      echo "✅ Deploy concluído!"
