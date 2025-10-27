@@ -37,7 +37,7 @@ services:
   web:
     build: .
     container_name: pandora_web
-    command: bash -c "python manage.py migrate && gunicorn pandora.wsgi:application --bind 0.0.0.0:8000 --workers 4"
+    command: bash -c "python manage.py migrate && gunicorn citosharp.wsgi:application --bind 0.0.0.0:8000 --workers 4"
     ports:
       - 8085:8080
     depends_on:
