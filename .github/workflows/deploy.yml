@@ -30,6 +30,17 @@ jobs:
             set -e
             cd /home/ubuntu/pandora-backend
 
+            export POSTGRES_USER=$POSTGRES_USER
+            export POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+            export POSTGRES_DB=$POSTGRES_DB
+            export DATABASE_HOST=$DATABASE_HOST
+            export DATABASE_PORT=$DATABASE_PORT
+            export REDIS_HOST=$REDIS_HOST
+            export REDIS_PORT=$REDIS_PORT
+            export DEBUG=$DEBUG
+            export SECRET_KEY=$SECRET_KEY
+            export ALLOWED_HOSTS=$ALLOWED_HOSTS
+
             echo "→ Atualizando código"
             git fetch origin main
             git reset --hard origin/main
