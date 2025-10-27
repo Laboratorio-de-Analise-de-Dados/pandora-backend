@@ -74,10 +74,10 @@ services:
       DATABASE_NAME: "${POSTGRES_DB}"
       DATABASE_USER: "${POSTGRES_USER}"
       DATABASE_PASSWORD: "${POSTGRES_PASSWORD}"
-      DATABASE_HOST: "${HOST}"
-      DATABASE_PORT: "${PORT}"
-      REDIS_HOST: "${HOST}"
-      REDIS_PORT: "${PORT}"
+      DATABASE_HOST: "${POSTGRES_HOST}"
+      DATABASE_PORT: "${POSTGRES_PORT}"
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
       MEDIA_ROOT: "/app/uploads"
     healthcheck:
       test: ["CMD-SHELL", "celery -A pandora inspect ping"]
