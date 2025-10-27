@@ -4,24 +4,23 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 1️⃣ Build
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Test build Docker image
-        run: |
-          docker build -t pandora-backend:test .
-
-  # 2️⃣ Deploy
   deploy:
     runs-on: ubuntu-latest
-    needs: build
+    environment: production
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          DATABASE_HOST: ${{ secrets.DATABASE_HOST }}
+          DATABASE_PORT: ${{ secrets.DATABASE_PORT }}
+          REDIS_HOST: ${{ secrets.REDIS_HOST }}
+          REDIS_PORT: ${{ secrets.REDIS_PORT }}
+          DEBUG: ${{ secrets.DEBUG }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          ALLOWED_HOSTS: ${{ secrets.ALLOWED_HOSTS }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
@@ -34,19 +33,10 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            echo "→ Atualizando containers"
-            export POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-            export POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-            export POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-            export DATABSE_HOST=${{ secrets.DATABSE_HOST }}
-            export DATABASE_PORT=${{ secrets.DATABASE_PORT }}
-            export REDIS_HOST=${{ secrets.REDIS_HOST }}
-            export REDIS_PORT=${{ secrets.REDIS_PORT }}
-            export DEBUG=${{ secrets.DEBUG }}
-            export SECRET_KEY=${{ secrets.SECRET_KEY }}
-            export ALLOWED_HOSTS=${{ secrets.ALLOWED_HOSTS }}
+            echo "→ Buildando imagem no servidor"
+            docker compose -f docker-compose.prod.yml build
 
-            docker compose -f docker-compose.prod.yml down
-            docker compose -f docker-compose.prod.yml up -d --build
+            echo "→ Subindo containers"
+            docker compose -f docker-compose.prod.yml up -d
 
             echo "✅ Deploy concluído!"
