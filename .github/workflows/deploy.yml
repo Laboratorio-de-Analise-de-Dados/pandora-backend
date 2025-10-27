@@ -16,7 +16,7 @@ jobs:
           POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
           DATABASE_HOST: ${{ secrets.DATABASE_HOST }}
           DATABASE_PORT: ${{ secrets.DATABASE_PORT }}
-          REDIS_HOST: ${{ secrets.REDIS_HOST }}
+          REDIS_HOST: ${{ vars.REDIS_HOST }}
           REDIS_PORT: ${{ secrets.REDIS_PORT }}
           DEBUG: ${{ secrets.DEBUG }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
