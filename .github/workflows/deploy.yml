@@ -1,22 +1,28 @@
-name: 🚀 Deploy Pandora Backend
+name: 🚀 CI/CD Pandora Backend
 
-# disparo manual
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: "Branch para deploy"
-        required: true
-        default: "main"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+    environment: production
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ vars.POSTGRES_DB }}
+          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
+          DATABASE_PORT: ${{ vars.DATABASE_PORT }}
+          REDIS_HOST: ${{ vars.REDIS_HOST }}
+          REDIS_PORT: ${{ vars.REDIS_PORT }}
+          DEBUG: ${{ vars.DEBUG }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
         with:
+          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,REDIS_HOST,REDIS_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
@@ -28,8 +34,7 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            echo "→ Atualizando containers"
-            docker compose -f docker-compose.prod.yml down
-            docker compose -f docker-compose.prod.yml up -d --build
+            docker compose -f docker-compose.prod.yml build --no-cache
+            docker compose -f docker-compose.prod.yml up -d
 
-            echo "✅ Deploy concluído com sucesso!"
+            echo "✅ Deploy concluído!"
