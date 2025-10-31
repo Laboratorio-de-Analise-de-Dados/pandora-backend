@@ -15,21 +15,24 @@ class ExperimentSerializer(serializers.ModelSerializer):
     class Meta:
         model = ExperimentModel
         fields = [
-            "id",
-            "title",
-            "file",
-            "type",
-            "values",
-            "active",
-            "status",
-            "error_info",
+            "id", "title", "file", "type", "values", "active", "status", "error_info"
         ]
         read_only_fields = ["id", "active", "status", "error_info"]
 
     def validate(self, data):
-        if "file" in data:
-            validate_zip_file(data["file"])
+        file = data.get("file")
+        if file:
+            # Verifica extensão
+            if not file.name.lower().endswith(".zip"):
+                raise serializers.ValidationError("O arquivo deve ser um .zip")
+
+            # Verifica tamanho (em bytes)
+            max_size = 200 * 1024 * 1024  # 5 MB
+            if file.size > max_size:
+                raise serializers.ValidationError("O arquivo não pode ultrapassar 5 MB")
+
         return super().validate(data)
+
 
 
 # class GateSerializer(serializers.ModelSerializer):
