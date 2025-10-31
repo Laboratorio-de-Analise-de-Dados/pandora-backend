@@ -29,7 +29,7 @@ class ExperimentListCreateView(SerializerByMethodMixin, generics.ListCreateAPIVi
     queryset = ExperimentModel.objects.all()
 
     def post(self, request):
-        serializer = ExperimentSerializer(data=request.data)
+        serializer = ExperimentSerializer(data={**request.POST, **request.FILES})
         if serializer.is_valid():
             title = serializer.validated_data.get("title").replace(" ", "_")
             file = serializer.validated_data.get("file")
