@@ -29,8 +29,11 @@ jobs:
           script: |
             set -e
             cd /home/ubuntu/
-            rm -rf pandora-backend/
-
+            rm -rf pandora-backend/ 
+            if [ ! -f /etc/letsencrypt/live/api.project-pandora.com.br/fullchain.pem ]; then
+              echo "Certificado SSL não encontrado. Gere com Certbot antes de subir o Nginx."
+              exit 1
+            fi
             # Cria a rede externa se ainda não existir
             if ! docker network inspect pandora_net >/dev/null 2>&1; then
               echo "🔧 Criando rede externa 'pandora_net'..."
