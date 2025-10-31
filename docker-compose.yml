@@ -85,3 +85,7 @@ volumes:
   pgdata:
   redis_data:
   uploads_data:
+networks:
+  pandora_net:
+    driver: bridge
+    external: true
