@@ -28,6 +28,8 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 't', 'yes')
 REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
 REDIS_PORT = os.getenv('REDIS_PORT', '6379')
+DATA_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024  
+FILE_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
 MEDIA_ROOT = os.environ.get("MEDIA_ROOT", BASE_DIR / "uploads")
