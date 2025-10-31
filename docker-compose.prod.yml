@@ -94,18 +94,18 @@ services:
     networks:
       - pandora_net
 
-    nginx_back:
-      image: nginx:alpine
-      container_name: pandora_nginx_back
-      ports:
-        - "443:443" # HTTPS externo na porta 81 → interna 443
-      volumes:
-        - ./nginx/back.conf:/etc/nginx/conf.d/default.conf:ro
-        - /etc/letsencrypt:/etc/letsencrypt:ro
-      depends_on:
-        - pandora_web
-      networks:
-        - pandora_net
+    # nginx_back:
+    #   image: nginx:alpine
+    #   container_name: pandora_nginx_back
+    #   ports:
+    #     - "443:443" # HTTPS externo na porta 81 → interna 443
+    #   volumes:
+    #     - ./nginx/back.conf:/etc/nginx/conf.d/default.conf:ro
+    #     - /etc/letsencrypt:/etc/letsencrypt:ro
+    #   depends_on:
+    #     - pandora_web
+    #   networks:
+    #     - pandora_net
 
 networks:
   pandora_net:
