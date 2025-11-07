@@ -32,11 +32,9 @@ jobs:
             set -e
             cd /home/ubuntu/
             rm -rf pandora-backend/ 
-            # if [ ! -f /etc/letsencrypt/live/api.project-pandora.com.br/fullchain.pem ]; then
-            #   echo "Certificado SSL não encontrado. Gere com Certbot antes de subir o Nginx."
-            #   exit 1
-            # fi
-            # Cria a rede externa se ainda não existir
+            mkdir -p /srv/pandora/certbot/conf
+            echo "dns_cloudflare_api_token = ${{ secrets.CLOUDFLARE_API_TOKEN }}" > /srv/pandora/certbot/conf/cloudflare.ini
+            chmod 600 /srv/pandora/certbot/conf/cloudflare.ini
             if ! docker network inspect pandora_net >/dev/null 2>&1; then
               echo "🔧 Criando rede externa 'pandora_net'..."
               docker network create pandora_net

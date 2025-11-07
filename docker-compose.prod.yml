@@ -116,14 +116,13 @@ services:
     environment:
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
       - CERTBOT_EMAIL=${CERTBOT_EMAIL}
-    entrypoint: >
-      sh -c "echo 'dns_cloudflare_api_token=$CLOUDFLARE_API_TOKEN' > /root/.secrets/cloudflare/cloudflare.ini &&
-            chmod 600 /root/.secrets/cloudflare/cloudflare.ini &&
-            certbot certonly --dns-cloudflare
-            --dns-cloudflare-credentials /root/.secrets/cloudflare/cloudflare.ini
-            --dns-cloudflare-propagation-seconds 60
-            -d api.project-pandora.com.br
-            --email $CERTBOT_EMAIL --agree-tos --no-eff-email"
+    command: >
+      certonly  --dns-cloudflare
+                --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini
+                --dns-cloudflare-propagation-seconds 60
+                -d api.project-pandora.com.br
+                -m ${CERTBOT_EMAIL}
+                --agree-tos --no-eff-email
 
 networks:
   pandora_net:
