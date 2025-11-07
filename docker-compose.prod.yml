@@ -52,7 +52,7 @@ services:
     environment:
       DEBUG: "${DEBUG}"
       SECRET_KEY: "${SECRET_KEY}"
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS}"
+      ALLOWED_HOSTS: api.project-pandora.com.br,localhost,127.0.0.1
       DATABASE_NAME: "${POSTGRES_DB}"
       DATABASE_USER: "${POSTGRES_USER}"
       DATABASE_PASSWORD: "${POSTGRES_PASSWORD}"
