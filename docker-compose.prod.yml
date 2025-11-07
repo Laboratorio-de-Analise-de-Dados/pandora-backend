@@ -42,8 +42,8 @@ services:
     build: .
     container_name: pandora_web
     command: bash -c "python manage.py migrate && gunicorn citosharp.wsgi:application --bind 0.0.0.0:8000 --workers 4"
-    ports:
-      - "${WEB_PORT:-8085}:8000"
+    expose:
+      - 8000"
     depends_on:
       - db
       - redis
@@ -98,8 +98,8 @@ services:
     image: nginx:latest
     container_name: nginx
     ports:
-      - "8080:8080" # HTTP opcional
-      - "443:443" # HTTPS
+      - "8085:8080"
+      - "443:443"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
       - ./certbot/conf:/etc/letsencrypt
