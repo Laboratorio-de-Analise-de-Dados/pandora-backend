@@ -3,13 +3,13 @@ import os
 import traceback
 from django.conf import settings
 import pandas as pd
-from rest_framework.views import APIView
 from pathlib import Path
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from analytics.models import GateModel
 from fcs_parser.tasks import process_experiment_files_task
-from rest_framework.views import  Response, status
+from rest_framework.response import Response
+from rest_framework import status
 from rest_framework import generics
 from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
 from fcs_parser.serializers import (
@@ -26,19 +26,21 @@ from fcs_parser.services.process_fcs import process_fcs_file
 from utils.mixins import SerializerByMethodMixin
 
 
-class ExperimentInitView(APIView):
+class ExperimentInitView(generics.CreateAPIView):
     def post(self, request):
         title = request.data.get("title").replace(" ", "_")
         experiment_type = request.data.get("type")
+        total=request.data.get("totalChunks")
         experiment = ExperimentModel.objects.create(
             title=title,
             type=experiment_type,
             status="uploading",
-            file_status="uploading"
+            file_status="uploading",
+            total_chunks=total,
         )
         return Response({"fileId": str(experiment.id)}, status=201)
 
-class UploadChunkView(APIView):
+class UploadChunkView(generics.CreateAPIView):
     def post(self, request):
         file_id = request.data["fileId"]
         chunk_index = int(request.data["chunkIndex"])
@@ -61,23 +63,26 @@ class UploadChunkView(APIView):
 
         return Response({"status": "ok"})
     
-class ExperimentCompleteView(APIView):
+class ExperimentCompleteView(generics.CreateAPIView):
     def post(self, request):
         file_id = request.data["fileId"]
         experiment = ExperimentModel.objects.get(id=file_id)
 
         upload_dir = Path("/tmp/uploads")
         final_name = f"{file_id}.zip"
-        final_path = upload_dir / final_name
+        final_path = Path(settings.MEDIA_ROOT) / final_name
 
         with open(final_path, "wb") as outfile:
-            for i in sorted(experiment.received_chunks):
+            for i in range(experiment.total_chunks):
                 chunk_path = upload_dir / f"{file_id}_{i}.part"
+                if not chunk_path.exists():
+                    raise ValueError(f"Chunk {i} faltando")
                 with open(chunk_path, "rb") as f:
                     outfile.write(f.read())
+                os.remove(chunk_path)
 
         experiment.file_status = "uploaded"
-        experiment.status = "processing"
+        experiment.status = "new"
         experiment.save(update_fields=["file_status", "status"])
 
         # cria o FileModel apontando para o zip final
