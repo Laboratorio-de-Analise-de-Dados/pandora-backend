@@ -3,6 +3,7 @@ import os
 import traceback
 from django.conf import settings
 import pandas as pd
+from pathlib import Path
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from analytics.models import GateModel
@@ -24,8 +25,75 @@ from fcs_parser.services.process_fcs import process_fcs_file
 from utils.mixins import SerializerByMethodMixin
 
 
-class ExperimentListCreateView(SerializerByMethodMixin, generics.ListCreateAPIView):
-    serializer_map = {"GET": ListExperimentSerializer, "POST": ExperimentSerializer}
+class ExperimentInitView(generics.APIView):
+    def post(self, request):
+        title = request.data.get("title").replace(" ", "_")
+        experiment_type = request.data.get("type")
+        experiment = ExperimentModel.objects.create(
+            title=title,
+            type=experiment_type,
+            status="uploading",
+            file_status="uploading"
+        )
+        return Response({"fileId": str(experiment.id)}, status=201)
+
+class UploadChunkView(generics.APIView):
+    def post(self, request):
+        file_id = request.data["fileId"]
+        chunk_index = int(request.data["chunkIndex"])
+        chunk = request.FILES["chunk"]
+
+        experiment = ExperimentModel.objects.get(id=file_id)
+
+        # salva em disco
+        upload_dir = Path("/tmp/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        chunk_path = upload_dir / f"{file_id}_{chunk_index}.part"
+        with open(chunk_path, "wb") as f:
+            for c in chunk.chunks():
+                f.write(c)
+
+        # atualiza progresso
+        if chunk_index not in experiment.received_chunks:
+            experiment.received_chunks.append(chunk_index)
+            experiment.save(update_fields=["received_chunks"])
+
+        return Response({"status": "ok"})
+    
+class ExperimentCompleteView(generics.APIView):
+    def post(self, request):
+        file_id = request.data["fileId"]
+        experiment = ExperimentModel.objects.get(id=file_id)
+
+        upload_dir = Path("/tmp/uploads")
+        final_name = f"{file_id}.zip"
+        final_path = upload_dir / final_name
+
+        with open(final_path, "wb") as outfile:
+            for i in sorted(experiment.received_chunks):
+                chunk_path = upload_dir / f"{file_id}_{i}.part"
+                with open(chunk_path, "rb") as f:
+                    outfile.write(f.read())
+
+        experiment.file_status = "uploaded"
+        experiment.status = "processing"
+        experiment.save(update_fields=["file_status", "status"])
+
+        # cria o FileModel apontando para o zip final
+        file_instance = FileModel.objects.create(
+            file=str(final_path),   # ou usar um campo FileField com upload_to
+            file_name=final_name,
+            experiment=experiment
+        )
+
+        # dispara task assíncrona com apenas o file_id
+        process_experiment_files_task.delay(file_instance.id)
+
+        return Response({"status": "processing"})
+
+    
+class ExperimentListCreateView(SerializerByMethodMixin):
+    serializer_map = {"GET": ListExperimentSerializer}
     queryset = ExperimentModel.objects.all()
 
     def post(self, request):
