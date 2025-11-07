@@ -48,11 +48,11 @@ services:
       - db
       - redis
     volumes:
-      - uploads_data:/app/uploads # pasta de uploads compartilhada
+      - uploads_data:/app/uploads
     environment:
       DEBUG: "${DEBUG}"
       SECRET_KEY: "${SECRET_KEY}"
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS}" # ex: 'meudominio.com,localhost'
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS}"
       DATABASE_NAME: "${POSTGRES_DB}"
       DATABASE_USER: "${POSTGRES_USER}"
       DATABASE_PASSWORD: "${POSTGRES_PASSWORD}"
@@ -60,7 +60,7 @@ services:
       DATABASE_PORT: "${DATABASE_PORT}"
       REDIS_HOST: "${REDIS_HOST}"
       REDIS_PORT: "${REDIS_PORT}"
-      MEDIA_ROOT: "/app/uploads" # mesma pasta que o volume
+      MEDIA_ROOT: "/app/uploads"
     networks:
       - pandora_net
 
@@ -72,7 +72,7 @@ services:
       - db
       - redis
     volumes:
-      - uploads_data:/app/uploads # compartilha os uploads com web
+      - uploads_data:/app/uploads
     environment:
       DEBUG: "${DEBUG}"
       SECRET_KEY: "${SECRET_KEY}"
@@ -94,18 +94,36 @@ services:
     networks:
       - pandora_net
 
-    # nginx_back:
-    #   image: nginx:alpine
-    #   container_name: pandora_nginx_back
-    #   ports:
-    #     - "443:443" # HTTPS externo na porta 81 → interna 443
-    #   volumes:
-    #     - ./nginx/back.conf:/etc/nginx/conf.d/default.conf:ro
-    #     - /etc/letsencrypt:/etc/letsencrypt:ro
-    #   depends_on:
-    #     - pandora_web
-    #   networks:
-    #     - pandora_net
+  nginx_pandora_backend:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "8080:8080" # HTTP opcional
+      - "443:443" # HTTPS
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - ./certbot/conf:/etc/letsencrypt
+    depends_on:
+      - pandora_web
+    networks:
+      - pandora_net
+certbot:
+  image: certbot/dns-cloudflare
+  container_name: certbot
+  volumes:
+    - ./certbot/conf:/etc/letsencrypt
+    - ./certbot/logs:/var/log/letsencrypt
+  environment:
+    - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+    - CERTBOT_EMAIL=${CERTBOT_EMAIL}
+  entrypoint: >
+    sh -c "echo 'dns_cloudflare_api_token=$CLOUDFLARE_API_TOKEN' > /root/.secrets/cloudflare/cloudflare.ini &&
+           chmod 600 /root/.secrets/cloudflare/cloudflare.ini &&
+           certbot certonly --dns-cloudflare
+           --dns-cloudflare-credentials /root/.secrets/cloudflare/cloudflare.ini
+           --dns-cloudflare-propagation-seconds 60
+           -d api.project-pandora.com.br
+           --email $CERTBOT_EMAIL --agree-tos --no-eff-email"
 
 networks:
   pandora_net:
