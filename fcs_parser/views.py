@@ -93,32 +93,32 @@ class ExperimentCompleteView(APIView):
         return Response({"status": "processing"})
 
     
-class ExperimentListCreateView(SerializerByMethodMixin):
-    serializer_map = {"GET": ListExperimentSerializer}
+class ExperimentListView(generics.ListAPIView):
+    serializer_class = ListExperimentSerializer
     queryset = ExperimentModel.objects.all()
 
-    def post(self, request):
-        serializer = ExperimentSerializer(data={**request.POST, **request.FILES})
-        if serializer.is_valid():
-            title = serializer.validated_data.get("title").replace(" ", "_")
-            file = serializer.validated_data.get("file")
-            experiment_type = serializer.validated_data.get("type")
-            try:
-                experiment_instance, created = ExperimentModel.objects.get_or_create(
-                    title=title, type=experiment_type
-                )
-                file_instance = FileModel.objects.create(
-                    file=file, file_name=file.name, experiment=experiment_instance
-                ) 
-                process_experiment_files_task.delay(file_instance.id)
-                return Response(
-                    model_to_dict(experiment_instance), status=status.HTTP_201_CREATED
-                )
-            except Exception as e:
-                return Response(
-                    {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    # def post(self, request):
+    #     serializer = ExperimentSerializer(data={**request.POST, **request.FILES})
+    #     if serializer.is_valid():
+    #         title = serializer.validated_data.get("title").replace(" ", "_")
+    #         file = serializer.validated_data.get("file")
+    #         experiment_type = serializer.validated_data.get("type")
+    #         try:
+    #             experiment_instance, created = ExperimentModel.objects.get_or_create(
+    #                 title=title, type=experiment_type
+    #             )
+    #             file_instance = FileModel.objects.create(
+    #                 file=file, file_name=file.name, experiment=experiment_instance
+    #             ) 
+    #             process_experiment_files_task.delay(file_instance.id)
+    #             return Response(
+    #                 model_to_dict(experiment_instance), status=status.HTTP_201_CREATED
+    #             )
+    #         except Exception as e:
+    #             return Response(
+    #                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+    #             )
+    #     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
