@@ -3,6 +3,7 @@ import os
 import traceback
 from django.conf import settings
 import pandas as pd
+from rest_framework.views import APIView
 from pathlib import Path
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
@@ -25,7 +26,7 @@ from fcs_parser.services.process_fcs import process_fcs_file
 from utils.mixins import SerializerByMethodMixin
 
 
-class ExperimentInitView(generics.APIView):
+class ExperimentInitView(APIView):
     def post(self, request):
         title = request.data.get("title").replace(" ", "_")
         experiment_type = request.data.get("type")
@@ -37,7 +38,7 @@ class ExperimentInitView(generics.APIView):
         )
         return Response({"fileId": str(experiment.id)}, status=201)
 
-class UploadChunkView(generics.APIView):
+class UploadChunkView(APIView):
     def post(self, request):
         file_id = request.data["fileId"]
         chunk_index = int(request.data["chunkIndex"])
@@ -60,7 +61,7 @@ class UploadChunkView(generics.APIView):
 
         return Response({"status": "ok"})
     
-class ExperimentCompleteView(generics.APIView):
+class ExperimentCompleteView(APIView):
     def post(self, request):
         file_id = request.data["fileId"]
         experiment = ExperimentModel.objects.get(id=file_id)
