@@ -28,7 +28,7 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 't', 'yes')
 REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
 REDIS_PORT = os.getenv('REDIS_PORT', '6379')
-APPEND_SLASH = True
+# APPEND_SLASH = True
 DATA_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024  
 FILE_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 
