@@ -23,7 +23,7 @@ def process_experiment_files_task(file_id: int):
         if experiment.status != 'processing':
             experiment.status = 'processing'
             experiment.save()
-            directory_path = os.path.join(settings.MEDIA_ROOT, "fcs_files", file.file_name)
+            directory_path = os.path.join(settings.MEDIA_ROOT, "fcs_files", str(experiment.id))
             file_path = file.file.path
             os.makedirs(directory_path, exist_ok=True)
             with zipfile.ZipFile(file_path, "r") as zip_ref:
