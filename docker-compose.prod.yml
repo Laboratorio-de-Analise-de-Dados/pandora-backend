@@ -102,7 +102,7 @@ services:
       - "443:443"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
-      - ./certbot/conf:/etc/letsencrypt
+      - /srv/pandora/certbot/conf:/etc/letsencrypt
     depends_on:
       - pandora_web
     networks:
@@ -111,8 +111,8 @@ services:
     image: certbot/dns-cloudflare
     container_name: certbot
     volumes:
-      - ./certbot/conf:/etc/letsencrypt
-      - ./certbot/logs:/var/log/letsencrypt
+      - /srv/pandora/certbot/conf:/etc/letsencrypt
+      - /srv/pandora/certbot/logs:/var/log/letsencrypt
     environment:
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
       - CERTBOT_EMAIL=${CERTBOT_EMAIL}
