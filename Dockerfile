@@ -27,4 +27,4 @@ RUN python manage.py collectstatic --noinput
 EXPOSE 8000
 
 # Comando padrão
-CMD ["gunicorn", "citosharp.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4"]
+CMD ["gunicorn", "citosharp.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120"]

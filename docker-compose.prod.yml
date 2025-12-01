@@ -20,12 +20,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - pandora_net
 
   redis:
     image: redis:6-alpine
     container_name: pandora_redis
     ports:
-      - "6379:6379"
+      - "6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -33,22 +35,24 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - pandora_net
 
-  web:
+  pandora_web:
     build: .
     container_name: pandora_web
     command: bash -c "python manage.py migrate && gunicorn citosharp.wsgi:application --bind 0.0.0.0:8000 --workers 4"
-    ports:
-      - 8085:8080
+    expose:
+      - "8000"
     depends_on:
       - db
       - redis
     volumes:
-      - uploads_data:/app/uploads # pasta de uploads compartilhada
+      - uploads_data:/app/uploads
     environment:
       DEBUG: "${DEBUG}"
       SECRET_KEY: "${SECRET_KEY}"
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS}" # ex: 'meudominio.com,localhost'
+      ALLOWED_HOSTS: api.project-pandora.com.br,localhost,127.0.0.1
       DATABASE_NAME: "${POSTGRES_DB}"
       DATABASE_USER: "${POSTGRES_USER}"
       DATABASE_PASSWORD: "${POSTGRES_PASSWORD}"
@@ -56,7 +60,9 @@ services:
       DATABASE_PORT: "${DATABASE_PORT}"
       REDIS_HOST: "${REDIS_HOST}"
       REDIS_PORT: "${REDIS_PORT}"
-      MEDIA_ROOT: "/app/uploads" # mesma pasta que o volume
+      MEDIA_ROOT: "/app/uploads"
+    networks:
+      - pandora_net
 
   celery_worker:
     build: .
@@ -66,7 +72,7 @@ services:
       - db
       - redis
     volumes:
-      - uploads_data:/app/uploads # compartilha os uploads com web
+      - uploads_data:/app/uploads
     environment:
       DEBUG: "${DEBUG}"
       SECRET_KEY: "${SECRET_KEY}"
@@ -85,3 +91,10 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    networks:
+      - pandora_net
+
+networks:
+  pandora_net:
+    driver: bridge
+    external: true

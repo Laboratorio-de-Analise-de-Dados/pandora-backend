@@ -7,6 +7,7 @@ import shutil
 import pandas as pd 
 from .models import FileModel, ExperimentModel, FileDataModel 
 from .services import decompres_file, process_fcs_file 
+import zipfile
 
 @shared_task
 def process_experiment_files_task(file_id: int):
@@ -22,10 +23,11 @@ def process_experiment_files_task(file_id: int):
         if experiment.status != 'processing':
             experiment.status = 'processing'
             experiment.save()
-            directory_path = os.path.join(settings.MEDIA_ROOT, "fcs_files", file.file_name)
-            file_path = os.path.join(settings.MEDIA_ROOT, file.file_name)
+            directory_path = os.path.join(settings.MEDIA_ROOT, "fcs_files", str(experiment.id))
+            file_path = file.file.path
             os.makedirs(directory_path, exist_ok=True)
-            decompres_file(file_path, directory_path)
+            with zipfile.ZipFile(file_path, "r") as zip_ref:
+                zip_ref.extractall(directory_path)
             values = []
             file_data_models = []
             try:

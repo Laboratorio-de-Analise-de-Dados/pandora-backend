@@ -5,13 +5,18 @@ from django.contrib.postgres.fields import ArrayField
 
 
 class ExperimentModel(models.Model):
-    """Model for FCS file"""
-
     STATUS_CHOICES = [
         ("new", "New"),
+        ("uploading", "Uploading"),
         ("processing", "Processing"),
         ("done", "Done"),
         ("error", "Error"),
+    ]
+    FILE_STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("uploading", "Uploading"),
+        ("uploaded", "Uploaded"),
+        ("failed", "Failed"),
     ]
 
     id = models.BigAutoField(primary_key=True)
@@ -20,18 +25,10 @@ class ExperimentModel(models.Model):
     values = ArrayField(models.TextField(), blank=True, default=list)
     active = models.BooleanField(default=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default="new")
+    file_status = models.CharField(max_length=50, choices=FILE_STATUS_CHOICES, default="pending")
+    total_chunks = models.IntegerField(null=True, blank=True)
+    received_chunks = ArrayField(models.IntegerField(), default=list, blank=True)
     error_info = models.JSONField(blank=True, default=dict)
-
-    class Meta:
-        db_table = "experiment"
-
-    def delete(
-        self, using: Any = ..., keep_parents: bool = ...
-    ) -> tuple[int, dict[str, int]]:
-        self.active = False
-        self.save()
-        return
-
 
 class FileModel(models.Model):
     """Model for Experiment Files"""

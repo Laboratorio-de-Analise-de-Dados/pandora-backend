@@ -26,12 +26,17 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 't', 'yes')
+REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
+REDIS_PORT = os.getenv('REDIS_PORT', '6379')
+# APPEND_SLASH = True
+DATA_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024  
+FILE_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
 MEDIA_ROOT = os.environ.get("MEDIA_ROOT", BASE_DIR / "uploads")
 MEDIA_URL = "/media/"
-CELERY_BROKER_URL = 'redis://redis:6379/0'
-CELERY_RESULT_BACKEND = 'redis://redis:6379/0' # Onde os resultados das tasks são armazenados (opcional, mas bom para depuração)
+CELERY_BROKER_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/0'
+CELERY_RESULT_BACKEND = f'redis://{REDIS_HOST}:{REDIS_PORT}/0'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -99,9 +104,9 @@ else:
     DATABASES = {
         "default": {
             'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.getenv('POSTGRES_DB'),
-            'USER': os.getenv('POSTGRES_USER'),
-            'PASSWORD': os.getenv('POSTGRES_PASSWORD'),
+            'NAME': os.getenv('DATABASE_NAME'),
+            'USER': os.getenv('DATABASE_USER'),
+            'PASSWORD': os.getenv('DATABASE_PASSWORD'),
             'HOST': os.getenv('DATABASE_HOST'),
             'PORT': os.getenv('DATABASE_PORT'),
         }
