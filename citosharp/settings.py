@@ -53,7 +53,8 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     'fcs_parser',
-    'analytics'
+    'analytics',
+    'accounts'
 ]
 
 MIDDLEWARE = [
