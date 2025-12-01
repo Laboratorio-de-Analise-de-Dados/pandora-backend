@@ -27,7 +27,7 @@ services:
     image: redis:6-alpine
     container_name: pandora_redis
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -43,7 +43,7 @@ services:
     container_name: pandora_web
     command: bash -c "python manage.py migrate && gunicorn citosharp.wsgi:application --bind 0.0.0.0:8000 --workers 4"
     expose:
-      - 8000"
+      - "8000"
     depends_on:
       - db
       - redis
@@ -93,36 +93,6 @@ services:
       start_period: 30s
     networks:
       - pandora_net
-
-  nginx_pandora_backend:
-    image: nginx:latest
-    container_name: nginx
-    ports:
-      - "8085:8080"
-      - "443:443"
-    volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
-      - /srv/pandora/certbot/conf:/etc/letsencrypt
-    depends_on:
-      - pandora_web
-    networks:
-      - pandora_net
-  certbot:
-    image: certbot/dns-cloudflare
-    container_name: certbot
-    volumes:
-      - /srv/pandora/certbot/conf:/etc/letsencrypt
-      - /srv/pandora/certbot/logs:/var/log/letsencrypt
-    environment:
-      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
-      - CERTBOT_EMAIL=${CERTBOT_EMAIL}
-    command: >
-      certonly  --dns-cloudflare
-                --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini
-                --dns-cloudflare-propagation-seconds 60
-                -d api.project-pandora.com.br
-                -m ${CERTBOT_EMAIL}
-                --agree-tos --no-eff-email
 
 networks:
   pandora_net:

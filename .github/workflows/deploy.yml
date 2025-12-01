@@ -21,10 +21,8 @@ jobs:
           DEBUG: ${{ vars.DEBUG }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
         with:
-          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,REDIS_HOST,REDIS_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS, CERTBOT_EMAIL,CLOUDFLARE_API_TOKEN
+          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,REDIS_HOST,REDIS_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
@@ -32,9 +30,7 @@ jobs:
             set -e
             cd /home/ubuntu/
             rm -rf pandora-backend/ 
-            # mkdir -p /srv/pandora/certbot/conf
-            # echo "dns_cloudflare_api_token = ${{ secrets.CLOUDFLARE_API_TOKEN }}" > /srv/pandora/certbot/conf/cloudflare.ini
-            # chmod 600 /srv/pandora/certbot/conf/cloudflare.ini
+
             if ! docker network inspect pandora_net >/dev/null 2>&1; then
               echo "🔧 Criando rede externa 'pandora_net'..."
               docker network create pandora_net
