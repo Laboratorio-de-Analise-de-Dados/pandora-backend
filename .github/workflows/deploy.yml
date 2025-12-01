@@ -28,11 +28,21 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             set -e
-            cd /home/ubuntu/pandora-backend
+            cd /home/ubuntu/
+            rm -rf pandora-backend/ 
 
-            echo "→ Atualizando código"
-            git fetch origin main
-            git reset --hard origin/main
+            if ! docker network inspect pandora_net >/dev/null 2>&1; then
+              echo "🔧 Criando rede externa 'pandora_net'..."
+              docker network create pandora_net
+            else
+              echo "✅ Rede 'pandora_net' já existe"
+            fi
+
+            git clone git@github.com:Laboratorio-de-Analise-de-Dados/pandora-backend.git
+
+            cd pandora-backend
+
+            git checkout main
 
             docker compose -f docker-compose.prod.yml build --no-cache
             docker compose -f docker-compose.prod.yml up -d

@@ -1,0 +1,56 @@
+name: ✅ Post-Deploy Healthcheck
+
+on:
+  workflow_run:
+    workflows: ["🚀 CI/CD Pandora Backend"]
+    types:
+      - completed
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Healthcheck via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            cd /home/ubuntu/pandora-backend
+
+            echo "🔎 Verificando containers..."
+            docker compose -f docker-compose.prod.yml ps || { echo "❌ Containers não estão UP"; exit 1; }
+
+            echo "🌐 Testando resposta HTTPS..."
+            curl -vkI https://api.project-pandora.com.br || { echo "❌ HTTPS não respondeu"; exit 1; }
+
+            echo "🔐 Validando certificado SSL..."
+            openssl s_client -connect api.project-pandora.com.br:443 -servername api.project-pandora.com.br < /dev/null | grep "issuer" || { echo "❌ Certificado inválido"; exit 1; }
+
+            echo "✅ Healthcheck concluído!"
+
+      - name: Rollback (derrubar containers se falhar)
+        if: failure()
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            echo "⚠️ Healthcheck falhou. Derrubando containers..."
+            cd /home/ubuntu/pandora-backend
+            docker compose -f docker-compose.prod.yml down
+
+      - name: Cleanup (remover pasta clonada sempre)
+        if: always()
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            echo "🧹 Removendo pasta clonada..."
+            rm -rf /home/ubuntu/pandora-backend
