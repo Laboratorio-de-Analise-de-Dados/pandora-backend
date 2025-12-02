@@ -8,7 +8,7 @@ on:
 jobs:
   docker-build:
     runs-on: ubuntu-latest
-    environment: production # 🔑 especifica que este job roda no ambiente "production"
+    environment: production
 
     steps:
       - name: Checkout código
