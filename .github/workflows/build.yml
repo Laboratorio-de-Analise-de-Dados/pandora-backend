@@ -8,6 +8,7 @@ on:
 jobs:
   docker-build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout código
         uses: actions/checkout@v3
@@ -19,7 +20,9 @@ jobs:
         run: |
           IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
           COMMIT_SHA=${{ github.sha }}
-          docker build -t $IMAGE_NAME:$COMMIT_SHA -t $IMAGE_NAME:latest .
+          docker build \
+            --build-arg SECRET_KEY=${{ secrets.SECRET_KEY }} \
+            -t $IMAGE_NAME:$COMMIT_SHA -t $IMAGE_NAME:latest .
 
       - name: Push da imagem
         run: |
