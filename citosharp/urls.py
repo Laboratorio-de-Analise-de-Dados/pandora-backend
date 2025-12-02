@@ -22,4 +22,5 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path('experiment/', include('fcs_parser.urls')),  
     path('analytics/', include('analytics.urls')),
+    path("accounts/", include("accounts.urls")),
 ]
