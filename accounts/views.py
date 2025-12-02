@@ -1,13 +1,14 @@
 # accounts/views.py
-from django.views import generic
 from rest_framework import generics
-
 from accounts.serializers import OrganizationDetailSerializer, OrganizationListSerializer, UserCreateSerializer, UserDetailSerializer, UserListSerializer
 from utils.mixins import SerializerByMethodMixin
-
 from .models import Organization, User
-from django.urls import reverse_lazy
+from rest_framework_simplejwt.views import TokenObtainPairView
+from .serializers import CustomTokenObtainPairSerializer
 
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
 
 class OrganizationListCreateView(SerializerByMethodMixin, generics.ListCreateAPIView):
     queryset = Organization.objects.all()

@@ -54,7 +54,10 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     'fcs_parser',
     'analytics',
-    'accounts'
+    "rest_framework",
+    "rest_framework_simplejwt",
+    'accounts',
+    
 ]
 
 MIDDLEWARE = [
@@ -68,6 +71,11 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+}
 
 CORS_ALLOW_ALL_ORIGINS=True
 
