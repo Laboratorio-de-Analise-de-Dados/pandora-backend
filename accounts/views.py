@@ -1,5 +1,6 @@
 # accounts/views.py
 from django.views import generic
+from rest_framework import generics
 
 from accounts.serializers import OrganizationDetailSerializer, OrganizationListSerializer, UserCreateSerializer, UserDetailSerializer, UserListSerializer
 from utils.mixins import SerializerByMethodMixin
@@ -8,14 +9,14 @@ from .models import Organization, User
 from django.urls import reverse_lazy
 
 
-class OrganizationListCreateView(SerializerByMethodMixin, generic.ListCreateAPIView):
+class OrganizationListCreateView(SerializerByMethodMixin, generics.ListCreateAPIView):
     queryset = Organization.objects.all()
     serializer_class = OrganizationListSerializer
     serializer_map = {
         "POST": OrganizationDetailSerializer
     }
 
-class OrganizationRetrieveUpdateDestroyView(SerializerByMethodMixin, generic.RetrieveUpdateDestroyAPIView):
+class OrganizationRetrieveUpdateDestroyView(SerializerByMethodMixin, generics.RetrieveUpdateDestroyAPIView):
     queryset = Organization.objects.all()
     serializer_class = OrganizationDetailSerializer
     serializer_map = {
@@ -27,14 +28,14 @@ class OrganizationRetrieveUpdateDestroyView(SerializerByMethodMixin, generic.Ret
 
 
 
-class UserListCreateView(SerializerByMethodMixin, generic.ListCreateAPIView):
+class UserListCreateView(SerializerByMethodMixin, generics.ListCreateAPIView):
     queryset = User.objects.all()
     serializer_class = UserListSerializer
     serializer_map = {
         "POST": UserCreateSerializer
     }
 
-class UserRetrieveUpdateDestroyView(SerializerByMethodMixin, generic.RetrieveUpdateDestroyAPIView):
+class UserRetrieveUpdateDestroyView(SerializerByMethodMixin, generics.RetrieveUpdateDestroyAPIView):
     queryset = User.objects.all()
     serializer_class = UserDetailSerializer
     serializer_map = {

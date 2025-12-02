@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     OrganizationListCreateView, OrganizationRetrieveUpdateDestroyView, UserListCreateView, 
-    UserListView, UserCreateView, UserRetrieveUpdateDestroyView
+    UserRetrieveUpdateDestroyView
 )
 
 urlpatterns = [
