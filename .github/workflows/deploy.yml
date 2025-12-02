@@ -1,7 +1,11 @@
-name: 🚀 CI/CD Pandora Backend
+name: 🚀 Deploy Pandora Backend
 
 on:
   workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Commit SHA da imagem publicada"
+        required: true
 
 jobs:
   deploy:
@@ -30,8 +34,6 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             set -e
-            cd /home/ubuntu/
-            rm -rf pandora-backend/ 
 
             if ! docker network inspect pandora_net >/dev/null 2>&1; then
               echo "🔧 Criando rede externa 'pandora_net'..."
@@ -40,13 +42,10 @@ jobs:
               echo "✅ Rede 'pandora_net' já existe"
             fi
 
-            git clone git@github.com:Laboratorio-de-Analise-de-Dados/pandora-backend.git
+            echo "📥 Baixando imagem do Docker Hub..."
+            docker pull ${{ secrets.DOCKER_USER }}/pandora-backend:${{ github.event.inputs.commit_sha }}
 
-            cd pandora-backend
-
-            git checkout main
-
-            docker compose -f docker-compose.prod.yml build --no-cache
+            echo "🚀 Subindo containers..."
             docker compose -f docker-compose.prod.yml up -d
 
             echo "✅ Deploy concluído!"
