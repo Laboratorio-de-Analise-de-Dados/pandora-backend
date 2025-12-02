@@ -74,15 +74,21 @@ jobs:
             cd pandora-backend
             git checkout main
 
+            echo "📦 Movendo docker-compose.prod.yml para pasta anterior..."
+            cp docker-compose.prod.yml ../docker-compose.prod.yml
+
+            echo "🧹 Removendo repositório clonado..."
+            cd ..
+            rm -rf pandora-backend/
+
             echo "📥 Baixando imagem do Docker Hub..."
-            IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
+            IMAGE_NAME=${DOCKER_USER}/pandora-backend
             docker pull "$IMAGE_NAME:latest"
 
             echo "🚀 Subindo containers..."
             docker compose -f docker-compose.prod.yml up -d
 
-            echo "🧹 Limpando repositório..."
-            cd ..
-            rm -rf pandora-backend/
+            echo "🧹 Removendo docker-compose.prod.yml..."
+            rm -f docker-compose.prod.yml
 
             echo "✅ Deploy concluído!"
