@@ -4,7 +4,7 @@ from .models import User, Organization
 
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
-    list_display = ("username", "email", "organization", "role")
+    list_display = ("username", "email")
 
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):

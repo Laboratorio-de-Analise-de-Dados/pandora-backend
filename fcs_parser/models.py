@@ -32,7 +32,7 @@ class ExperimentModel(models.Model):
     organization = models.ForeignKey(
         Organization,
         on_delete=models.CASCADE,
-        related_name="experiments"
+        related_name="experiments", null=True
     )
 
     created_by = models.ForeignKey(

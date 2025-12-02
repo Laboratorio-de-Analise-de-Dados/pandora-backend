@@ -28,29 +28,24 @@ class User(AbstractUser):
     Usuário customizado, estendendo AbstractUser.
     Mantém vínculo simples com uma organização principal e um role básico.
     """
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="users"
-    )
-    role = models.CharField(
-        max_length=50,
-        default="member",
-        help_text="Função simples (admin, member, etc.)."
-    )
+    
 
     def __str__(self):
         return self.username
 
 
 class Role(models.Model):
-    """
-    Define papéis (roles) independentes, que podem ter permissões associadas.
-    Exemplo: Admin, Editor, Viewer.
-    """
-    name = models.CharField(max_length=50, unique=True)
+    ROLE_CHOICES = [
+        ("Admin", "Admin"),
+        ("Editor", "Editor"),
+        ("Viewer", "Viewer"),
+    ]
+
+    name = models.CharField(
+        max_length=50,
+        choices=ROLE_CHOICES,
+        unique=True
+    )
     permissions = models.ManyToManyField(
         Permission,
         blank=True,
@@ -69,9 +64,27 @@ class Membership(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
     role = models.ForeignKey(Role, on_delete=models.CASCADE)
-
+    status = models.CharField(
+        max_length=20,
+        choices=[("active", "Active"), ("inactive", "Inactive"), ("pending", "Pending")],
+        default="pending"
+    )
+    joined_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         unique_together = ("user", "organization")
 
     def __str__(self):
         return f"{self.user.username} - {self.organization.name} ({self.role.name})"
+
+class Invite(models.Model):
+    email = models.EmailField()
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
+    role = models.ForeignKey(Role, on_delete=models.CASCADE)
+    token = models.CharField(max_length=64, unique=True)
+    status = models.CharField(
+        max_length=20,
+        choices=[("pending", "Pending"), ("accepted", "Accepted"), ("expired", "Expired")],
+        default="pending"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
