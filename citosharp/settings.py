@@ -53,7 +53,11 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     'fcs_parser',
-    'analytics'
+    'analytics',
+    "rest_framework",
+    "rest_framework_simplejwt",
+    'accounts',
+    
 ]
 
 MIDDLEWARE = [
@@ -67,10 +71,22 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+}
 
 CORS_ALLOW_ALL_ORIGINS=True
-
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = "smtp.gmail.com"
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 ROOT_URLCONF = "citosharp.urls"
+DEFAULT_FROM_EMAIL = os.getenv('EMAIL_HOST_USER')
+FRONTEND_URL = "https://app.project-pandora.com.br"
 
 TEMPLATES = [
     {
@@ -153,3 +169,5 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+AUTH_USER_MODEL = "accounts.User"

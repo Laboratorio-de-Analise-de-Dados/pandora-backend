@@ -1,7 +1,7 @@
-from typing import Any
 from django.conf import settings
 from django.db import models
 from django.contrib.postgres.fields import ArrayField
+from accounts.models import Organization, User
 
 
 class ExperimentModel(models.Model):
@@ -29,6 +29,20 @@ class ExperimentModel(models.Model):
     total_chunks = models.IntegerField(null=True, blank=True)
     received_chunks = ArrayField(models.IntegerField(), default=list, blank=True)
     error_info = models.JSONField(blank=True, default=dict)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="experiments", null=True
+    )
+
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_experiments"
+    )
+
 
 class FileModel(models.Model):
     """Model for Experiment Files"""
