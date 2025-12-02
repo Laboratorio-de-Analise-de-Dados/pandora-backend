@@ -36,7 +36,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     needs: build
-    if: ${{ github.event_name == 'workflow_dispatch' }} # 🔑 só roda manualmente
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
