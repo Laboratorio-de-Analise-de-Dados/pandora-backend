@@ -1,16 +1,42 @@
-name: 🚀 Deploy Pandora Backend
+name: 🚀 CI/CD Pandora Backend
 
 on:
-  workflow_dispatch:
-    inputs:
-      commit_sha:
-        description: "Commit SHA da imagem publicada"
-        required: true
+  push:
+    branches:
+      - main
+  workflow_dispatch: # 🔑 permite rodar manualmente, sem inputs
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Login no Docker Hub
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USER }}" --password-stdin
+
+      - name: Build da imagem
+        run: |
+          IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
+          COMMIT_SHA=${{ github.sha }}
+          docker build \
+            --build-arg SECRET_KEY="${{ secrets.SECRET_KEY }}" \
+            -t "$IMAGE_NAME:$COMMIT_SHA" -t "$IMAGE_NAME:latest" .
+
+      - name: Push da imagem
+        run: |
+          IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
+          COMMIT_SHA=${{ github.sha }}
+          docker push "$IMAGE_NAME:$COMMIT_SHA"
+          docker push "$IMAGE_NAME:latest"
+
   deploy:
     runs-on: ubuntu-latest
     environment: production
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' }} # 🔑 só roda manualmente
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -42,10 +68,21 @@ jobs:
               echo "✅ Rede 'pandora_net' já existe"
             fi
 
+            echo "📥 Clonando repositório..."
+            rm -rf pandora-backend/
+            git clone git@github.com:Laboratorio-de-Analise-de-Dados/pandora-backend.git
+            cd pandora-backend
+            git checkout main
+
             echo "📥 Baixando imagem do Docker Hub..."
-            docker pull ${{ secrets.DOCKER_USER }}/pandora-backend:${{ github.event.inputs.commit_sha }}
+            IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
+            docker pull "$IMAGE_NAME:latest"
 
             echo "🚀 Subindo containers..."
             docker compose -f docker-compose.prod.yml up -d
+
+            echo "🧹 Limpando repositório..."
+            cd ..
+            rm -rf pandora-backend/
 
             echo "✅ Deploy concluído!"
