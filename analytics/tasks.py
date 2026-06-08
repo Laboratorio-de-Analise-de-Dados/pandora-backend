@@ -22,7 +22,7 @@ def load_fcs_data_from_file_data_model(file_data_id):
         file_data_instance = FileDataModel.objects.get(id=file_data_id)
         
         
-        fcs_df = pd.DataFrame(file_data_instance.data_set)
+        fcs_df = file_data_instance.get_dataframe()
        
         return fcs_df
     except FileDataModel.DoesNotExist:

@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import traceback
 from django.conf import settings
 import pandas as pd
@@ -7,7 +8,7 @@ from pathlib import Path
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from analytics.models import GateModel
-from fcs_parser.tasks import process_experiment_files_task
+from fcs_parser.tasks import process_experiment_files_task, recompute_file_data_task
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework.response import Response
 from rest_framework import status
@@ -17,6 +18,7 @@ from utils.density import (
     compute_density,
     density_cache_key,
     get_cached_density,
+    invalidate_density,
     normalize_columns,
     set_cached_density,
     subsample_scatter,
@@ -228,7 +230,7 @@ class ListFileParams(generics.ListAPIView):
             limit = 10000
 
         file_data = self.get_queryset()
-        dataset = pd.DataFrame(file_data.data_set)
+        dataset = file_data.get_dataframe()
         dataset.columns = dataset.columns.str.replace(" ", "")
         dataset.columns = dataset.columns.str.replace("-", "_")
         dataset.columns = dataset.columns.str.lower()
@@ -272,7 +274,7 @@ class FileDensityView(APIView):
             return Response(cached, status=status.HTTP_200_OK)
 
         file_data = get_object_or_404(FileDataModel, id=file_id)
-        dataset = normalize_columns(pd.DataFrame(file_data.data_set))
+        dataset = normalize_columns(file_data.get_dataframe())
 
         base = {"mode": mode, "total_events": len(dataset), "x_label": x_param, "y_label": y_param}
 
@@ -313,28 +315,33 @@ class ProcessFileDataView(generics.CreateAPIView):
             os.makedirs(directory_path, exist_ok=True)
             decompres_file(file_path, directory_path)
             values = []
-            file_data_models = []
+            fcs_source_dir = os.path.join(
+                settings.MEDIA_ROOT, "fcs_source", str(experiment.id)
+            )
+            os.makedirs(fcs_source_dir, exist_ok=True)
             try:
                 for root, dirs, files in os.walk(directory_path): 
                     for file_name in files:
                         if file_name.endswith(".fcs"):
                             complete_path: str = os.path.join(root, file_name)
                             processed_file = process_fcs_file(complete_path)
+                            if isinstance(processed_file, str):
+                                raise ValueError(processed_file)
                             if len(values) == 0:
                                 values = processed_file[2]
-                            file_data_model = FileDataModel(
+                            persistent_fcs = os.path.join(fcs_source_dir, file_name)
+                            shutil.copy2(complete_path, persistent_fcs)
+                            file_data_model = FileDataModel.objects.create(
                                 headers=processed_file[0],
-                                data_set=processed_file[1],
+                                data_set=None,
                                 experiment=experiment,
                                 file_name=file_name,
-                                file=file
+                                file=file,
+                                fcs_path=persistent_fcs,
                             )
-                            file_data_models.append(file_data_model)
-                            if len(file_data_models) == 10:
-                                FileDataModel.objects.bulk_create(file_data_models)
-                                file_data_models = []
-                if len(file_data_models) > 0:
-                    FileDataModel.objects.bulk_create(file_data_models)
+                            file_data_model.save_dataframe(
+                                pd.DataFrame(processed_file[1])
+                            )
                 experiment.values = values
                 experiment.status = 'done'
                 experiment.save()
@@ -351,3 +358,34 @@ class ProcessFileDataView(generics.CreateAPIView):
                 experiment.save()
         else:
             return Response({"message": "The file is still being processed."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RecomputeFileDataView(APIView):
+    """Plano D: reprocessa um FileData a partir do .fcs original + gates.
+
+    Dispara a regeneracao do Parquet (cache morno) e a invalidacao da density
+    no Redis de forma assincrona (Celery).
+    """
+
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="RecomputeResponse",
+            fields={
+                "status": serializers.CharField(),
+                "file_data_id": serializers.IntegerField(),
+            },
+        ),
+    )
+    def post(self, request, file_id):
+        file_data = get_object_or_404(FileDataModel, id=file_id)
+        if not file_data.fcs_path:
+            return Response(
+                {"detail": "Sem .fcs original armazenado para reprocessar este arquivo."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        recompute_file_data_task.delay(file_data.id)
+        return Response(
+            {"status": "scheduled", "file_data_id": file_data.id},
+            status=status.HTTP_202_ACCEPTED,
+        )

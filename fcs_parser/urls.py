@@ -8,6 +8,7 @@ from .views import (
     GetExperimentFiles,
     ListFileParams,
     ProcessFileDataView,
+    RecomputeFileDataView,
     RetrieveDeleteExperimentView,
     UploadChunkView,
 )
@@ -21,6 +22,7 @@ urlpatterns = [
     path("list/data/<str:experiment_id>/", GetExperimentFiles.as_view()),
     path("file/<str:file_id>/list", ListFileParams.as_view()),
     path("file/<int:file_id>/density", FileDensityView.as_view()),
+    path("file/<int:file_id>/recompute", RecomputeFileDataView.as_view()),
     path("<str:experiment_id>/", RetrieveDeleteExperimentView.as_view()),
     path("file/<int:file_id>/process", ProcessFileDataView.as_view()),
     path("", ExperimentListView.as_view())

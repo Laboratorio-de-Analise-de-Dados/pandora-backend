@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 
 from pathlib import Path
 import os
+from celery.schedules import crontab
 from dotenv import load_dotenv
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -42,6 +43,16 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'America/Sao_Paulo'
 CELERY_TASK_TRACK_STARTED = True
+
+# Celery Beat: limpeza semanal de Parquet orfao/frio (recriavel do .fcs).
+PARQUET_MAX_IDLE_DAYS = int(os.getenv("PARQUET_MAX_IDLE_DAYS", 7))
+CELERY_BEAT_SCHEDULE = {
+    "cleanup-cold-parquet": {
+        "task": "fcs_parser.tasks.cleanup_cold_parquet_task",
+        "schedule": crontab(hour=3, minute=0, day_of_week="sunday"),
+        "kwargs": {"max_idle_days": PARQUET_MAX_IDLE_DAYS},
+    },
+}
 
 # Cache (Redis) — usado para density/heatmap com TTL deslizante.
 CACHES = {

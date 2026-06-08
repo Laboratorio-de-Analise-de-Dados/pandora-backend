@@ -97,7 +97,7 @@ class GetGateDataView(generics.ListAPIView):
         root_gate = gate_path[0]
         file_data_instance = root_gate.file_data
 
-        dataset = pd.DataFrame(file_data_instance.data_set)
+        dataset = file_data_instance.get_dataframe()
 
         dataset.columns = dataset.columns.str.replace(" ", "")
         dataset.columns = dataset.columns.str.replace("-", "_")
@@ -159,7 +159,7 @@ class GateDensityView(APIView):
             gate_path.insert(0, current)
 
         file_data = gate_path[0].file_data
-        dataset = normalize_columns(pd.DataFrame(file_data.data_set))
+        dataset = normalize_columns(file_data.get_dataframe())
 
         for g in gate_path:
             dataset = apply_gate_filter(dataset, g)
