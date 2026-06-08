@@ -1,5 +1,6 @@
 # accounts/views.py
-from rest_framework import generics
+from drf_spectacular.utils import extend_schema, inline_serializer
+from rest_framework import generics, serializers
 from accounts.permissions.has_permission import IsOrgAdmin
 from accounts.serializers import OrganizationDetailSerializer, OrganizationListSerializer, UserCreateSerializer, UserDetailSerializer, UserListSerializer
 from utils.mixins import SerializerByMethodMixin
@@ -146,6 +147,19 @@ class UserMembershipListView(generics.ListAPIView):
 class PasswordUpdateView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        request=inline_serializer(
+            name="PasswordUpdateRequest",
+            fields={
+                "current_password": serializers.CharField(),
+                "new_password": serializers.CharField(),
+            },
+        ),
+        responses=inline_serializer(
+            name="DetailResponse",
+            fields={"detail": serializers.CharField()},
+        ),
+    )
     def post(self, request):
         user = request.user
         current = request.data.get("current_password")
@@ -160,7 +174,9 @@ class PasswordUpdateView(APIView):
   
 class RetrieveUserView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = UserDetailSerializer
 
+    @extend_schema(responses=UserDetailSerializer)
     def get(self, request):
         serializer = UserDetailSerializer(request.user, context={"request": request})
         return Response(serializer.data)

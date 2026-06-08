@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     'analytics',
     "rest_framework",
     "rest_framework_simplejwt",
+    'drf_spectacular',
     'accounts',
     
 ]
@@ -75,6 +76,21 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Pandora Backend API",
+    "DESCRIPTION": (
+        "API do Pandora Backend (citosharp): autenticação JWT, gestão de "
+        "organizações/usuários, upload e processamento de arquivos FCS e "
+        "análise de gates (citometria de fluxo)."
+    ),
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SWAGGER_UI_SETTINGS": {
+        "persistAuthorization": True,
+    },
 }
 
 CORS_ALLOW_ALL_ORIGINS=True

@@ -1,4 +1,5 @@
 
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from analytics.models import AnalysisResult, DashboardModel, GateModel
@@ -71,6 +72,7 @@ class ListGateSerializer(serializers.ModelSerializer):
         model = GateModel
         fields = ['id', 'created_at','parent', 'children', 'file_data', 'name', 'gate_coordinates', 'analysis_result']
 
+    @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_children(self, obj):
          # Serializa os filhos do gate
         children = obj.children.all()

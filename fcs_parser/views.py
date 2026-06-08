@@ -8,9 +8,10 @@ from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from analytics.models import GateModel
 from fcs_parser.tasks import process_experiment_files_task
+from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework import generics
+from rest_framework import generics, serializers
 from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
 from fcs_parser.serializers import (
     ExperimentSerializer,
@@ -27,6 +28,20 @@ from utils.mixins import SerializerByMethodMixin
 
 
 class ExperimentInitView(generics.CreateAPIView):
+    @extend_schema(
+        request=inline_serializer(
+            name="ExperimentInitRequest",
+            fields={
+                "title": serializers.CharField(),
+                "type": serializers.CharField(),
+                "totalChunks": serializers.IntegerField(),
+            },
+        ),
+        responses=inline_serializer(
+            name="ExperimentInitResponse",
+            fields={"fileId": serializers.CharField()},
+        ),
+    )
     def post(self, request):
         title = request.data.get("title").replace(" ", "_")
         experiment_type = request.data.get("type")
@@ -41,6 +56,20 @@ class ExperimentInitView(generics.CreateAPIView):
         return Response({"fileId": str(experiment.id)}, status=201)
 
 class UploadChunkView(generics.CreateAPIView):
+    @extend_schema(
+        request=inline_serializer(
+            name="UploadChunkRequest",
+            fields={
+                "fileId": serializers.CharField(),
+                "chunkIndex": serializers.IntegerField(),
+                "chunk": serializers.FileField(),
+            },
+        ),
+        responses=inline_serializer(
+            name="StatusResponse",
+            fields={"status": serializers.CharField()},
+        ),
+    )
     def post(self, request):
         file_id = request.data["fileId"]
         chunk_index = int(request.data["chunkIndex"])
@@ -64,6 +93,16 @@ class UploadChunkView(generics.CreateAPIView):
         return Response({"status": "ok"})
     
 class ExperimentCompleteView(generics.CreateAPIView):
+    @extend_schema(
+        request=inline_serializer(
+            name="ExperimentCompleteRequest",
+            fields={"fileId": serializers.CharField()},
+        ),
+        responses=inline_serializer(
+            name="ExperimentCompleteResponse",
+            fields={"status": serializers.CharField()},
+        ),
+    )
     def post(self, request):
         file_id = request.data["fileId"]
         experiment = ExperimentModel.objects.get(id=file_id)
@@ -192,6 +231,13 @@ class ListFileParams(generics.ListAPIView):
 
 class ProcessFileDataView(generics.CreateAPIView):
 
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="ProcessFileDataResponse",
+            fields={"message": serializers.CharField()},
+        ),
+    )
     def post(self, request, *args, **kwargs):
         file_id = kwargs.get('file_id')
         file = get_object_or_404(FileModel, id=file_id)
