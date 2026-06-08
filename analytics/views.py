@@ -7,8 +7,10 @@ from rest_framework.views import APIView, Response, status
 from analytics.models import GateModel
 from analytics.serializers import DashboardSerializer, GateSerializer
 from utils.density import (
+    DEFAULT_COFACTOR,
     apply_gate_filter,
     compute_density,
+    default_scale,
     density_cache_key,
     get_cached_density,
     normalize_columns,
@@ -47,40 +49,12 @@ class GetGateDataView(generics.ListAPIView):
         return get_object_or_404(GateModel, pk=gate_id)
     
     def _apply_gate_filter(self, dataset: pd.DataFrame, gate: GateModel) -> pd.DataFrame:
+        """Aplica o filtro de um gate (retangulo ou poligono) ao dataset.
+
+        Delega ao helper compartilhado (utils.density.apply_gate_filter), que
+        trata retangulo e poligono de forma vetorizada.
         """
-        Aplica o filtro de coordenadas de um único gate ao dataset fornecido.
-        Retorna o DataFrame filtrado.
-        """
-        gate_coords = gate.gate_coordinates
-        
-        x_label = 'fsc_a' 
-        y_label = 'ssc_a' 
-
-        if hasattr(gate, 'dashboard') and gate.dashboard and gate.dashboard.dashboard_config:
-            dashboard_config = gate.dashboard.dashboard_config
-            x_label = dashboard_config.get('x_axis_label', x_label).lower().replace(" ", "_").replace("-", "_")
-            y_label = dashboard_config.get('y_axis_label', y_label).lower().replace(" ", "_").replace("-", "_")
-        
-        # Verifique se as colunas dos eixos existem no DataFrame
-        if x_label not in dataset.columns or y_label not in dataset.columns:
-            print(f"Aviso: Eixos '{x_label}' ou '{y_label}' não encontrados no dataset. Não foi possível aplicar filtro para gate '{gate.name}'.")
-            return dataset # Retorna o dataset sem filtro se os eixos não existirem
-
-        start_x = gate_coords.get('startX')
-        end_x = gate_coords.get('endX')
-        start_y = gate_coords.get('startY')
-        end_y = gate_coords.get('endY')
-
-        if all([start_x is not None, end_x is not None, start_y is not None, end_y is not None]):
-            filtered_dataset = dataset[
-                (dataset[x_label] >= start_x) & (dataset[x_label] <= end_x) &
-                (dataset[y_label] >= start_y) & (dataset[y_label] <= end_y)
-            ]
-            print(f"Filtro aplicado para gate '{gate.name}': {len(dataset)} -> {len(filtered_dataset)} linhas.")
-            return filtered_dataset
-        else:
-            print(f"Aviso: Coordenadas incompletas para gate '{gate.name}'. Não foi possível aplicar filtro. Coordenadas: {gate_coords}")
-            return dataset 
+        return apply_gate_filter(dataset, gate)
 
 
     def get(self, request, *args, **kwargs):
@@ -127,6 +101,9 @@ class GateDensityView(APIView):
             OpenApiParameter(name="mode", type=str, required=False, description="'heatmap' (default) or 'scatter'"),
             OpenApiParameter(name="bins", type=int, required=False, description="Bins for heatmap (default 200)"),
             OpenApiParameter(name="sample", type=int, required=False, description="Max points for scatter (default 5000)"),
+            OpenApiParameter(name="xscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
+            OpenApiParameter(name="yscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
+            OpenApiParameter(name="cofactor", type=float, required=False, description="arcsinh cofactor for biex (default 150)"),
         ],
         responses=inline_serializer(
             name="GateDensityResponse",
@@ -144,10 +121,16 @@ class GateDensityView(APIView):
         mode = request.query_params.get("mode", "heatmap")
         bins = int(request.query_params.get("bins", 200))
         sample = int(request.query_params.get("sample", 5000))
+        x_scale = request.query_params.get("xscale") or default_scale(x_param)
+        y_scale = request.query_params.get("yscale") or default_scale(y_param)
+        cofactor = float(request.query_params.get("cofactor", DEFAULT_COFACTOR))
 
         gate = get_object_or_404(GateModel, pk=gate_id)
 
-        cache_key = density_cache_key("gate", gate.file_data_id, gate_id, x_param, y_param, mode, bins, sample)
+        cache_key = density_cache_key(
+            "gate", gate.file_data_id, gate_id, x_param, y_param, mode, bins, sample,
+            x_scale, y_scale, cofactor,
+        )
         cached = get_cached_density(cache_key)
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
@@ -169,9 +152,9 @@ class GateDensityView(APIView):
         base = {"mode": mode, "total_events": len(dataset), "x_label": x_param, "y_label": y_param}
 
         if mode == "scatter":
-            result = subsample_scatter(dataset, x_param, y_param, sample)
+            result = subsample_scatter(dataset, x_param, y_param, sample, x_scale, y_scale, cofactor)
         else:
-            result = compute_density(dataset, x_param, y_param, bins)
+            result = compute_density(dataset, x_param, y_param, bins, x_scale, y_scale, cofactor)
 
         if result is None:
             return Response(

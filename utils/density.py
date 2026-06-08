@@ -24,8 +24,13 @@ def invalidate_density(file_data_id):
             pass
 
 
-def density_cache_key(scope, file_data_id, obj_id, x, y, mode, bins, sample) -> str:
-    return f"density:{scope}:{obj_id}:v{_version(file_data_id)}:{x}:{y}:{mode}:{bins}:{sample}"
+def density_cache_key(
+    scope, file_data_id, obj_id, x, y, mode, bins, sample, x_scale, y_scale, cofactor
+) -> str:
+    return (
+        f"density:{scope}:{obj_id}:v{_version(file_data_id)}:{x}:{y}:{mode}:{bins}"
+        f":{sample}:{x_scale}:{y_scale}:{cofactor}"
+    )
 
 
 def get_cached_density(key):
@@ -47,8 +52,28 @@ def set_cached_density(key, value):
         pass
 
 
+# Cofator padrao do arcsinh para fluorescencia em citometria de fluxo.
+DEFAULT_COFACTOR = 150.0
+
+
 def normalize_column_name(name: str) -> str:
     return name.lower().replace(" ", "").replace("-", "_")
+
+
+def default_scale(param: str) -> str:
+    """Heuristica: FSC/SSC/Time sao lineares; demais canais usam biex (arcsinh)."""
+    p = normalize_column_name(param)
+    if p.startswith("fsc") or p.startswith("ssc") or p == "time":
+        return "linear"
+    return "biex"
+
+
+def apply_scale(values, scale: str, cofactor: float = DEFAULT_COFACTOR):
+    """Transforma valores para exibicao. 'biex' = arcsinh(x/cofator) (lida com
+    negativos e e quase-linear perto de zero); 'linear' = identidade."""
+    if scale == "biex":
+        return np.arcsinh(np.asarray(values, dtype=float) / cofactor)
+    return values
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -59,8 +84,21 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def compute_density(df: pd.DataFrame, x_param: str, y_param: str, bins: int = 200):
-    """Return a 2-D histogram dict ready to be sent as JSON."""
+def compute_density(
+    df: pd.DataFrame,
+    x_param: str,
+    y_param: str,
+    bins: int = 200,
+    x_scale: str = "linear",
+    y_scale: str = "linear",
+    cofactor: float = DEFAULT_COFACTOR,
+):
+    """Return a 2-D histogram dict ready to be sent as JSON.
+
+    Os eixos sao transformados (biex/linear) ANTES do binning, para que as bins
+    fiquem uniformes no espaco exibido. As bordas retornadas estao no espaco
+    transformado; o front mapeia os ticks de volta para unidades reais.
+    """
     x_col = normalize_column_name(x_param)
     y_col = normalize_column_name(y_param)
 
@@ -75,19 +113,50 @@ def compute_density(df: pd.DataFrame, x_param: str, y_param: str, bins: int = 20
     if len(x) == 0:
         return None
 
+    xv = apply_scale(x.values, x_scale, cofactor)
+    yv = apply_scale(y.values, y_scale, cofactor)
+
     histogram, x_edges, y_edges = np.histogram2d(
-        x.values, y.values, bins=bins,
+        xv, yv, bins=bins,
     )
 
     return {
         "histogram": histogram.T.astype(int).tolist(),
         "x_edges": np.round(x_edges, 4).tolist(),
         "y_edges": np.round(y_edges, 4).tolist(),
+        "x_scale": x_scale,
+        "y_scale": y_scale,
+        "cofactor": cofactor,
     }
 
 
+def _points_in_polygon(xs, ys, vertices) -> np.ndarray:
+    """Teste vetorizado de ponto-em-poligono (ray casting). Coordenadas e
+    vertices no MESMO espaco (cru). Retorna mascara booleana alinhada a xs/ys."""
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    poly = np.asarray(vertices, dtype=float)
+    n = len(poly)
+    inside = np.zeros(len(xs), dtype=bool)
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i, 0], poly[i, 1]
+        xj, yj = poly[j, 0], poly[j, 1]
+        # Aresta cruza a linha horizontal do ponto?
+        cond = ((yi > ys) != (yj > ys)) & (
+            xs < (xj - xi) * (ys - yi) / (yj - yi + 1e-12) + xi
+        )
+        inside ^= cond
+        j = i
+    return inside
+
+
 def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
-    """Apply a single gate's rectangular filter to a DataFrame (columns already normalized)."""
+    """Apply a single gate's filter (rectangle or polygon) to a DataFrame.
+
+    Colunas ja normalizadas; coordenadas do gate sempre em espaco cru (linear),
+    independente da escala usada para exibir o grafico.
+    """
     gate_coords = gate.gate_coordinates
 
     x_label = "fsc_a"
@@ -101,6 +170,17 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
     if x_label not in dataset.columns or y_label not in dataset.columns:
         return dataset
 
+    # Gate poligonal: lista de vertices [[x, y], ...].
+    if gate_coords.get("type") == "polygon":
+        vertices = gate_coords.get("vertices") or []
+        if len(vertices) >= 3:
+            mask = _points_in_polygon(
+                dataset[x_label].values, dataset[y_label].values, vertices
+            )
+            return dataset[mask]
+        return dataset
+
+    # Gate retangular (legado / default).
     start_x = gate_coords.get("startX")
     end_x = gate_coords.get("endX")
     start_y = gate_coords.get("startY")
@@ -114,8 +194,16 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
     return dataset
 
 
-def subsample_scatter(df: pd.DataFrame, x_param: str, y_param: str, sample: int = 5000):
-    """Return a subsampled scatter dict ready to be sent as JSON."""
+def subsample_scatter(
+    df: pd.DataFrame,
+    x_param: str,
+    y_param: str,
+    sample: int = 5000,
+    x_scale: str = "linear",
+    y_scale: str = "linear",
+    cofactor: float = DEFAULT_COFACTOR,
+):
+    """Return a subsampled scatter dict ready to be sent as JSON (espaco exibido)."""
     x_col = normalize_column_name(x_param)
     y_col = normalize_column_name(y_param)
 
@@ -127,8 +215,14 @@ def subsample_scatter(df: pd.DataFrame, x_param: str, y_param: str, sample: int 
     if len(subset) > sample:
         subset = subset.sample(n=sample, random_state=42)
 
+    xv = apply_scale(subset[x_col].values, x_scale, cofactor)
+    yv = apply_scale(subset[y_col].values, y_scale, cofactor)
+
     return {
-        "x": subset[x_col].tolist(),
-        "y": subset[y_col].tolist(),
+        "x": np.round(xv, 4).tolist() if x_scale == "biex" else subset[x_col].tolist(),
+        "y": np.round(yv, 4).tolist() if y_scale == "biex" else subset[y_col].tolist(),
         "sampled_events": len(subset),
+        "x_scale": x_scale,
+        "y_scale": y_scale,
+        "cofactor": cofactor,
     }

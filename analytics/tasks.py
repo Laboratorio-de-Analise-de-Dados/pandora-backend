@@ -46,6 +46,18 @@ def apply_gate_to_data(fcs_data_df, gate_coordinates, x_param, y_param):
         print(f"Aviso na task: Parâmetros de eixo '{x_param}' ou '{y_param}' não encontrados nos dados.")
         return pd.DataFrame()
 
+    if gate_coordinates.get('type') == 'polygon':
+        from utils.density import _points_in_polygon
+
+        vertices = gate_coordinates.get('vertices') or []
+        if len(vertices) < 3:
+            print("Aviso na task: poligono com menos de 3 vertices. Ignorando.")
+            return pd.DataFrame()
+        mask = _points_in_polygon(
+            filtered_data[x_param].values, filtered_data[y_param].values, vertices
+        )
+        return filtered_data[mask]
+
     if 'startX' in gate_coordinates and 'endX' in gate_coordinates and \
        'startY' in gate_coordinates and 'endY' in gate_coordinates:
         min_x = gate_coordinates.get('startX')

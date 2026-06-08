@@ -15,7 +15,9 @@ from rest_framework import status
 from rest_framework import generics, serializers
 from rest_framework.views import APIView
 from utils.density import (
+    DEFAULT_COFACTOR,
     compute_density,
+    default_scale,
     density_cache_key,
     get_cached_density,
     invalidate_density,
@@ -250,6 +252,9 @@ class FileDensityView(APIView):
             OpenApiParameter(name="mode", type=str, required=False, description="'heatmap' (default) or 'scatter'"),
             OpenApiParameter(name="bins", type=int, required=False, description="Bins for heatmap (default 200)"),
             OpenApiParameter(name="sample", type=int, required=False, description="Max points for scatter (default 5000)"),
+            OpenApiParameter(name="xscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
+            OpenApiParameter(name="yscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
+            OpenApiParameter(name="cofactor", type=float, required=False, description="arcsinh cofactor for biex (default 150)"),
         ],
         responses=inline_serializer(
             name="FileDensityResponse",
@@ -267,8 +272,14 @@ class FileDensityView(APIView):
         mode = request.query_params.get("mode", "heatmap")
         bins = int(request.query_params.get("bins", 200))
         sample = int(request.query_params.get("sample", 5000))
+        x_scale = request.query_params.get("xscale") or default_scale(x_param)
+        y_scale = request.query_params.get("yscale") or default_scale(y_param)
+        cofactor = float(request.query_params.get("cofactor", DEFAULT_COFACTOR))
 
-        cache_key = density_cache_key("file", file_id, file_id, x_param, y_param, mode, bins, sample)
+        cache_key = density_cache_key(
+            "file", file_id, file_id, x_param, y_param, mode, bins, sample,
+            x_scale, y_scale, cofactor,
+        )
         cached = get_cached_density(cache_key)
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
@@ -279,9 +290,9 @@ class FileDensityView(APIView):
         base = {"mode": mode, "total_events": len(dataset), "x_label": x_param, "y_label": y_param}
 
         if mode == "scatter":
-            result = subsample_scatter(dataset, x_param, y_param, sample)
+            result = subsample_scatter(dataset, x_param, y_param, sample, x_scale, y_scale, cofactor)
         else:
-            result = compute_density(dataset, x_param, y_param, bins)
+            result = compute_density(dataset, x_param, y_param, bins, x_scale, y_scale, cofactor)
 
         if result is None:
             return Response(
