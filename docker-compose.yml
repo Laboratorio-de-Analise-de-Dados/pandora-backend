@@ -15,6 +15,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - pandora_net
 
   redis:
     image: redis:6-alpine
@@ -28,12 +30,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - pandora_net
 
   web:
     build: .
     container_name: pandora_web
     environment:
-      DEBUG: True
       SECRET_KEY: v0v8JHJuM8OzY2
       DATABASE_NAME: pandora_db
       DATABASE_USER: postgres
@@ -53,12 +56,13 @@ services:
     depends_on:
       - db
       - redis
+    networks:
+      - pandora_net
 
   celery_worker:
     build: .
     container_name: pandora_celery_worker
     environment:
-      DEBUG: True
       SECRET_KEY: v0v8JHJuM8OzY2
       DATABASE_NAME: pandora_db
       DATABASE_USER: postgres
@@ -80,6 +84,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    networks:
+      - pandora_net
 
 volumes:
   db_data:
