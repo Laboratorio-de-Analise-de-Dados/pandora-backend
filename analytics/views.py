@@ -104,6 +104,7 @@ class GateDensityView(APIView):
             OpenApiParameter(name="xscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
             OpenApiParameter(name="yscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
             OpenApiParameter(name="cofactor", type=float, required=False, description="arcsinh cofactor for biex (default 150)"),
+            OpenApiParameter(name="cutoff", type=int, required=False, description="Heatmap density cutoff: bins with count <= cutoff become null/transparent (default 0)"),
         ],
         responses=inline_serializer(
             name="GateDensityResponse",
@@ -124,12 +125,16 @@ class GateDensityView(APIView):
         x_scale = request.query_params.get("xscale") or default_scale(x_param)
         y_scale = request.query_params.get("yscale") or default_scale(y_param)
         cofactor = float(request.query_params.get("cofactor", DEFAULT_COFACTOR))
+        try:
+            cutoff = max(int(request.query_params.get("cutoff", 0)), 0)
+        except (TypeError, ValueError):
+            cutoff = 0
 
         gate = get_object_or_404(GateModel, pk=gate_id)
 
         cache_key = density_cache_key(
             "gate", gate.file_data_id, gate_id, x_param, y_param, mode, bins, sample,
-            x_scale, y_scale, cofactor,
+            x_scale, y_scale, cofactor, cutoff,
         )
         cached = get_cached_density(cache_key)
         if cached is not None:
@@ -154,7 +159,7 @@ class GateDensityView(APIView):
         if mode == "scatter":
             result = subsample_scatter(dataset, x_param, y_param, sample, x_scale, y_scale, cofactor)
         else:
-            result = compute_density(dataset, x_param, y_param, bins, x_scale, y_scale, cofactor)
+            result = compute_density(dataset, x_param, y_param, bins, x_scale, y_scale, cofactor, cutoff)
 
         if result is None:
             return Response(

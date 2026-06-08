@@ -25,11 +25,12 @@ def invalidate_density(file_data_id):
 
 
 def density_cache_key(
-    scope, file_data_id, obj_id, x, y, mode, bins, sample, x_scale, y_scale, cofactor
+    scope, file_data_id, obj_id, x, y, mode, bins, sample, x_scale, y_scale,
+    cofactor, cutoff=0
 ) -> str:
     return (
         f"density:{scope}:{obj_id}:v{_version(file_data_id)}:{x}:{y}:{mode}:{bins}"
-        f":{sample}:{x_scale}:{y_scale}:{cofactor}"
+        f":{sample}:{x_scale}:{y_scale}:{cofactor}:{cutoff}"
     )
 
 
@@ -92,12 +93,18 @@ def compute_density(
     x_scale: str = "linear",
     y_scale: str = "linear",
     cofactor: float = DEFAULT_COFACTOR,
+    cutoff: int = 0,
 ):
     """Return a 2-D histogram dict ready to be sent as JSON.
 
     Os eixos sao transformados (biex/linear) ANTES do binning, para que as bins
     fiquem uniformes no espaco exibido. As bordas retornadas estao no espaco
     transformado; o front mapeia os ticks de volta para unidades reais.
+
+    Bins com contagem <= cutoff viram None (null no JSON) para que o front os
+    renderize transparentes em vez de pintados na cor mais fria do colormap.
+    Com cutoff=0 (default) apenas as bins vazias somem; valores maiores cortam
+    ruido/outliers de baixa densidade.
     """
     x_col = normalize_column_name(x_param)
     y_col = normalize_column_name(y_param)
@@ -120,13 +127,23 @@ def compute_density(
         xv, yv, bins=bins,
     )
 
+    counts = histogram.T.astype(int)
+    # Bins <= cutoff -> None (null) para o front renderizar transparente.
+    threshold = max(int(cutoff), 0)
+    masked = np.where(counts > threshold, counts, None)
+    histogram_json = [
+        [None if v is None else int(v) for v in row]
+        for row in masked.tolist()
+    ]
+
     return {
-        "histogram": histogram.T.astype(int).tolist(),
+        "histogram": histogram_json,
         "x_edges": np.round(x_edges, 4).tolist(),
         "y_edges": np.round(y_edges, 4).tolist(),
         "x_scale": x_scale,
         "y_scale": y_scale,
         "cofactor": cofactor,
+        "cutoff": threshold,
     }
 
 
