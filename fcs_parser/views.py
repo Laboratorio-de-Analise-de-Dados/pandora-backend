@@ -22,6 +22,7 @@ from utils.density import (
     get_cached_density,
     invalidate_density,
     normalize_columns,
+    parse_range,
     set_cached_density,
     subsample_scatter,
 )
@@ -256,6 +257,10 @@ class FileDensityView(APIView):
             OpenApiParameter(name="yscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
             OpenApiParameter(name="cofactor", type=float, required=False, description="arcsinh cofactor for biex (default 150)"),
             OpenApiParameter(name="cutoff", type=int, required=False, description="Heatmap density cutoff: bins with count <= cutoff become null/transparent (default 0)"),
+            OpenApiParameter(name="xmin", type=float, required=False, description="Lower bound for X axis (raw value)"),
+            OpenApiParameter(name="xmax", type=float, required=False, description="Upper bound for X axis (raw value)"),
+            OpenApiParameter(name="ymin", type=float, required=False, description="Lower bound for Y axis (raw value)"),
+            OpenApiParameter(name="ymax", type=float, required=False, description="Upper bound for Y axis (raw value)"),
         ],
         responses=inline_serializer(
             name="FileDensityResponse",
@@ -280,11 +285,17 @@ class FileDensityView(APIView):
             cutoff = max(int(request.query_params.get("cutoff", 0)), 0)
         except (TypeError, ValueError):
             cutoff = 0
+        x_range = parse_range(request.query_params, "xmin", "xmax")
+        y_range = parse_range(request.query_params, "ymin", "ymax")
 
         cache_key = density_cache_key(
             "file", file_id, file_id, x_param, y_param, mode, bins, sample,
             x_scale, y_scale, cofactor, cutoff,
         )
+        if x_range:
+            cache_key += f":xr{x_range[0]}:{x_range[1]}"
+        if y_range:
+            cache_key += f":yr{y_range[0]}:{y_range[1]}"
         cached = get_cached_density(cache_key)
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
@@ -295,9 +306,9 @@ class FileDensityView(APIView):
         base = {"mode": mode, "total_events": len(dataset), "x_label": x_param, "y_label": y_param}
 
         if mode == "scatter":
-            result = subsample_scatter(dataset, x_param, y_param, sample, x_scale, y_scale, cofactor)
+            result = subsample_scatter(dataset, x_param, y_param, sample, x_scale, y_scale, cofactor, x_range, y_range)
         else:
-            result = compute_density(dataset, x_param, y_param, bins, x_scale, y_scale, cofactor, cutoff)
+            result = compute_density(dataset, x_param, y_param, bins, x_scale, y_scale, cofactor, cutoff, x_range, y_range)
 
         if result is None:
             return Response(
