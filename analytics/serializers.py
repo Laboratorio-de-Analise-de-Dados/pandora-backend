@@ -9,7 +9,7 @@ from fcs_parser.models import FileDataModel
 class DashboardSerializer(serializers.ModelSerializer):
     class Meta:
         model = DashboardModel
-        fields = ['id', 'name', 'dashboard_config', 'created_at']
+        fields = ['id', 'name', 'dashboard_config', 'created_at', 'file_data']
     def create(self, validated_data):
         name = validated_data.get('name')
         dashboard_instance, created = DashboardModel.objects.update_or_create(
@@ -64,13 +64,15 @@ class ListGateSerializer(serializers.ModelSerializer):
         queryset=FileDataModel.objects.all(),
         allow_null=True,
     )
-    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False)
+    parent_id = serializers.PrimaryKeyRelatedField(
+        source="parent", queryset=GateModel.objects.all(), allow_null=True, required=False
+    )
     analysis_result = AnalysisResultSerializer(read_only=True)
     depth = 1
     
     class Meta:
         model = GateModel
-        fields = ['id', 'created_at','parent', 'children', 'file_data', 'name', 'gate_coordinates', 'analysis_result']
+        fields = ['id', 'created_at', 'parent_id', 'children', 'file_data', 'name', 'gate_coordinates', 'analysis_result']
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_children(self, obj):
