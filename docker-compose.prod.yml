@@ -1,8 +1,3 @@
-volumes:
-  pgdata:
-  redis_data:
-  uploads_data:
-
 services:
   db:
     image: postgres:latest
@@ -39,7 +34,7 @@ services:
       - pandora_net
 
   pandora_web:
-    build: .
+    image: "${DOCKER_USER}/pandora-backend:latest" # 🔑 usar imagem publicada
     container_name: pandora_web
     command: bash -c "python manage.py migrate && gunicorn citosharp.wsgi:application --bind 0.0.0.0:8000 --workers 4"
     expose:
@@ -63,9 +58,8 @@ services:
       MEDIA_ROOT: "/app/uploads"
     networks:
       - pandora_net
-
   celery_worker:
-    build: .
+    image: "${DOCKER_USER}/pandora-backend:latest" # 🔑 usar mesma imagem
     container_name: pandora_celery_worker
     command: celery -A citosharp worker -l info
     depends_on:
@@ -93,6 +87,11 @@ services:
       start_period: 30s
     networks:
       - pandora_net
+
+volumes:
+  pgdata:
+  redis_data:
+  uploads_data:
 
 networks:
   pandora_net:

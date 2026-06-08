@@ -17,10 +17,14 @@ COPY . .
 # Definir settings do Django
 ENV DJANGO_SETTINGS_MODULE=citosharp.settings
 
+# Argumento para passar SECRET_KEY no build
+ARG SECRET_KEY
+ENV SECRET_KEY=$SECRET_KEY
+
 # Criar pasta de estáticos
 RUN mkdir -p /app/staticfiles
 
-# Coletar arquivos estáticos
+# Coletar arquivos estáticos (precisa do SECRET_KEY)
 RUN python manage.py collectstatic --noinput
 
 # Expor porta

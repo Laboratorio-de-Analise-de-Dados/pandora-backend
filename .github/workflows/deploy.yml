@@ -1,12 +1,41 @@
 name: 🚀 CI/CD Pandora Backend
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # 🔑 permite rodar manualmente, sem inputs
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Login no Docker Hub
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USER }}" --password-stdin
+
+      - name: Build da imagem
+        run: |
+          IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
+          COMMIT_SHA=${{ github.sha }}
+          docker build \
+            --build-arg SECRET_KEY="${{ secrets.SECRET_KEY }}" \
+            -t "$IMAGE_NAME:$COMMIT_SHA" -t "$IMAGE_NAME:latest" .
+
+      - name: Push da imagem
+        run: |
+          IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
+          COMMIT_SHA=${{ github.sha }}
+          docker push "$IMAGE_NAME:$COMMIT_SHA"
+          docker push "$IMAGE_NAME:latest"
+
   deploy:
     runs-on: ubuntu-latest
     environment: production
+    needs: build
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -23,15 +52,14 @@ jobs:
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
           EMAIL_HOST_USER: ${{ secrets.EMAIL_HOST_USER }}
           EMAIL_HOST_PASSWORD: ${{ secrets.EMAIL_HOST_PASSWORD }}
+          DOCKER_USER: ${{ secrets.DOCKER_USER }}
         with:
-          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,REDIS_HOST,REDIS_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS,EMAIL_HOST_USER,EMAIL_HOST_PASSWORD
+          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,REDIS_HOST,REDIS_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS,EMAIL_HOST_USER,EMAIL_HOST_PASSWORD, DOCKER_USER
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             set -e
-            cd /home/ubuntu/
-            rm -rf pandora-backend/ 
 
             if ! docker network inspect pandora_net >/dev/null 2>&1; then
               echo "🔧 Criando rede externa 'pandora_net'..."
@@ -40,13 +68,27 @@ jobs:
               echo "✅ Rede 'pandora_net' já existe"
             fi
 
+            echo "📥 Clonando repositório..."
+            rm -rf pandora-backend/
             git clone git@github.com:Laboratorio-de-Analise-de-Dados/pandora-backend.git
-
             cd pandora-backend
-
             git checkout main
 
-            docker compose -f docker-compose.prod.yml build --no-cache
+            echo "📦 Movendo docker-compose.prod.yml para pasta anterior..."
+            cp docker-compose.prod.yml ../docker-compose.prod.yml
+
+            echo "🧹 Removendo repositório clonado..."
+            cd ..
+            rm -rf pandora-backend/
+
+            echo "📥 Baixando imagem do Docker Hub..."
+            IMAGE_NAME=${DOCKER_USER}/pandora-backend
+            docker pull "$IMAGE_NAME:latest"
+
+            echo "🚀 Subindo containers..."
             docker compose -f docker-compose.prod.yml up -d
+
+            echo "🧹 Removendo docker-compose.prod.yml..."
+            rm -f docker-compose.prod.yml
 
             echo "✅ Deploy concluído!"
