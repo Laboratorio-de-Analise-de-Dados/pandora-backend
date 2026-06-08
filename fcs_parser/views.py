@@ -8,10 +8,12 @@ from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from analytics.models import GateModel
 from fcs_parser.tasks import process_experiment_files_task
-from drf_spectacular.utils import extend_schema, inline_serializer
+from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import generics, serializers
+from rest_framework.views import APIView
+from utils.density import compute_density, normalize_columns, subsample_scatter
 from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
 from fcs_parser.serializers import (
     ExperimentSerializer,
@@ -227,6 +229,53 @@ class ListFileParams(generics.ListAPIView):
         file_data.data_set = json.loads(dataset.to_json(orient="records"))
         serializer = self.serializer_class(file_data)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class FileDensityView(APIView):
+    """Return density (heatmap) or subsampled scatter for a file's data."""
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name="x", type=str, required=True, description="X-axis parameter (e.g. FSC-A)"),
+            OpenApiParameter(name="y", type=str, required=True, description="Y-axis parameter (e.g. SSC-A)"),
+            OpenApiParameter(name="mode", type=str, required=False, description="'heatmap' (default) or 'scatter'"),
+            OpenApiParameter(name="bins", type=int, required=False, description="Bins for heatmap (default 200)"),
+            OpenApiParameter(name="sample", type=int, required=False, description="Max points for scatter (default 5000)"),
+        ],
+        responses=inline_serializer(
+            name="FileDensityResponse",
+            fields={
+                "mode": serializers.CharField(),
+                "total_events": serializers.IntegerField(),
+                "x_label": serializers.CharField(),
+                "y_label": serializers.CharField(),
+            },
+        ),
+    )
+    def get(self, request, file_id):
+        file_data = get_object_or_404(FileDataModel, id=file_id)
+        dataset = normalize_columns(pd.DataFrame(file_data.data_set))
+
+        x_param = request.query_params.get("x", "FSC-A")
+        y_param = request.query_params.get("y", "SSC-A")
+        mode = request.query_params.get("mode", "heatmap")
+
+        base = {"mode": mode, "total_events": len(dataset), "x_label": x_param, "y_label": y_param}
+
+        if mode == "scatter":
+            sample = int(request.query_params.get("sample", 5000))
+            result = subsample_scatter(dataset, x_param, y_param, sample)
+        else:
+            bins = int(request.query_params.get("bins", 200))
+            result = compute_density(dataset, x_param, y_param, bins)
+
+        if result is None:
+            return Response(
+                {"detail": f"Columns '{x_param}' or '{y_param}' not found in dataset."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({**base, **result}, status=status.HTTP_200_OK)
 
 
 class ProcessFileDataView(generics.CreateAPIView):

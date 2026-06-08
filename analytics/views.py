@@ -1,10 +1,12 @@
 
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from fcs_parser.serializers import ParamListDataSerializer
-from rest_framework import generics
+from rest_framework import generics, serializers
+from rest_framework.views import APIView, Response, status
 from analytics.models import GateModel
 from analytics.serializers import DashboardSerializer, GateSerializer
-from rest_framework.views import  Response, status
+from utils.density import apply_gate_filter, compute_density, normalize_columns, subsample_scatter
 import pandas as pd
 import json
 
@@ -107,4 +109,62 @@ class GetGateDataView(generics.ListAPIView):
         file_data_instance.data_set = json.loads(dataset.to_json(orient="records"))
         serializer = ParamListDataSerializer(file_data_instance)
         return Response(serializer.data, status=status.HTTP_200_OK) 
-# class CreateDashboardView(generics.CreateAPIView):
+class GateDensityView(APIView):
+    """Return density (heatmap) or subsampled scatter for a gate's filtered data."""
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name="x", type=str, required=True, description="X-axis parameter (e.g. FSC-A)"),
+            OpenApiParameter(name="y", type=str, required=True, description="Y-axis parameter (e.g. SSC-A)"),
+            OpenApiParameter(name="mode", type=str, required=False, description="'heatmap' (default) or 'scatter'"),
+            OpenApiParameter(name="bins", type=int, required=False, description="Bins for heatmap (default 200)"),
+            OpenApiParameter(name="sample", type=int, required=False, description="Max points for scatter (default 5000)"),
+        ],
+        responses=inline_serializer(
+            name="GateDensityResponse",
+            fields={
+                "mode": serializers.CharField(),
+                "total_events": serializers.IntegerField(),
+                "x_label": serializers.CharField(),
+                "y_label": serializers.CharField(),
+            },
+        ),
+    )
+    def get(self, request, gate_id):
+        gate = get_object_or_404(GateModel, pk=gate_id)
+
+        current = gate
+        gate_path = [current]
+        while current.parent:
+            current = current.parent
+            gate_path.insert(0, current)
+
+        file_data = gate_path[0].file_data
+        dataset = normalize_columns(pd.DataFrame(file_data.data_set))
+
+        for g in gate_path:
+            dataset = apply_gate_filter(dataset, g)
+            if dataset.empty:
+                break
+
+        x_param = request.query_params.get("x", "FSC-A")
+        y_param = request.query_params.get("y", "SSC-A")
+        mode = request.query_params.get("mode", "heatmap")
+        total_events = len(dataset)
+
+        base = {"mode": mode, "total_events": total_events, "x_label": x_param, "y_label": y_param}
+
+        if mode == "scatter":
+            sample = int(request.query_params.get("sample", 5000))
+            result = subsample_scatter(dataset, x_param, y_param, sample)
+        else:
+            bins = int(request.query_params.get("bins", 200))
+            result = compute_density(dataset, x_param, y_param, bins)
+
+        if result is None:
+            return Response(
+                {"detail": f"Columns '{x_param}' or '{y_param}' not found in dataset."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({**base, **result}, status=status.HTTP_200_OK)
