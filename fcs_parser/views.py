@@ -13,7 +13,14 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import generics, serializers
 from rest_framework.views import APIView
-from utils.density import compute_density, normalize_columns, subsample_scatter
+from utils.density import (
+    compute_density,
+    density_cache_key,
+    get_cached_density,
+    normalize_columns,
+    set_cached_density,
+    subsample_scatter,
+)
 from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
 from fcs_parser.serializers import (
     ExperimentSerializer,
@@ -253,20 +260,25 @@ class FileDensityView(APIView):
         ),
     )
     def get(self, request, file_id):
-        file_data = get_object_or_404(FileDataModel, id=file_id)
-        dataset = normalize_columns(pd.DataFrame(file_data.data_set))
-
         x_param = request.query_params.get("x", "FSC-A")
         y_param = request.query_params.get("y", "SSC-A")
         mode = request.query_params.get("mode", "heatmap")
+        bins = int(request.query_params.get("bins", 200))
+        sample = int(request.query_params.get("sample", 5000))
+
+        cache_key = density_cache_key("file", file_id, file_id, x_param, y_param, mode, bins, sample)
+        cached = get_cached_density(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        file_data = get_object_or_404(FileDataModel, id=file_id)
+        dataset = normalize_columns(pd.DataFrame(file_data.data_set))
 
         base = {"mode": mode, "total_events": len(dataset), "x_label": x_param, "y_label": y_param}
 
         if mode == "scatter":
-            sample = int(request.query_params.get("sample", 5000))
             result = subsample_scatter(dataset, x_param, y_param, sample)
         else:
-            bins = int(request.query_params.get("bins", 200))
             result = compute_density(dataset, x_param, y_param, bins)
 
         if result is None:
@@ -275,7 +287,9 @@ class FileDensityView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({**base, **result}, status=status.HTTP_200_OK)
+        payload = {**base, **result}
+        set_cached_density(cache_key, payload)
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class ProcessFileDataView(generics.CreateAPIView):

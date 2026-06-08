@@ -1,5 +1,50 @@
 import numpy as np
 import pandas as pd
+from django.conf import settings
+from django.core.cache import cache
+
+
+def _version(file_data_id) -> int:
+    """Current cache version for a file's density entries. Bumped to invalidate."""
+    try:
+        v = cache.get(f"density:ver:{file_data_id}")
+        return v if v is not None else 1
+    except Exception:
+        return 1
+
+
+def invalidate_density(file_data_id):
+    """Invalidate every density cache entry derived from a file (its file + gate heatmaps)."""
+    try:
+        cache.incr(f"density:ver:{file_data_id}")
+    except Exception:
+        try:
+            cache.set(f"density:ver:{file_data_id}", 2, None)
+        except Exception:
+            pass
+
+
+def density_cache_key(scope, file_data_id, obj_id, x, y, mode, bins, sample) -> str:
+    return f"density:{scope}:{obj_id}:v{_version(file_data_id)}:{x}:{y}:{mode}:{bins}:{sample}"
+
+
+def get_cached_density(key):
+    """Return cached payload and renew its TTL (sliding). Degrades to None on any cache error."""
+    try:
+        value = cache.get(key)
+        if value is not None:
+            cache.touch(key, settings.DENSITY_CACHE_TTL)
+        return value
+    except Exception:
+        return None
+
+
+def set_cached_density(key, value):
+    """Store payload with the configured TTL. Silently ignores cache errors."""
+    try:
+        cache.set(key, value, settings.DENSITY_CACHE_TTL)
+    except Exception:
+        pass
 
 
 def normalize_column_name(name: str) -> str:

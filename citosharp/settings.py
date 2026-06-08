@@ -42,6 +42,17 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'America/Sao_Paulo'
 CELERY_TASK_TRACK_STARTED = True
+
+# Cache (Redis) — usado para density/heatmap com TTL deslizante.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": f"redis://{REDIS_HOST}:{REDIS_PORT}/1",
+    }
+}
+# Tempo de vida (segundos) do cache de density; renovado a cada acesso (sliding).
+DENSITY_CACHE_TTL = int(os.getenv("DENSITY_CACHE_TTL", 3600))
+
 # Application definition
 
 INSTALLED_APPS = [

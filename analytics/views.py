@@ -6,7 +6,15 @@ from rest_framework import generics, serializers
 from rest_framework.views import APIView, Response, status
 from analytics.models import GateModel
 from analytics.serializers import DashboardSerializer, GateSerializer
-from utils.density import apply_gate_filter, compute_density, normalize_columns, subsample_scatter
+from utils.density import (
+    apply_gate_filter,
+    compute_density,
+    density_cache_key,
+    get_cached_density,
+    normalize_columns,
+    set_cached_density,
+    subsample_scatter,
+)
 import pandas as pd
 import json
 
@@ -131,7 +139,18 @@ class GateDensityView(APIView):
         ),
     )
     def get(self, request, gate_id):
+        x_param = request.query_params.get("x", "FSC-A")
+        y_param = request.query_params.get("y", "SSC-A")
+        mode = request.query_params.get("mode", "heatmap")
+        bins = int(request.query_params.get("bins", 200))
+        sample = int(request.query_params.get("sample", 5000))
+
         gate = get_object_or_404(GateModel, pk=gate_id)
+
+        cache_key = density_cache_key("gate", gate.file_data_id, gate_id, x_param, y_param, mode, bins, sample)
+        cached = get_cached_density(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
 
         current = gate
         gate_path = [current]
@@ -147,18 +166,11 @@ class GateDensityView(APIView):
             if dataset.empty:
                 break
 
-        x_param = request.query_params.get("x", "FSC-A")
-        y_param = request.query_params.get("y", "SSC-A")
-        mode = request.query_params.get("mode", "heatmap")
-        total_events = len(dataset)
-
-        base = {"mode": mode, "total_events": total_events, "x_label": x_param, "y_label": y_param}
+        base = {"mode": mode, "total_events": len(dataset), "x_label": x_param, "y_label": y_param}
 
         if mode == "scatter":
-            sample = int(request.query_params.get("sample", 5000))
             result = subsample_scatter(dataset, x_param, y_param, sample)
         else:
-            bins = int(request.query_params.get("bins", 200))
             result = compute_density(dataset, x_param, y_param, bins)
 
         if result is None:
@@ -167,4 +179,6 @@ class GateDensityView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({**base, **result}, status=status.HTTP_200_OK)
+        payload = {**base, **result}
+        set_cached_density(cache_key, payload)
+        return Response(payload, status=status.HTTP_200_OK)
