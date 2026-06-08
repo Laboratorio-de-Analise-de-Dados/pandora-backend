@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import traceback
 from django.conf import settings
 import pandas as pd
@@ -7,11 +8,23 @@ from pathlib import Path
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from analytics.models import GateModel
-from fcs_parser.tasks import process_experiment_files_task
-from drf_spectacular.utils import extend_schema, inline_serializer
+from fcs_parser.tasks import process_experiment_files_task, recompute_file_data_task
+from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import generics, serializers
+from rest_framework.views import APIView
+from utils.density import (
+    DEFAULT_COFACTOR,
+    compute_density,
+    default_scale,
+    density_cache_key,
+    get_cached_density,
+    invalidate_density,
+    normalize_columns,
+    set_cached_density,
+    subsample_scatter,
+)
 from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
 from fcs_parser.serializers import (
     ExperimentSerializer,
@@ -219,7 +232,7 @@ class ListFileParams(generics.ListAPIView):
             limit = 10000
 
         file_data = self.get_queryset()
-        dataset = pd.DataFrame(file_data.data_set)
+        dataset = file_data.get_dataframe()
         dataset.columns = dataset.columns.str.replace(" ", "")
         dataset.columns = dataset.columns.str.replace("-", "_")
         dataset.columns = dataset.columns.str.lower()
@@ -227,6 +240,69 @@ class ListFileParams(generics.ListAPIView):
         file_data.data_set = json.loads(dataset.to_json(orient="records"))
         serializer = self.serializer_class(file_data)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class FileDensityView(APIView):
+    """Return density (heatmap) or subsampled scatter for a file's data."""
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name="x", type=str, required=True, description="X-axis parameter (e.g. FSC-A)"),
+            OpenApiParameter(name="y", type=str, required=True, description="Y-axis parameter (e.g. SSC-A)"),
+            OpenApiParameter(name="mode", type=str, required=False, description="'heatmap' (default) or 'scatter'"),
+            OpenApiParameter(name="bins", type=int, required=False, description="Bins for heatmap (default 200)"),
+            OpenApiParameter(name="sample", type=int, required=False, description="Max points for scatter (default 5000)"),
+            OpenApiParameter(name="xscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
+            OpenApiParameter(name="yscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
+            OpenApiParameter(name="cofactor", type=float, required=False, description="arcsinh cofactor for biex (default 150)"),
+        ],
+        responses=inline_serializer(
+            name="FileDensityResponse",
+            fields={
+                "mode": serializers.CharField(),
+                "total_events": serializers.IntegerField(),
+                "x_label": serializers.CharField(),
+                "y_label": serializers.CharField(),
+            },
+        ),
+    )
+    def get(self, request, file_id):
+        x_param = request.query_params.get("x", "FSC-A")
+        y_param = request.query_params.get("y", "SSC-A")
+        mode = request.query_params.get("mode", "heatmap")
+        bins = int(request.query_params.get("bins", 200))
+        sample = int(request.query_params.get("sample", 5000))
+        x_scale = request.query_params.get("xscale") or default_scale(x_param)
+        y_scale = request.query_params.get("yscale") or default_scale(y_param)
+        cofactor = float(request.query_params.get("cofactor", DEFAULT_COFACTOR))
+
+        cache_key = density_cache_key(
+            "file", file_id, file_id, x_param, y_param, mode, bins, sample,
+            x_scale, y_scale, cofactor,
+        )
+        cached = get_cached_density(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        file_data = get_object_or_404(FileDataModel, id=file_id)
+        dataset = normalize_columns(file_data.get_dataframe())
+
+        base = {"mode": mode, "total_events": len(dataset), "x_label": x_param, "y_label": y_param}
+
+        if mode == "scatter":
+            result = subsample_scatter(dataset, x_param, y_param, sample, x_scale, y_scale, cofactor)
+        else:
+            result = compute_density(dataset, x_param, y_param, bins, x_scale, y_scale, cofactor)
+
+        if result is None:
+            return Response(
+                {"detail": f"Columns '{x_param}' or '{y_param}' not found in dataset."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payload = {**base, **result}
+        set_cached_density(cache_key, payload)
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class ProcessFileDataView(generics.CreateAPIView):
@@ -250,28 +326,33 @@ class ProcessFileDataView(generics.CreateAPIView):
             os.makedirs(directory_path, exist_ok=True)
             decompres_file(file_path, directory_path)
             values = []
-            file_data_models = []
+            fcs_source_dir = os.path.join(
+                settings.MEDIA_ROOT, "fcs_source", str(experiment.id)
+            )
+            os.makedirs(fcs_source_dir, exist_ok=True)
             try:
                 for root, dirs, files in os.walk(directory_path): 
                     for file_name in files:
                         if file_name.endswith(".fcs"):
                             complete_path: str = os.path.join(root, file_name)
                             processed_file = process_fcs_file(complete_path)
+                            if isinstance(processed_file, str):
+                                raise ValueError(processed_file)
                             if len(values) == 0:
                                 values = processed_file[2]
-                            file_data_model = FileDataModel(
+                            persistent_fcs = os.path.join(fcs_source_dir, file_name)
+                            shutil.copy2(complete_path, persistent_fcs)
+                            file_data_model = FileDataModel.objects.create(
                                 headers=processed_file[0],
-                                data_set=processed_file[1],
+                                data_set=None,
                                 experiment=experiment,
                                 file_name=file_name,
-                                file=file
+                                file=file,
+                                fcs_path=persistent_fcs,
                             )
-                            file_data_models.append(file_data_model)
-                            if len(file_data_models) == 10:
-                                FileDataModel.objects.bulk_create(file_data_models)
-                                file_data_models = []
-                if len(file_data_models) > 0:
-                    FileDataModel.objects.bulk_create(file_data_models)
+                            file_data_model.save_dataframe(
+                                pd.DataFrame(processed_file[1])
+                            )
                 experiment.values = values
                 experiment.status = 'done'
                 experiment.save()
@@ -288,3 +369,34 @@ class ProcessFileDataView(generics.CreateAPIView):
                 experiment.save()
         else:
             return Response({"message": "The file is still being processed."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RecomputeFileDataView(APIView):
+    """Plano D: reprocessa um FileData a partir do .fcs original + gates.
+
+    Dispara a regeneracao do Parquet (cache morno) e a invalidacao da density
+    no Redis de forma assincrona (Celery).
+    """
+
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="RecomputeResponse",
+            fields={
+                "status": serializers.CharField(),
+                "file_data_id": serializers.IntegerField(),
+            },
+        ),
+    )
+    def post(self, request, file_id):
+        file_data = get_object_or_404(FileDataModel, id=file_id)
+        if not file_data.fcs_path:
+            return Response(
+                {"detail": "Sem .fcs original armazenado para reprocessar este arquivo."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        recompute_file_data_task.delay(file_data.id)
+        return Response(
+            {"status": "scheduled", "file_data_id": file_data.id},
+            status=status.HTTP_202_ACCEPTED,
+        )

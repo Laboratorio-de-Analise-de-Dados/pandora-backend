@@ -22,7 +22,7 @@ def load_fcs_data_from_file_data_model(file_data_id):
         file_data_instance = FileDataModel.objects.get(id=file_data_id)
         
         
-        fcs_df = pd.DataFrame(file_data_instance.data_set)
+        fcs_df = file_data_instance.get_dataframe()
        
         return fcs_df
     except FileDataModel.DoesNotExist:
@@ -45,6 +45,18 @@ def apply_gate_to_data(fcs_data_df, gate_coordinates, x_param, y_param):
     if x_param not in filtered_data.columns or y_param not in filtered_data.columns:
         print(f"Aviso na task: Parâmetros de eixo '{x_param}' ou '{y_param}' não encontrados nos dados.")
         return pd.DataFrame()
+
+    if gate_coordinates.get('type') == 'polygon':
+        from utils.density import _points_in_polygon
+
+        vertices = gate_coordinates.get('vertices') or []
+        if len(vertices) < 3:
+            print("Aviso na task: poligono com menos de 3 vertices. Ignorando.")
+            return pd.DataFrame()
+        mask = _points_in_polygon(
+            filtered_data[x_param].values, filtered_data[y_param].values, vertices
+        )
+        return filtered_data[mask]
 
     if 'startX' in gate_coordinates and 'endX' in gate_coordinates and \
        'startY' in gate_coordinates and 'endY' in gate_coordinates:

@@ -34,7 +34,10 @@ services:
       - pandora_net
 
   web:
-    build: .
+    build:
+      context: .
+      args:
+        SECRET_KEY: v0v8JHJuM8OzY2
     container_name: pandora_web
     environment:
       SECRET_KEY: v0v8JHJuM8OzY2
@@ -60,7 +63,10 @@ services:
       - pandora_net
 
   celery_worker:
-    build: .
+    build:
+      context: .
+      args:
+        SECRET_KEY: v0v8JHJuM8OzY2
     container_name: pandora_celery_worker
     environment:
       SECRET_KEY: v0v8JHJuM8OzY2
