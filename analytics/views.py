@@ -38,7 +38,12 @@ class CreateGateView(generics.CreateAPIView):
         data['dashboard'] = dash_instance.id
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        gate_instance = serializer.save()
+        
+        # Dispara recálculo de métricas (% parent, % total) para o gate criado
+        from analytics.tasks import recalculate_gate_analysis_task
+        recalculate_gate_analysis_task.delay(gate_instance.id)
+        
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -58,6 +63,11 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         if new_name is not None:
             gate.name = new_name
             gate.save(update_fields=["name"])
+        
+        # Dispara recálculo de métricas quando o gate é atualizado
+        from analytics.tasks import recalculate_gate_analysis_task
+        recalculate_gate_analysis_task.delay(gate.id)
+        
         serializer = self.get_serializer(gate)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
