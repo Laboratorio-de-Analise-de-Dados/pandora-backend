@@ -57,6 +57,17 @@ def set_cached_density(key, value):
 DEFAULT_COFACTOR = 150.0
 
 
+def parse_range(query_params, min_key: str, max_key: str):
+    """Return (min, max) tuple from query params, or None if neither is set."""
+    raw_min = query_params.get(min_key)
+    raw_max = query_params.get(max_key)
+    if raw_min is None and raw_max is None:
+        return None
+    lo = float(raw_min) if raw_min is not None else -float("inf")
+    hi = float(raw_max) if raw_max is not None else float("inf")
+    return (lo, hi)
+
+
 def normalize_column_name(name: str) -> str:
     return name.lower().replace(" ", "").replace("-", "_")
 
@@ -94,6 +105,8 @@ def compute_density(
     y_scale: str = "linear",
     cofactor: float = DEFAULT_COFACTOR,
     cutoff: int = 0,
+    x_range: tuple | None = None,
+    y_range: tuple | None = None,
 ):
     """Return a 2-D histogram dict ready to be sent as JSON.
 
@@ -123,8 +136,24 @@ def compute_density(
     xv = apply_scale(x.values, x_scale, cofactor)
     yv = apply_scale(y.values, y_scale, cofactor)
 
+    hist_range = None
+    if x_range or y_range:
+        xr = (
+            [apply_scale(np.array([x_range[0]]), x_scale, cofactor)[0],
+             apply_scale(np.array([x_range[1]]), x_scale, cofactor)[0]]
+            if x_range
+            else [float(np.min(xv)), float(np.max(xv))]
+        )
+        yr = (
+            [apply_scale(np.array([y_range[0]]), y_scale, cofactor)[0],
+             apply_scale(np.array([y_range[1]]), y_scale, cofactor)[0]]
+            if y_range
+            else [float(np.min(yv)), float(np.max(yv))]
+        )
+        hist_range = [xr, yr]
+
     histogram, x_edges, y_edges = np.histogram2d(
-        xv, yv, bins=bins,
+        xv, yv, bins=bins, range=hist_range,
     )
 
     counts = histogram.T.astype(int)
@@ -219,6 +248,8 @@ def subsample_scatter(
     x_scale: str = "linear",
     y_scale: str = "linear",
     cofactor: float = DEFAULT_COFACTOR,
+    x_range: tuple | None = None,
+    y_range: tuple | None = None,
 ):
     """Return a subsampled scatter dict ready to be sent as JSON (espaco exibido)."""
     x_col = normalize_column_name(x_param)
@@ -228,6 +259,11 @@ def subsample_scatter(
         return None
 
     subset = df[[x_col, y_col]].dropna()
+
+    if x_range:
+        subset = subset[(subset[x_col] >= x_range[0]) & (subset[x_col] <= x_range[1])]
+    if y_range:
+        subset = subset[(subset[y_col] >= y_range[0]) & (subset[y_col] <= y_range[1])]
 
     if len(subset) > sample:
         subset = subset.sample(n=sample, random_state=42)
