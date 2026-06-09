@@ -243,7 +243,7 @@ def _points_in_polygon(xs, ys, vertices) -> np.ndarray:
 
 
 def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
-    """Apply a single gate's filter (rectangle or polygon) to a DataFrame.
+    """Apply a single gate's filter (rectangle, polygon, interval or quadrant) to a DataFrame.
 
     Colunas ja normalizadas; coordenadas do gate sempre em espaco cru (linear),
     independente da escala usada para exibir o grafico.
@@ -258,11 +258,47 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
         x_label = normalize_column_name(config.get("x_axis_label", x_label))
         y_label = normalize_column_name(config.get("y_axis_label", y_label))
 
+    gate_type = gate_coords.get("type")
+
+    # Gate de intervalo (1D, apenas eixo X — histograma).
+    if gate_type == "interval":
+        x_col = normalize_column_name(gate_coords.get("x_axis", "")) or x_label
+        if x_col not in dataset.columns:
+            return dataset
+        start_x = gate_coords.get("startX")
+        end_x = gate_coords.get("endX")
+        if start_x is not None and end_x is not None:
+            return dataset[
+                (dataset[x_col] >= start_x) & (dataset[x_col] <= end_x)
+            ]
+        return dataset
+
+    # Gate de quadrante: filtra um dos 4 quadrantes a partir do centro da cruz.
+    if gate_type == "quadrant":
+        x_col = normalize_column_name(gate_coords.get("x_axis", "")) or x_label
+        y_col = normalize_column_name(gate_coords.get("y_axis", "")) or y_label
+        if x_col not in dataset.columns or y_col not in dataset.columns:
+            return dataset
+        cx = gate_coords.get("center_x")
+        cy = gate_coords.get("center_y")
+        quadrant = gate_coords.get("quadrant")
+        if cx is None or cy is None or quadrant is None:
+            return dataset
+        if quadrant == "Q1":  # X+ Y+
+            return dataset[(dataset[x_col] >= cx) & (dataset[y_col] >= cy)]
+        elif quadrant == "Q2":  # X- Y+
+            return dataset[(dataset[x_col] < cx) & (dataset[y_col] >= cy)]
+        elif quadrant == "Q3":  # X- Y-
+            return dataset[(dataset[x_col] < cx) & (dataset[y_col] < cy)]
+        elif quadrant == "Q4":  # X+ Y-
+            return dataset[(dataset[x_col] >= cx) & (dataset[y_col] < cy)]
+        return dataset
+
     if x_label not in dataset.columns or y_label not in dataset.columns:
         return dataset
 
     # Gate poligonal: lista de vertices [[x, y], ...].
-    if gate_coords.get("type") == "polygon":
+    if gate_type == "polygon":
         vertices = gate_coords.get("vertices") or []
         if len(vertices) >= 3:
             mask = _points_in_polygon(
