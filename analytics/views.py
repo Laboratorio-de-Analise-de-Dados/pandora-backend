@@ -42,6 +42,26 @@ class CreateGateView(generics.CreateAPIView):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
+class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
+    """PATCH/DELETE /analytics/gate/<gate_id> — rename or delete a gate."""
+    serializer_class = GateSerializer
+    lookup_url_kwarg = "gate_id"
+    queryset = GateModel.objects.all()
+
+    def get_object(self):
+        gate_id = self.kwargs.get(self.lookup_url_kwarg)
+        return get_object_or_404(GateModel, pk=gate_id)
+
+    def patch(self, request, *args, **kwargs):
+        gate = self.get_object()
+        new_name = request.data.get("name")
+        if new_name is not None:
+            gate.name = new_name
+            gate.save(update_fields=["name"])
+        serializer = self.get_serializer(gate)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 class GetGateDataView(generics.ListAPIView):
     serializer_class = GateSerializer
     lookup_url_kwarg = "gate_id"
