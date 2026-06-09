@@ -37,12 +37,26 @@ class GateModel(models.Model):
         """
         Constrói uma estrutura de árvore de gates a partir de dados de um arquivo.
         """
-        gates = cls.objects.filter(file_data_id=file_data_id).values(
+        from analytics.models import AnalysisResult
+
+        gates = list(cls.objects.filter(file_data_id=file_data_id).values(
             "id", "name", "parent_id", "gate_coordinates"
-        )
+        ))
+
+        # Busca analysis_result para todos os gates deste arquivo
+        gate_ids = [g["id"] for g in gates]
+        analysis_map = {}
+        for ar in AnalysisResult.objects.filter(gate_id__in=gate_ids).values("gate_id", "analysis_result"):
+            analysis_map[ar["gate_id"]] = ar["analysis_result"]
 
         # Cria um mapa de gates, preparando cada um para receber filhos
-        gate_map = {gate["id"]: {**gate, "children": []} for gate in gates}
+        gate_map = {}
+        for gate in gates:
+            entry = {**gate, "children": []}
+            ar = analysis_map.get(gate["id"])
+            if ar:
+                entry["analysis_result"] = {"analysis_result": ar}
+            gate_map[gate["id"]] = entry
         roots = []
 
         # Percorre todos os gates para construir a hierarquia
