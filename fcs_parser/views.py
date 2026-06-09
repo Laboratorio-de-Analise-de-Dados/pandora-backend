@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 from utils.density import (
     DEFAULT_COFACTOR,
     compute_density,
+    compute_histogram,
     default_scale,
     density_cache_key,
     get_cached_density,
@@ -307,6 +308,8 @@ class FileDensityView(APIView):
 
         if mode == "scatter":
             result = subsample_scatter(dataset, x_param, y_param, sample, x_scale, y_scale, cofactor, x_range, y_range)
+        elif mode == "histogram":
+            result = compute_histogram(dataset, x_param, bins, x_scale, cofactor, x_range)
         else:
             result = compute_density(dataset, x_param, y_param, bins, x_scale, y_scale, cofactor, cutoff, x_range, y_range)
 
