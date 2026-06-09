@@ -49,8 +49,9 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       MEDIA_ROOT: "/app/uploads" # mesma pasta que o volume
-    command: bash -c 'while !</dev/tcp/db/5432; do sleep 1; done; while !</dev/tcp/redis/6379; do sleep 1; done; python manage.py migrate && python manage.py runserver 0.0.0.0:8000'
+    command: bash -c 'while !</dev/tcp/db/5432; do sleep 1; done; while !</dev/tcp/redis/6379; do sleep 1; done; python manage.py makemigrations &&  python manage.py migrate && python manage.py runserver 0.0.0.0:8000'
     volumes:
+      - .:/app
       - uploads_data:/app/uploads # pasta de uploads compartilhada
     stdin_open: true
     tty: true
@@ -80,6 +81,7 @@ services:
       MEDIA_ROOT: "/app/uploads" # mesma pasta que o volume
     command: celery -A citosharp worker -l info
     volumes:
+      - .:/app
       - uploads_data:/app/uploads # compartilha os uploads com web
     depends_on:
       - db
