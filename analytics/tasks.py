@@ -110,51 +110,70 @@ def calculate_cytometry_metrics(gated_data_df, total_events_in_file, parent_gate
 
 @shared_task(bind=True)
 def recalculate_gate_analysis_task(self, gate_id):
+    """Recalcula métricas de um gate seguindo o padrão FlowJo/Cytobank.
+
+    Percorre toda a cadeia hierárquica de gates (do root até o gate alvo),
+    aplicando cada filtro sequencialmente — assim como ``GateDensityView`` e
+    ``GetGateDataView`` já fazem.
+
+    Métricas calculadas:
+    - **count**: eventos dentro deste gate.
+    - **% of Parent**: count / eventos no gate pai (ou total do arquivo para
+      root gates).
+    - **% of Total (Grandparent)**: count / total de eventos do arquivo.
+    """
+    from utils.density import apply_gate_filter, normalize_columns
+
     print(f"Tarefa {self.request.id}: Iniciando recálculo para gate ID {gate_id}...")
     try:
-        gate = GateModel.objects.select_related('dashboard', 'file_data', 'parent').get(id=gate_id)
-        
-        x_param = gate.dashboard.dashboard_config.get('x_axis_parameter', 'FSC-A')
-        y_param = gate.dashboard.dashboard_config.get('y_axis_parameter', 'SSC-A')
+        gate = GateModel.objects.select_related(
+            'dashboard', 'file_data', 'parent',
+        ).get(id=gate_id)
 
+        # --- 1. Dados brutos do arquivo ----------------------------------
         fcs_data_df = load_fcs_data_from_file_data_model(gate.file_data.id)
         if fcs_data_df.empty:
             print(f"Tarefa {self.request.id}: Dados FCS vazios para gate {gate_id}. Abortando.")
             return
 
-        total_events_in_file = len(fcs_data_df)
-        all_channel_names = list(fcs_data_df.columns)
+        dataset = normalize_columns(fcs_data_df)
+        total_events_in_file = len(dataset)
+        all_channel_names = list(dataset.columns)
 
+        # --- 2. Cadeia hierárquica root → … → gate -----------------------
+        current = gate
+        gate_path = [current]
+        while current.parent:
+            current = current.parent
+            gate_path.insert(0, current)
+
+        # --- 3. Aplica gates sequencialmente (como FlowJo/Cytobank) ------
         parent_gated_data_df = None
-        if gate.parent:
-            parent_gate = gate.parent
-            parent_x_param = parent_gate.dashboard.dashboard_config.get('x_axis_parameter', 'FSC-A')
-            parent_y_param = parent_gate.dashboard.dashboard_config.get('y_axis_parameter', 'SSC-A')
-            
-            parent_gated_data_df = apply_gate_to_data(
-                fcs_data_df, 
-                parent_gate.gate_coordinates, 
-                parent_x_param,
-                parent_y_param
-            )
+        for g in gate_path:
+            if g.id == gate.id:
+                # Guarda dados do pai (tudo antes deste gate)
+                parent_gated_data_df = dataset.copy()
+            dataset = apply_gate_filter(dataset, g)
+            if dataset.empty:
+                break
 
-        gated_data_df = apply_gate_to_data(
-            fcs_data_df, 
-            gate.gate_coordinates, 
-            x_param, 
-            y_param
-        )
+        gated_data_df = dataset
 
+        # Para root gates sem parent, % of Parent = % of Total
+        if parent_gated_data_df is None:
+            parent_gated_data_df = normalize_columns(fcs_data_df)
+
+        # --- 4. Calcula métricas -----------------------------------------
         new_analysis_results = calculate_cytometry_metrics(
-            gated_data_df, 
-            total_events_in_file, 
+            gated_data_df,
+            total_events_in_file,
             parent_gated_data_df,
-            all_channel_names
+            all_channel_names,
         )
 
         AnalysisResult.objects.update_or_create(
             gate=gate,
-            defaults={'analysis_result': new_analysis_results}
+            defaults={'analysis_result': new_analysis_results},
         )
         print(f"Tarefa {self.request.id}: Recálculo concluído para gate '{gate.name}' (ID: {gate_id}).")
 
