@@ -28,7 +28,7 @@ class GateSerializer(serializers.ModelSerializer):
         required=True, 
         allow_null=False
     ) 
-    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False)
+    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False, default=None)
     class Meta: 
         model = GateModel
         fields = [
