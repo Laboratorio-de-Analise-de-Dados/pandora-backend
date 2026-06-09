@@ -10,12 +10,14 @@ class DashboardSerializer(serializers.ModelSerializer):
     class Meta:
         model = DashboardModel
         fields = ['id', 'name', 'dashboard_config', 'created_at', 'file_data']
+        validators = []  # disable auto UniqueTogetherValidator; handled in create()
+
     def create(self, validated_data):
-        name = validated_data.get('name')
         dashboard_instance, created = DashboardModel.objects.update_or_create(
-            **validated_data
+            name=validated_data['name'],
+            file_data=validated_data['file_data'],
+            defaults={'dashboard_config': validated_data.get('dashboard_config', {})},
         )
-        print(f"Dashboard '{dashboard_instance.name}' {'criado' if created else 'atualizado'} via Serializer.")
         return dashboard_instance
         
 class GateSerializer(serializers.ModelSerializer):
