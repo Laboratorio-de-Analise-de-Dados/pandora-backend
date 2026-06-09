@@ -176,6 +176,51 @@ def compute_density(
     }
 
 
+def compute_histogram(
+    df: pd.DataFrame,
+    x_param: str,
+    bins: int = 256,
+    x_scale: str = "linear",
+    cofactor: float = DEFAULT_COFACTOR,
+    x_range: tuple | None = None,
+):
+    """Return a 1-D histogram dict ready to be sent as JSON.
+
+    Histogram unidimensional (distribuicao de um unico parametro). Os bins
+    ficam uniformes no espaco transformado (biex/linear).
+    """
+    x_col = normalize_column_name(x_param)
+
+    if x_col not in df.columns:
+        return None
+
+    x = pd.to_numeric(df[x_col], errors="coerce").dropna()
+
+    if x_range:
+        x = x[(x >= x_range[0]) & (x <= x_range[1])]
+
+    if len(x) == 0:
+        return None
+
+    xv = apply_scale(x.values, x_scale, cofactor)
+
+    hist_range = None
+    if x_range:
+        hist_range = (
+            float(apply_scale(np.array([x_range[0]]), x_scale, cofactor)[0]),
+            float(apply_scale(np.array([x_range[1]]), x_scale, cofactor)[0]),
+        )
+
+    counts, edges = np.histogram(xv, bins=bins, range=hist_range)
+
+    return {
+        "counts": counts.tolist(),
+        "edges": np.round(edges, 4).tolist(),
+        "x_scale": x_scale,
+        "cofactor": cofactor,
+    }
+
+
 def _points_in_polygon(xs, ys, vertices) -> np.ndarray:
     """Teste vetorizado de ponto-em-poligono (ray casting). Coordenadas e
     vertices no MESMO espaco (cru). Retorna mascara booleana alinhada a xs/ys."""
