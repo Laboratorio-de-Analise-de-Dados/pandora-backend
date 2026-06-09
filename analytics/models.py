@@ -7,7 +7,17 @@ class GateModel(models.Model):
 
     class Meta:
         db_table = "gate"
-        unique_together = ('name', 'file_data')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['name', 'parent'],
+                name='unique_gate_name_per_parent',
+            ),
+            models.UniqueConstraint(
+                fields=['name', 'file_data'],
+                condition=models.Q(parent__isnull=True),
+                name='unique_gate_name_root_level',
+            ),
+        ]
 
     file_data = models.ForeignKey(
         FileDataModel, related_name="gates", on_delete=models.CASCADE, null=True
