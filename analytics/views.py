@@ -62,15 +62,25 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
 
     def patch(self, request, *args, **kwargs):
         gate = self.get_object()
+        update_fields = []
         new_name = request.data.get("name")
         if new_name is not None:
             gate.name = new_name
-            gate.save(update_fields=["name"])
-        
-        # Dispara recálculo de métricas quando o gate é atualizado
+            update_fields.append("name")
+        new_coords = request.data.get("gate_coordinates")
+        if new_coords is not None:
+            gate.gate_coordinates = new_coords
+            update_fields.append("gate_coordinates")
+        if update_fields:
+            gate.save(update_fields=update_fields)
+
         from analytics.tasks import recalculate_gate_analysis_task
         recalculate_gate_analysis_task.delay(gate.id)
-        
+
+        if new_coords is not None:
+            from utils.density import invalidate_density
+            invalidate_density(gate.file_data_id)
+
         serializer = self.get_serializer(gate)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
