@@ -254,7 +254,7 @@ class ApplyGateView(APIView):
         source_ids = request.data.get("source_gate_ids", [])
         target_ids = request.data.get("target_file_data_ids", [])
         recursive = request.data.get("recursive", True)
-        on_conflict = request.data.get("on_conflict", "rename")
+        on_conflict = request.data.get("on_conflict", "replace")
 
         if not source_ids or not target_ids:
             return Response(
@@ -265,6 +265,15 @@ class ApplyGateView(APIView):
         source_gates = list(GateModel.objects.filter(id__in=source_ids).select_related("dashboard"))
         if len(source_gates) != len(source_ids):
             return Response({"detail": "One or more source gates not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Exclude source file(s) from target list to prevent self-copy.
+        source_file_ids = {g.file_data_id for g in source_gates}
+        target_ids = [fid for fid in target_ids if fid not in source_file_ids]
+        if not target_ids:
+            return Response(
+                {"detail": "No valid target files (source file excluded)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Auto-expand quadrant groups: if a quadrant gate is selected, include all 4 Qs.
         expanded = set(source_ids)
@@ -339,10 +348,13 @@ class ApplyGateView(APIView):
 
                     # Clone dashboard for the target file.
                     src_dash = gate.dashboard
-                    new_dash = DashboardModel.objects.create(
-                        name=f"{src_dash.name}_fd{target_fd_id}",
-                        dashboard_config=src_dash.dashboard_config,
+                    dash_name = f"{src_dash.name}_fd{target_fd_id}_{gate_name}"
+                    # Truncate to 50 chars (model max_length)
+                    dash_name = dash_name[:50]
+                    new_dash, _ = DashboardModel.objects.update_or_create(
+                        name=dash_name,
                         file_data_id=target_fd_id,
+                        defaults={"dashboard_config": src_dash.dashboard_config},
                     )
 
                     new_gate = GateModel.objects.create(
