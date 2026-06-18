@@ -31,6 +31,11 @@ class GateModel(models.Model):
     parent = models.ForeignKey(
         "self", related_name="children", on_delete=models.CASCADE, null=True, blank=True
     )
+    copied_from = models.ForeignKey(
+        "self", null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="copies",
+    )
 
     @classmethod
     def build_tree(cls, file_data_id):
@@ -40,7 +45,7 @@ class GateModel(models.Model):
         from analytics.models import AnalysisResult
 
         gates = list(cls.objects.filter(file_data_id=file_data_id).values(
-            "id", "name", "parent_id", "gate_coordinates"
+            "id", "name", "parent_id", "gate_coordinates", "copied_from_id"
         ))
 
         # Busca analysis_result para todos os gates deste arquivo
