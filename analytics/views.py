@@ -71,6 +71,10 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         if new_coords is not None:
             gate.gate_coordinates = new_coords
             update_fields.append("gate_coordinates")
+        new_color = request.data.get("color")
+        if new_color is not None:
+            gate.color = new_color if new_color else None
+            update_fields.append("color")
         if update_fields:
             gate.save(update_fields=update_fields)
 

@@ -36,6 +36,7 @@ class GateModel(models.Model):
         on_delete=models.SET_NULL,
         related_name="copies",
     )
+    color = models.CharField(max_length=7, null=True, blank=True)
 
     @classmethod
     def build_tree(cls, file_data_id):
@@ -45,7 +46,7 @@ class GateModel(models.Model):
         from analytics.models import AnalysisResult
 
         gates = list(cls.objects.filter(file_data_id=file_data_id).values(
-            "id", "name", "parent_id", "gate_coordinates", "copied_from_id"
+            "id", "name", "parent_id", "gate_coordinates", "copied_from_id", "color"
         ))
 
         # Busca analysis_result para todos os gates deste arquivo

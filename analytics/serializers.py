@@ -36,7 +36,7 @@ class GateSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'gate_coordinates', 'created_at', 
             'dashboard',
-            'file_data', 'parent', 'copied_from',
+            'file_data', 'parent', 'copied_from', 'color',
         ]
         read_only_fields = ['id', 'created_at'] 
 
@@ -78,7 +78,7 @@ class ListGateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = GateModel
-        fields = ['id', 'created_at', 'parent_id', 'children', 'file_data', 'name', 'gate_coordinates', 'analysis_result', 'copied_from_id']
+        fields = ['id', 'created_at', 'parent_id', 'children', 'file_data', 'name', 'gate_coordinates', 'analysis_result', 'copied_from_id', 'color']
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_children(self, obj):
