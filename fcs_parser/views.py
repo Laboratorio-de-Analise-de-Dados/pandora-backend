@@ -390,6 +390,62 @@ class ProcessFileDataView(generics.CreateAPIView):
             return Response({"message": "The file is still being processed."}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class FileStatsView(APIView):
+    """Return summary and per-channel statistics for the entire file (no gate).
+
+    Computes the same metrics as gate analysis but on the full dataset so the
+    frontend stats panel can show file-level statistics.
+    """
+
+    @extend_schema(
+        responses=inline_serializer(
+            name="FileStatsResponse",
+            fields={
+                "summary_metrics": serializers.DictField(),
+                "channel_statistics": serializers.DictField(),
+            },
+        ),
+    )
+    def get(self, request, file_id):
+        file_data = get_object_or_404(FileDataModel, id=file_id)
+        dataset = normalize_columns(file_data.get_dataframe())
+
+        if dataset.empty:
+            return Response(
+                {"detail": "Dataset vazio para este arquivo."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        total_events = len(dataset)
+        all_channel_names = list(dataset.columns)
+
+        channel_statistics = {}
+        for channel in all_channel_names:
+            channel_data = dataset[channel]
+            if channel_data.empty:
+                continue
+            mean_val = float(channel_data.mean())
+            median_val = float(channel_data.median())
+            std_dev_val = float(channel_data.std())
+            channel_statistics[channel] = {
+                "mean_mfi": mean_val,
+                "median_mfi": median_val,
+                "std_dev": std_dev_val,
+                "cv": (std_dev_val / mean_val * 100) if mean_val != 0 else 0,
+            }
+
+        payload = {
+            "summary_metrics": {
+                "count": total_events,
+                "percent_of_total_population": 1.0,
+                "percent_of_parent_population": 1.0,
+            },
+            "channel_statistics": channel_statistics,
+        }
+
+        return Response(payload, status=status.HTTP_200_OK)
+
+
 class RecomputeFileDataView(APIView):
     """Plano D: reprocessa um FileData a partir do .fcs original + gates.
 
