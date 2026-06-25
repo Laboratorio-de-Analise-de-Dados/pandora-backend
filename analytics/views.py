@@ -378,6 +378,7 @@ class ApplyGateView(APIView):
                         dashboard=new_dash,
                         parent_id=new_parent_id,
                         copied_from=gate,
+                        color=gate.color,
                     )
                     id_map[gate.id] = new_gate.id
                     file_created += 1
