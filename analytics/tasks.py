@@ -1,94 +1,107 @@
-# seu_projeto_django/analytics/tasks.py
+from __future__ import annotations
+
+import logging
 
 from celery import shared_task
 import pandas as pd
-import numpy as np # Ainda útil para cálculos estatísticos
-# import io # Não mais necessário se não for ler o arquivo binário direto
+import numpy as np
 
-# Importe os modelos necessários para as tasks
 from .models import GateModel, AnalysisResult
-# Importe o FileDataModel do seu app fcs_parser
-# Garanta que o caminho de importação esteja correto para o seu projeto
-from fcs_parser.models import FileDataModel 
+from fcs_parser.models import FileDataModel
 
-# --- Funções de Lógica de Negócio (Revisadas) ---
+logger = logging.getLogger(__name__)
 
-def load_fcs_data_from_file_data_model(file_data_id):
-    """
-    Carrega os dados FCS do campo `data_set` de um FileDataModel
-    e retorna como um DataFrame Pandas.
-    """
+
+def load_fcs_data_from_file_data_model(file_data_id: int) -> pd.DataFrame:
+    """Load FCS data from a FileDataModel and return as a DataFrame."""
     try:
         file_data_instance = FileDataModel.objects.get(id=file_data_id)
-        
-        
-        fcs_df = file_data_instance.get_dataframe()
-       
-        return fcs_df
+        return file_data_instance.get_dataframe()
     except FileDataModel.DoesNotExist:
-        print(f"FileDataModel com ID {file_data_id} não encontrado na task.")
+        logger.error("FileDataModel com ID %s não encontrado.", file_data_id)
         return pd.DataFrame()
     except Exception as e:
-        print(f"Erro na task ao carregar dados FCS do FileDataModel para ID {file_data_id}: {e}")
+        logger.error(
+            "Erro ao carregar dados FCS para FileDataModel %s: %s",
+            file_data_id,
+            e,
+        )
         return pd.DataFrame()
-
-
 
 
 def apply_gate_to_data(fcs_data_df, gate_coordinates, x_param, y_param):
-   
+
     if fcs_data_df.empty:
         return pd.DataFrame()
 
     filtered_data = fcs_data_df.copy()
 
     if x_param not in filtered_data.columns or y_param not in filtered_data.columns:
-        print(f"Aviso na task: Parâmetros de eixo '{x_param}' ou '{y_param}' não encontrados nos dados.")
+        logger.warning(
+            "Parâmetros '%s' ou '%s' não encontrados nos dados.", x_param, y_param
+        )
         return pd.DataFrame()
 
-    if gate_coordinates.get('type') == 'polygon':
+    if gate_coordinates.get("type") == "polygon":
         from utils.density import _points_in_polygon
 
-        vertices = gate_coordinates.get('vertices') or []
+        vertices = gate_coordinates.get("vertices") or []
         if len(vertices) < 3:
-            print("Aviso na task: poligono com menos de 3 vertices. Ignorando.")
+            logger.warning("Polígono com menos de 3 vértices. Ignorando.")
             return pd.DataFrame()
         mask = _points_in_polygon(
             filtered_data[x_param].values, filtered_data[y_param].values, vertices
         )
         return filtered_data[mask]
 
-    if 'startX' in gate_coordinates and 'endX' in gate_coordinates and \
-       'startY' in gate_coordinates and 'endY' in gate_coordinates:
-        min_x = gate_coordinates.get('startX')
-        max_x = gate_coordinates.get('endX')
-        min_y = gate_coordinates.get('startY')
-        max_y = gate_coordinates.get('endY')
+    if (
+        "startX" in gate_coordinates
+        and "endX" in gate_coordinates
+        and "startY" in gate_coordinates
+        and "endY" in gate_coordinates
+    ):
+        min_x = gate_coordinates.get("startX")
+        max_x = gate_coordinates.get("endX")
+        min_y = gate_coordinates.get("startY")
+        max_y = gate_coordinates.get("endY")
 
         filtered_data = filtered_data[
-            (filtered_data[x_param] >= min_x) & (filtered_data[x_param] <= max_x) &
-            (filtered_data[y_param] >= min_y) & (filtered_data[y_param] <= max_y)
+            (filtered_data[x_param] >= min_x)
+            & (filtered_data[x_param] <= max_x)
+            & (filtered_data[y_param] >= min_y)
+            & (filtered_data[y_param] <= max_y)
         ]
     else:
-        print(f"Aviso na task: Formato de gate_coordinates desconhecido para o gate. Assumindo que não é retangular ou falta dados.")
-        return pd.DataFrame() # Retorna vazio se não puder aplicar o gate
-    
+        logger.warning("Formato de gate_coordinates desconhecido.")
+        return pd.DataFrame()
+
     return filtered_data
 
 
-def calculate_cytometry_metrics(gated_data_df, total_events_in_file, parent_gated_data_df=None, all_channel_names=None):
-  
+def calculate_cytometry_metrics(
+    gated_data_df,
+    total_events_in_file,
+    parent_gated_data_df=None,
+    all_channel_names=None,
+):
+
     metrics = {
         "summary_metrics": {
             "count": len(gated_data_df),
-            "percent_of_total_population": len(gated_data_df) / total_events_in_file if total_events_in_file > 0 else 0,
-            "percent_of_parent_population": 0
+            "percent_of_total_population": (
+                len(gated_data_df) / total_events_in_file
+                if total_events_in_file > 0
+                else 0
+            ),
+            "percent_of_parent_population": 0,
         },
-        "channel_statistics": {}
+        "channel_statistics": {},
     }
 
     if parent_gated_data_df is not None and len(parent_gated_data_df) > 0:
-        metrics["summary_metrics"]["percent_of_parent_population"] = len(gated_data_df) / len(parent_gated_data_df)
+        metrics["summary_metrics"]["percent_of_parent_population"] = len(
+            gated_data_df
+        ) / len(parent_gated_data_df)
 
     if all_channel_names:
         for channel in all_channel_names:
@@ -97,12 +110,12 @@ def calculate_cytometry_metrics(gated_data_df, total_events_in_file, parent_gate
                 mean_val = channel_data.mean()
                 median_val = channel_data.median()
                 std_dev_val = channel_data.std()
-                
+
                 metrics["channel_statistics"][channel] = {
                     "mean_mfi": mean_val,
                     "median_mfi": median_val,
                     "std_dev": std_dev_val,
-                    "cv": (std_dev_val / mean_val * 100) if mean_val != 0 else 0
+                    "cv": (std_dev_val / mean_val * 100) if mean_val != 0 else 0,
                 }
 
     return metrics
@@ -124,16 +137,18 @@ def recalculate_gate_analysis_task(self, gate_id):
     """
     from utils.density import apply_gate_filter, normalize_columns
 
-    print(f"Tarefa {self.request.id}: Iniciando recálculo para gate ID {gate_id}...")
+    logger.info("Iniciando recálculo para gate ID %s...", gate_id)
     try:
         gate = GateModel.objects.select_related(
-            'dashboard', 'file_data', 'parent',
+            "dashboard",
+            "file_data",
+            "parent",
         ).get(id=gate_id)
 
         # --- 1. Dados brutos do arquivo ----------------------------------
         fcs_data_df = load_fcs_data_from_file_data_model(gate.file_data.id)
         if fcs_data_df.empty:
-            print(f"Tarefa {self.request.id}: Dados FCS vazios para gate {gate_id}. Abortando.")
+            logger.warning("Dados FCS vazios para gate %s. Abortando.", gate_id)
             return
 
         dataset = normalize_columns(fcs_data_df)
@@ -173,14 +188,19 @@ def recalculate_gate_analysis_task(self, gate_id):
 
         AnalysisResult.objects.update_or_create(
             gate=gate,
-            defaults={'analysis_result': new_analysis_results},
+            defaults={"analysis_result": new_analysis_results},
         )
-        print(f"Tarefa {self.request.id}: Recálculo concluído para gate '{gate.name}' (ID: {gate_id}).")
+        logger.info("Recálculo concluído para gate '%s' (ID: %s).", gate.name, gate_id)
 
         for child_gate in gate.children.all():
             recalculate_gate_analysis_task.delay(child_gate.id)
 
     except GateModel.DoesNotExist:
-        print(f"Tarefa {self.request.id}: GateModel com ID {gate_id} não encontrado.")
+        logger.error("GateModel com ID %s não encontrado.", gate_id)
     except Exception as e:
-        print(f"Tarefa {self.request.id}: Erro inesperado ao recalcular gate {gate_id}: {e}", exc_info=True)
+        logger.error(
+            "Erro inesperado ao recalcular gate %s: %s",
+            gate_id,
+            e,
+            exc_info=True,
+        )

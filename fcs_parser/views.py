@@ -1,12 +1,8 @@
 import json
 import os
-import shutil
-import traceback
+
 from django.conf import settings
-import pandas as pd
-from pathlib import Path
 from django.shortcuts import get_object_or_404
-from django.views.decorators.csrf import csrf_exempt
 from analytics.models import GateModel
 from fcs_parser.tasks import process_experiment_files_task, recompute_file_data_task
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
@@ -32,14 +28,9 @@ from fcs_parser.serializers import (
     ExperimentSerializer,
     ListExperimentSerializer,
     ListFileDataSerializer,
-
     ParamListDataSerializer,
 )
-from django.forms.models import model_to_dict
-
-from fcs_parser.services.decompressor import decompres_file
-from fcs_parser.services.process_fcs import process_fcs_file
-from utils.mixins import SerializerByMethodMixin
+from fcs_parser.services.process_experiment_file import assemble_chunks
 
 
 class ExperimentInitView(generics.CreateAPIView):
@@ -60,7 +51,7 @@ class ExperimentInitView(generics.CreateAPIView):
     def post(self, request):
         title = request.data.get("title").replace(" ", "_")
         experiment_type = request.data.get("type")
-        total=request.data.get("totalChunks")
+        total = request.data.get("totalChunks")
         experiment = ExperimentModel.objects.create(
             title=title,
             type=experiment_type,
@@ -69,6 +60,7 @@ class ExperimentInitView(generics.CreateAPIView):
             total_chunks=total,
         )
         return Response({"fileId": str(experiment.id)}, status=201)
+
 
 class UploadChunkView(generics.CreateAPIView):
     @extend_schema(
@@ -92,21 +84,20 @@ class UploadChunkView(generics.CreateAPIView):
 
         experiment = ExperimentModel.objects.get(id=file_id)
 
-        # salva em disco
-        upload_dir = Path("/tmp/uploads")
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        chunk_path = upload_dir / f"{file_id}_{chunk_index}.part"
+        chunk_dir = os.path.join(settings.MEDIA_ROOT, "chunks")
+        os.makedirs(chunk_dir, exist_ok=True)
+        chunk_path = os.path.join(chunk_dir, f"{file_id}_{chunk_index}.part")
         with open(chunk_path, "wb") as f:
             for c in chunk.chunks():
                 f.write(c)
 
-        # atualiza progresso
         if chunk_index not in experiment.received_chunks:
             experiment.received_chunks.append(chunk_index)
             experiment.save(update_fields=["received_chunks"])
 
         return Response({"status": "ok"})
-    
+
+
 class ExperimentCompleteView(generics.CreateAPIView):
     @extend_schema(
         request=inline_serializer(
@@ -122,36 +113,24 @@ class ExperimentCompleteView(generics.CreateAPIView):
         file_id = request.data["fileId"]
         experiment = ExperimentModel.objects.get(id=file_id)
 
-        upload_dir = Path("/tmp/uploads")
+        final_path = assemble_chunks(experiment)
         final_name = f"{file_id}.zip"
-        final_path = Path(settings.MEDIA_ROOT) / final_name
-
-        with open(final_path, "wb") as outfile:
-            for i in range(experiment.total_chunks):
-                chunk_path = upload_dir / f"{file_id}_{i}.part"
-                if not chunk_path.exists():
-                    raise ValueError(f"Chunk {i} faltando")
-                with open(chunk_path, "rb") as f:
-                    outfile.write(f.read())
-                os.remove(chunk_path)
 
         experiment.file_status = "uploaded"
         experiment.status = "new"
         experiment.save(update_fields=["file_status", "status"])
 
-        # cria o FileModel apontando para o zip final
         file_instance = FileModel.objects.create(
-            file=str(final_path),   # ou usar um campo FileField com upload_to
+            file=final_path,
             file_name=final_name,
-            experiment=experiment
+            experiment=experiment,
         )
 
-        # dispara task assíncrona com apenas o file_id
         process_experiment_files_task.delay(file_instance.id)
 
         return Response({"status": "processing"})
 
-    
+
 class ExperimentListView(generics.ListAPIView):
     serializer_class = ListExperimentSerializer
     queryset = ExperimentModel.objects.all()
@@ -168,7 +147,7 @@ class ExperimentListView(generics.ListAPIView):
     #             )
     #             file_instance = FileModel.objects.create(
     #                 file=file, file_name=file.name, experiment=experiment_instance
-    #             ) 
+    #             )
     #             process_experiment_files_task.delay(file_instance.id)
     #             return Response(
     #                 model_to_dict(experiment_instance), status=status.HTTP_201_CREATED
@@ -197,6 +176,7 @@ class GetExperimentFiles(generics.ListAPIView):
         experiment_id = self.kwargs.get("experiment_id")
         queryset = FileDataModel.objects.filter(experiment_id=experiment_id)
         return queryset
+
     def list(self, request, *args, **kwargs):
         # Retrieve the queryset of files
         queryset = self.get_queryset()
@@ -212,10 +192,11 @@ class GetExperimentFiles(generics.ListAPIView):
             gate_tree = GateModel.build_tree(file_data_id=file.id)
 
             # Add the built tree to the file data
-            file_data['gates'] = gate_tree
+            file_data["gates"] = gate_tree
             data.append(file_data)
-        
+
         return Response(data)
+
 
 class ListFileParams(generics.ListAPIView):
     lookup_field = "file_id"
@@ -234,10 +215,7 @@ class ListFileParams(generics.ListAPIView):
             limit = 10000
 
         file_data = self.get_queryset()
-        dataset = file_data.get_dataframe()
-        dataset.columns = dataset.columns.str.replace(" ", "")
-        dataset.columns = dataset.columns.str.replace("-", "_")
-        dataset.columns = dataset.columns.str.lower()
+        dataset = normalize_columns(file_data.get_dataframe())
         dataset = dataset.head(limit)
         file_data.data_set = json.loads(dataset.to_json(orient="records"))
         serializer = self.serializer_class(file_data)
@@ -249,19 +227,84 @@ class FileDensityView(APIView):
 
     @extend_schema(
         parameters=[
-            OpenApiParameter(name="x", type=str, required=True, description="X-axis parameter (e.g. FSC-A)"),
-            OpenApiParameter(name="y", type=str, required=True, description="Y-axis parameter (e.g. SSC-A)"),
-            OpenApiParameter(name="mode", type=str, required=False, description="'heatmap' (default) or 'scatter'"),
-            OpenApiParameter(name="bins", type=int, required=False, description="Bins for heatmap (default 200)"),
-            OpenApiParameter(name="sample", type=int, required=False, description="Max points for scatter (default 5000)"),
-            OpenApiParameter(name="xscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
-            OpenApiParameter(name="yscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
-            OpenApiParameter(name="cofactor", type=float, required=False, description="arcsinh cofactor for biex (default 150)"),
-            OpenApiParameter(name="cutoff", type=int, required=False, description="Heatmap density cutoff: bins with count <= cutoff become null/transparent (default 0)"),
-            OpenApiParameter(name="xmin", type=float, required=False, description="Lower bound for X axis (raw value)"),
-            OpenApiParameter(name="xmax", type=float, required=False, description="Upper bound for X axis (raw value)"),
-            OpenApiParameter(name="ymin", type=float, required=False, description="Lower bound for Y axis (raw value)"),
-            OpenApiParameter(name="ymax", type=float, required=False, description="Upper bound for Y axis (raw value)"),
+            OpenApiParameter(
+                name="x",
+                type=str,
+                required=True,
+                description="X-axis parameter (e.g. FSC-A)",
+            ),
+            OpenApiParameter(
+                name="y",
+                type=str,
+                required=True,
+                description="Y-axis parameter (e.g. SSC-A)",
+            ),
+            OpenApiParameter(
+                name="mode",
+                type=str,
+                required=False,
+                description="'heatmap' (default) or 'scatter'",
+            ),
+            OpenApiParameter(
+                name="bins",
+                type=int,
+                required=False,
+                description="Bins for heatmap (default 200)",
+            ),
+            OpenApiParameter(
+                name="sample",
+                type=int,
+                required=False,
+                description="Max points for scatter (default 5000)",
+            ),
+            OpenApiParameter(
+                name="xscale",
+                type=str,
+                required=False,
+                description="'linear' or 'biex' (default: heuristic by channel)",
+            ),
+            OpenApiParameter(
+                name="yscale",
+                type=str,
+                required=False,
+                description="'linear' or 'biex' (default: heuristic by channel)",
+            ),
+            OpenApiParameter(
+                name="cofactor",
+                type=float,
+                required=False,
+                description="arcsinh cofactor for biex (default 150)",
+            ),
+            OpenApiParameter(
+                name="cutoff",
+                type=int,
+                required=False,
+                description="Heatmap density cutoff: bins with count <= cutoff become null/transparent (default 0)",
+            ),
+            OpenApiParameter(
+                name="xmin",
+                type=float,
+                required=False,
+                description="Lower bound for X axis (raw value)",
+            ),
+            OpenApiParameter(
+                name="xmax",
+                type=float,
+                required=False,
+                description="Upper bound for X axis (raw value)",
+            ),
+            OpenApiParameter(
+                name="ymin",
+                type=float,
+                required=False,
+                description="Lower bound for Y axis (raw value)",
+            ),
+            OpenApiParameter(
+                name="ymax",
+                type=float,
+                required=False,
+                description="Upper bound for Y axis (raw value)",
+            ),
         ],
         responses=inline_serializer(
             name="FileDensityResponse",
@@ -290,8 +333,18 @@ class FileDensityView(APIView):
         y_range = parse_range(request.query_params, "ymin", "ymax")
 
         cache_key = density_cache_key(
-            "file", file_id, file_id, x_param, y_param, mode, bins, sample,
-            x_scale, y_scale, cofactor, cutoff,
+            "file",
+            file_id,
+            file_id,
+            x_param,
+            y_param,
+            mode,
+            bins,
+            sample,
+            x_scale,
+            y_scale,
+            cofactor,
+            cutoff,
         )
         if x_range:
             cache_key += f":xr{x_range[0]}:{x_range[1]}"
@@ -304,14 +357,42 @@ class FileDensityView(APIView):
         file_data = get_object_or_404(FileDataModel, id=file_id)
         dataset = normalize_columns(file_data.get_dataframe())
 
-        base = {"mode": mode, "total_events": len(dataset), "x_label": x_param, "y_label": y_param}
+        base = {
+            "mode": mode,
+            "total_events": len(dataset),
+            "x_label": x_param,
+            "y_label": y_param,
+        }
 
         if mode == "scatter":
-            result = subsample_scatter(dataset, x_param, y_param, sample, x_scale, y_scale, cofactor, x_range, y_range)
+            result = subsample_scatter(
+                dataset,
+                x_param,
+                y_param,
+                sample,
+                x_scale,
+                y_scale,
+                cofactor,
+                x_range,
+                y_range,
+            )
         elif mode == "histogram":
-            result = compute_histogram(dataset, x_param, bins, x_scale, cofactor, x_range)
+            result = compute_histogram(
+                dataset, x_param, bins, x_scale, cofactor, x_range
+            )
         else:
-            result = compute_density(dataset, x_param, y_param, bins, x_scale, y_scale, cofactor, cutoff, x_range, y_range)
+            result = compute_density(
+                dataset,
+                x_param,
+                y_param,
+                bins,
+                x_scale,
+                y_scale,
+                cofactor,
+                cutoff,
+                x_range,
+                y_range,
+            )
 
         if result is None:
             return Response(
@@ -334,60 +415,23 @@ class ProcessFileDataView(generics.CreateAPIView):
         ),
     )
     def post(self, request, *args, **kwargs):
-        file_id = kwargs.get('file_id')
+        file_id = kwargs.get("file_id")
         file = get_object_or_404(FileModel, id=file_id)
         experiment = file.experiment
-        if experiment.status != 'processing':
-            experiment.status = 'processing'
-            experiment.save()
-            directory_path = os.path.join(settings.MEDIA_ROOT, "fcs_files", file.file_name)
-            file_path = os.path.join(settings.MEDIA_ROOT, file.file_name)
-            os.makedirs(directory_path, exist_ok=True)
-            decompres_file(file_path, directory_path)
-            values = []
-            fcs_source_dir = os.path.join(
-                settings.MEDIA_ROOT, "fcs_source", str(experiment.id)
+        if experiment.status == "processing":
+            return Response(
+                {"message": "The file is still being processed."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-            os.makedirs(fcs_source_dir, exist_ok=True)
-            try:
-                for root, dirs, files in os.walk(directory_path): 
-                    for file_name in files:
-                        if file_name.endswith(".fcs"):
-                            complete_path: str = os.path.join(root, file_name)
-                            processed_file = process_fcs_file(complete_path)
-                            if isinstance(processed_file, str):
-                                raise ValueError(processed_file)
-                            if len(values) == 0:
-                                values = processed_file[2]
-                            persistent_fcs = os.path.join(fcs_source_dir, file_name)
-                            shutil.copy2(complete_path, persistent_fcs)
-                            file_data_model = FileDataModel.objects.create(
-                                headers=processed_file[0],
-                                data_set=None,
-                                experiment=experiment,
-                                file_name=file_name,
-                                file=file,
-                                fcs_path=persistent_fcs,
-                            )
-                            file_data_model.save_dataframe(
-                                pd.DataFrame(processed_file[1])
-                            )
-                experiment.values = values
-                experiment.status = 'done'
-                experiment.save()
 
-                return Response({"message": "File processing was successfull."}, status=status.HTTP_200_OK)
+        experiment.status = "processing"
+        experiment.save(update_fields=["status"])
 
-            except Exception as e:
-                error_info = {
-                    'error_message': str(e),
-                    'details': traceback.format_exc()
-                }
-                experiment.status = 'error'
-                experiment.error_info = error_info
-                experiment.save()
-        else:
-            return Response({"message": "The file is still being processed."}, status=status.HTTP_400_BAD_REQUEST)
+        process_experiment_files_task.delay(file.id)
+        return Response(
+            {"message": "File processing scheduled."},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class FileStatsView(APIView):
@@ -447,10 +491,9 @@ class FileStatsView(APIView):
 
 
 class RecomputeFileDataView(APIView):
-    """Plano D: reprocessa um FileData a partir do .fcs original + gates.
+    """Reprocess a FileData from the experiment's ZIP (or legacy .fcs).
 
-    Dispara a regeneracao do Parquet (cache morno) e a invalidacao da density
-    no Redis de forma assincrona (Celery).
+    Dispatches Parquet regeneration and Redis density invalidation via Celery.
     """
 
     @extend_schema(
@@ -465,9 +508,11 @@ class RecomputeFileDataView(APIView):
     )
     def post(self, request, file_id):
         file_data = get_object_or_404(FileDataModel, id=file_id)
-        if not file_data.fcs_path:
+        has_zip = bool(getattr(file_data.experiment, "zip_path", None))
+        has_fcs = bool(file_data.fcs_path)
+        if not has_zip and not has_fcs:
             return Response(
-                {"detail": "Sem .fcs original armazenado para reprocessar este arquivo."},
+                {"detail": "Sem fonte (ZIP ou .fcs) para reprocessar este arquivo."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         recompute_file_data_task.delay(file_data.id)

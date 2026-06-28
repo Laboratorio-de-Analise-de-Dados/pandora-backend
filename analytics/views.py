@@ -1,6 +1,8 @@
-
+import json
+import logging
 from collections import deque
 
+import pandas as pd
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
@@ -22,36 +24,37 @@ from utils.density import (
     set_cached_density,
     subsample_scatter,
 )
-import pandas as pd
-import json
 
-# Create your views here.
+logger = logging.getLogger(__name__)
+
 
 class CreateGateView(generics.CreateAPIView):
     serializer_class = GateSerializer
 
     def post(self, request, *args, **kwargs):
         data = request.data.copy()
-        dashboard_data = data.pop('dashboard', None)
+        dashboard_data = data.pop("dashboard", None)
 
         dashboard_serializer = DashboardSerializer(data=dashboard_data)
         dashboard_serializer.is_valid(raise_exception=True)
 
         dash_instance = dashboard_serializer.save()
-        data['dashboard'] = dash_instance.id
+        data["dashboard"] = dash_instance.id
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         gate_instance = serializer.save()
-        
+
         # Dispara recálculo de métricas (% parent, % total) para o gate criado
         from analytics.tasks import recalculate_gate_analysis_task
+
         recalculate_gate_analysis_task.delay(gate_instance.id)
-        
+
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
     """PATCH/DELETE /analytics/gate/<gate_id> — rename or delete a gate."""
+
     serializer_class = GateSerializer
     lookup_url_kwarg = "gate_id"
     queryset = GateModel.objects.all()
@@ -79,10 +82,12 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
             gate.save(update_fields=update_fields)
 
         from analytics.tasks import recalculate_gate_analysis_task
+
         recalculate_gate_analysis_task.delay(gate.id)
 
         if new_coords is not None:
             from utils.density import invalidate_density
+
             invalidate_density(gate.file_data_id)
 
         serializer = self.get_serializer(gate)
@@ -96,8 +101,10 @@ class GetGateDataView(generics.ListAPIView):
     def get_object(self):
         gate_id = self.kwargs.get(self.lookup_url_kwarg)
         return get_object_or_404(GateModel, pk=gate_id)
-    
-    def _apply_gate_filter(self, dataset: pd.DataFrame, gate: GateModel) -> pd.DataFrame:
+
+    def _apply_gate_filter(
+        self, dataset: pd.DataFrame, gate: GateModel
+    ) -> pd.DataFrame:
         """Aplica o filtro de um gate (retangulo ou poligono) ao dataset.
 
         Delega ao helper compartilhado (utils.density.apply_gate_filter), que
@@ -105,59 +112,122 @@ class GetGateDataView(generics.ListAPIView):
         """
         return apply_gate_filter(dataset, gate)
 
-
     def get(self, request, *args, **kwargs):
-              
+
         target_gate = self.get_object()
-        
+
         current_gate = target_gate
-        gate_path = [current_gate] 
+        gate_path = [current_gate]
 
         while current_gate.parent:
             current_gate = current_gate.parent
-            gate_path.insert(0, current_gate) 
+            gate_path.insert(0, current_gate)
 
         root_gate = gate_path[0]
         file_data_instance = root_gate.file_data
 
         dataset = file_data_instance.get_dataframe()
 
-        dataset.columns = dataset.columns.str.replace(" ", "")
-        dataset.columns = dataset.columns.str.replace("-", "_")
-        dataset.columns = dataset.columns.str.lower()
+        dataset = normalize_columns(dataset)
 
         for gate_in_path in gate_path:
             dataset = self._apply_gate_filter(dataset, gate_in_path)
             if dataset.empty:
-                print(f"Dataset vazio após filtrar pelo gate '{gate_in_path.name}'. Parando processamento.")
                 break
         limit = request.query_params.get("limit", 10000)
         try:
             limit = int(limit)
         except ValueError:
-            limit = 10000 
+            limit = 10000
         dataset = dataset.head(limit)
         file_data_instance.data_set = json.loads(dataset.to_json(orient="records"))
         serializer = ParamListDataSerializer(file_data_instance)
-        return Response(serializer.data, status=status.HTTP_200_OK) 
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 class GateDensityView(APIView):
     """Return density (heatmap) or subsampled scatter for a gate's filtered data."""
 
     @extend_schema(
         parameters=[
-            OpenApiParameter(name="x", type=str, required=True, description="X-axis parameter (e.g. FSC-A)"),
-            OpenApiParameter(name="y", type=str, required=True, description="Y-axis parameter (e.g. SSC-A)"),
-            OpenApiParameter(name="mode", type=str, required=False, description="'heatmap' (default) or 'scatter'"),
-            OpenApiParameter(name="bins", type=int, required=False, description="Bins for heatmap (default 200)"),
-            OpenApiParameter(name="sample", type=int, required=False, description="Max points for scatter (default 5000)"),
-            OpenApiParameter(name="xscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
-            OpenApiParameter(name="yscale", type=str, required=False, description="'linear' or 'biex' (default: heuristic by channel)"),
-            OpenApiParameter(name="cofactor", type=float, required=False, description="arcsinh cofactor for biex (default 150)"),
-            OpenApiParameter(name="cutoff", type=int, required=False, description="Heatmap density cutoff: bins with count <= cutoff become null/transparent (default 0)"),
-            OpenApiParameter(name="xmin", type=float, required=False, description="Lower bound for X axis (raw value)"),
-            OpenApiParameter(name="xmax", type=float, required=False, description="Upper bound for X axis (raw value)"),
-            OpenApiParameter(name="ymin", type=float, required=False, description="Lower bound for Y axis (raw value)"),
-            OpenApiParameter(name="ymax", type=float, required=False, description="Upper bound for Y axis (raw value)"),
+            OpenApiParameter(
+                name="x",
+                type=str,
+                required=True,
+                description="X-axis parameter (e.g. FSC-A)",
+            ),
+            OpenApiParameter(
+                name="y",
+                type=str,
+                required=True,
+                description="Y-axis parameter (e.g. SSC-A)",
+            ),
+            OpenApiParameter(
+                name="mode",
+                type=str,
+                required=False,
+                description="'heatmap' (default) or 'scatter'",
+            ),
+            OpenApiParameter(
+                name="bins",
+                type=int,
+                required=False,
+                description="Bins for heatmap (default 200)",
+            ),
+            OpenApiParameter(
+                name="sample",
+                type=int,
+                required=False,
+                description="Max points for scatter (default 5000)",
+            ),
+            OpenApiParameter(
+                name="xscale",
+                type=str,
+                required=False,
+                description="'linear' or 'biex' (default: heuristic by channel)",
+            ),
+            OpenApiParameter(
+                name="yscale",
+                type=str,
+                required=False,
+                description="'linear' or 'biex' (default: heuristic by channel)",
+            ),
+            OpenApiParameter(
+                name="cofactor",
+                type=float,
+                required=False,
+                description="arcsinh cofactor for biex (default 150)",
+            ),
+            OpenApiParameter(
+                name="cutoff",
+                type=int,
+                required=False,
+                description="Heatmap density cutoff: bins with count <= cutoff become null/transparent (default 0)",
+            ),
+            OpenApiParameter(
+                name="xmin",
+                type=float,
+                required=False,
+                description="Lower bound for X axis (raw value)",
+            ),
+            OpenApiParameter(
+                name="xmax",
+                type=float,
+                required=False,
+                description="Upper bound for X axis (raw value)",
+            ),
+            OpenApiParameter(
+                name="ymin",
+                type=float,
+                required=False,
+                description="Lower bound for Y axis (raw value)",
+            ),
+            OpenApiParameter(
+                name="ymax",
+                type=float,
+                required=False,
+                description="Upper bound for Y axis (raw value)",
+            ),
         ],
         responses=inline_serializer(
             name="GateDensityResponse",
@@ -188,8 +258,18 @@ class GateDensityView(APIView):
         gate = get_object_or_404(GateModel, pk=gate_id)
 
         cache_key = density_cache_key(
-            "gate", gate.file_data_id, gate_id, x_param, y_param, mode, bins, sample,
-            x_scale, y_scale, cofactor, cutoff,
+            "gate",
+            gate.file_data_id,
+            gate_id,
+            x_param,
+            y_param,
+            mode,
+            bins,
+            sample,
+            x_scale,
+            y_scale,
+            cofactor,
+            cutoff,
         )
         if x_range:
             cache_key += f":xr{x_range[0]}:{x_range[1]}"
@@ -213,14 +293,42 @@ class GateDensityView(APIView):
             if dataset.empty:
                 break
 
-        base = {"mode": mode, "total_events": len(dataset), "x_label": x_param, "y_label": y_param}
+        base = {
+            "mode": mode,
+            "total_events": len(dataset),
+            "x_label": x_param,
+            "y_label": y_param,
+        }
 
         if mode == "scatter":
-            result = subsample_scatter(dataset, x_param, y_param, sample, x_scale, y_scale, cofactor, x_range, y_range)
+            result = subsample_scatter(
+                dataset,
+                x_param,
+                y_param,
+                sample,
+                x_scale,
+                y_scale,
+                cofactor,
+                x_range,
+                y_range,
+            )
         elif mode == "histogram":
-            result = compute_histogram(dataset, x_param, bins, x_scale, cofactor, x_range)
+            result = compute_histogram(
+                dataset, x_param, bins, x_scale, cofactor, x_range
+            )
         else:
-            result = compute_density(dataset, x_param, y_param, bins, x_scale, y_scale, cofactor, cutoff, x_range, y_range)
+            result = compute_density(
+                dataset,
+                x_param,
+                y_param,
+                bins,
+                x_scale,
+                y_scale,
+                cofactor,
+                cutoff,
+                x_range,
+                y_range,
+            )
 
         if result is None:
             return Response(
@@ -249,10 +357,16 @@ class ApplyGateView(APIView):
         request=inline_serializer(
             name="ApplyGateRequest",
             fields={
-                "source_gate_ids": serializers.ListField(child=serializers.IntegerField()),
-                "target_file_data_ids": serializers.ListField(child=serializers.IntegerField()),
+                "source_gate_ids": serializers.ListField(
+                    child=serializers.IntegerField()
+                ),
+                "target_file_data_ids": serializers.ListField(
+                    child=serializers.IntegerField()
+                ),
                 "recursive": serializers.BooleanField(default=True),
-                "on_conflict": serializers.ChoiceField(choices=["rename", "replace", "skip"], default="rename"),
+                "on_conflict": serializers.ChoiceField(
+                    choices=["rename", "replace", "skip"], default="rename"
+                ),
             },
         ),
         responses=inline_serializer(
@@ -276,9 +390,14 @@ class ApplyGateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        source_gates = list(GateModel.objects.filter(id__in=source_ids).select_related("dashboard"))
+        source_gates = list(
+            GateModel.objects.filter(id__in=source_ids).select_related("dashboard")
+        )
         if len(source_gates) != len(source_ids):
-            return Response({"detail": "One or more source gates not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "One or more source gates not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         # Exclude source file(s) from target list to prevent self-copy.
         source_file_ids = {g.file_data_id for g in source_gates}
@@ -383,11 +502,13 @@ class ApplyGateView(APIView):
                     id_map[gate.id] = new_gate.id
                     file_created += 1
 
-                details.append({
-                    "file_data_id": target_fd_id,
-                    "gates_created": file_created,
-                    "gates_skipped": file_skipped,
-                })
+                details.append(
+                    {
+                        "file_data_id": target_fd_id,
+                        "gates_created": file_created,
+                        "gates_skipped": file_skipped,
+                    }
+                )
                 total_created += file_created
                 total_skipped += file_skipped
 
@@ -397,7 +518,9 @@ class ApplyGateView(APIView):
         for detail in details:
             fd_id = detail["file_data_id"]
             root_gates = GateModel.objects.filter(
-                file_data_id=fd_id, parent__isnull=True, copied_from__isnull=False,
+                file_data_id=fd_id,
+                parent__isnull=True,
+                copied_from__isnull=False,
             )
             for rg in root_gates:
                 recalculate_gate_analysis_task.delay(rg.id)
