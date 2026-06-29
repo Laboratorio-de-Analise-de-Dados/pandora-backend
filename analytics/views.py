@@ -341,6 +341,47 @@ class GateDensityView(APIView):
         return Response(payload, status=status.HTTP_200_OK)
 
 
+def _resolve_target_parent(source_gate, target_fd_id, id_map):
+    """Resolve the parent for *source_gate* inside the target file.
+
+    If the source gate's parent was already created in the target (present in
+    *id_map*), return that id.  Otherwise walk up the source ancestry and try
+    to match the same name hierarchy in the target — this ensures that when a
+    user applies a sub-tree (e.g. CD3+ under Lymphocytes), the code finds the
+    existing 'Lymphocytes' in the target and places the gate underneath it
+    instead of creating a duplicate at root level.
+
+    Returns ``None`` when no matching hierarchy exists (gate becomes root).
+    """
+    if source_gate.parent_id is None:
+        return None
+
+    if source_gate.parent_id in id_map:
+        return id_map[source_gate.parent_id]
+
+    # Build the ancestry path (root-first) for the unmapped parent chain.
+    ancestry = []
+    current = source_gate.parent
+    while current and current.id not in id_map:
+        ancestry.insert(0, current)
+        current = current.parent
+
+    # If we reached a gate already in id_map, start from there.
+    target_parent_id = id_map.get(current.id) if current else None
+
+    for ancestor in ancestry:
+        match = GateModel.objects.filter(
+            file_data_id=target_fd_id,
+            name=ancestor.name,
+            parent_id=target_parent_id,
+        ).first()
+        if match is None:
+            return target_parent_id  # partial match; attach here
+        target_parent_id = match.id
+
+    return target_parent_id
+
+
 class ApplyGateView(APIView):
     """POST /analytics/gate/apply — copy gates to other files (FlowJo semantics).
 
@@ -391,7 +432,12 @@ class ApplyGateView(APIView):
             )
 
         source_gates = list(
-            GateModel.objects.filter(id__in=source_ids).select_related("dashboard")
+            GateModel.objects.filter(id__in=source_ids).select_related(
+                "dashboard",
+                "parent",
+                "parent__parent",
+                "parent__parent__parent",
+            )
         )
         if len(source_gates) != len(source_ids):
             return Response(
@@ -450,7 +496,7 @@ class ApplyGateView(APIView):
 
                 for gate in ordered_gates:
                     # Determine new parent in target file.
-                    new_parent_id = id_map.get(gate.parent_id)
+                    new_parent_id = _resolve_target_parent(gate, target_fd_id, id_map)
 
                     # Conflict check.
                     existing = GateModel.objects.filter(
