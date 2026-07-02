@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 
-from celery import shared_task
 import pandas as pd
 import numpy as np
 
@@ -121,13 +120,11 @@ def calculate_cytometry_metrics(
     return metrics
 
 
-@shared_task(bind=True)
-def recalculate_gate_analysis_task(self, gate_id):
+def recalculate_gate_analysis(gate_id: int):
     """Recalcula métricas de um gate seguindo o padrão FlowJo/Cytobank.
 
     Percorre toda a cadeia hierárquica de gates (do root até o gate alvo),
-    aplicando cada filtro sequencialmente — assim como ``GateDensityView`` e
-    ``GetGateDataView`` já fazem.
+    aplicando cada filtro sequencialmente.
 
     Métricas calculadas:
     - **count**: eventos dentro deste gate.
@@ -145,7 +142,6 @@ def recalculate_gate_analysis_task(self, gate_id):
             "parent",
         ).get(id=gate_id)
 
-        # --- 1. Dados brutos do arquivo ----------------------------------
         fcs_data_df = load_fcs_data_from_file_data_model(gate.file_data.id)
         if fcs_data_df.empty:
             logger.warning("Dados FCS vazios para gate %s. Abortando.", gate_id)
@@ -155,18 +151,15 @@ def recalculate_gate_analysis_task(self, gate_id):
         total_events_in_file = len(dataset)
         all_channel_names = list(dataset.columns)
 
-        # --- 2. Cadeia hierárquica root → … → gate -----------------------
         current = gate
         gate_path = [current]
         while current.parent:
             current = current.parent
             gate_path.insert(0, current)
 
-        # --- 3. Aplica gates sequencialmente (como FlowJo/Cytobank) ------
         parent_gated_data_df = None
         for g in gate_path:
             if g.id == gate.id:
-                # Guarda dados do pai (tudo antes deste gate)
                 parent_gated_data_df = dataset.copy()
             dataset = apply_gate_filter(dataset, g)
             if dataset.empty:
@@ -174,11 +167,9 @@ def recalculate_gate_analysis_task(self, gate_id):
 
         gated_data_df = dataset
 
-        # Para root gates sem parent, % of Parent = % of Total
         if parent_gated_data_df is None:
             parent_gated_data_df = normalize_columns(fcs_data_df)
 
-        # --- 4. Calcula métricas -----------------------------------------
         new_analysis_results = calculate_cytometry_metrics(
             gated_data_df,
             total_events_in_file,
@@ -193,7 +184,7 @@ def recalculate_gate_analysis_task(self, gate_id):
         logger.info("Recálculo concluído para gate '%s' (ID: %s).", gate.name, gate_id)
 
         for child_gate in gate.children.all():
-            recalculate_gate_analysis_task.delay(child_gate.id)
+            recalculate_gate_analysis(child_gate.id)
 
     except GateModel.DoesNotExist:
         logger.error("GateModel com ID %s não encontrado.", gate_id)

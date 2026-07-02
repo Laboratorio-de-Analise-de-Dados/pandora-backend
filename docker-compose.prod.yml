@@ -18,30 +18,14 @@ services:
     networks:
       - pandora_net
 
-  redis:
-    image: redis:6-alpine
-    container_name: pandora_redis
-    ports:
-      - "6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - pandora_net
-
   pandora_web:
-    image: "${DOCKER_USER}/pandora-backend:latest" # 🔑 usar imagem publicada
+    image: "${DOCKER_USER}/pandora-backend:latest"
     container_name: pandora_web
-    command: bash -c "python manage.py migrate && gunicorn citosharp.wsgi:application --bind 0.0.0.0:8000 --workers 4"
+    command: bash -c "python manage.py migrate && gunicorn citosharp.wsgi:application --bind 0.0.0.0:8000 --workers 2"
     expose:
       - "8000"
     depends_on:
       - db
-      - redis
     volumes:
       - uploads_data:/app/uploads
     environment:
@@ -53,44 +37,12 @@ services:
       DATABASE_PASSWORD: "${POSTGRES_PASSWORD}"
       DATABASE_HOST: "${DATABASE_HOST}"
       DATABASE_PORT: "${DATABASE_PORT}"
-      REDIS_HOST: "${REDIS_HOST}"
-      REDIS_PORT: "${REDIS_PORT}"
       MEDIA_ROOT: "/app/uploads"
-    networks:
-      - pandora_net
-  celery_worker:
-    image: "${DOCKER_USER}/pandora-backend:latest" # 🔑 usar mesma imagem
-    container_name: pandora_celery_worker
-    command: celery -A citosharp worker -l info
-    depends_on:
-      - db
-      - redis
-    volumes:
-      - uploads_data:/app/uploads
-    environment:
-      DEBUG: "${DEBUG}"
-      SECRET_KEY: "${SECRET_KEY}"
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS}"
-      DATABASE_NAME: "${POSTGRES_DB}"
-      DATABASE_USER: "${POSTGRES_USER}"
-      DATABASE_PASSWORD: "${POSTGRES_PASSWORD}"
-      DATABASE_HOST: "${DATABASE_HOST}"
-      DATABASE_PORT: "${DATABASE_PORT}"
-      REDIS_HOST: "${REDIS_HOST}"
-      REDIS_PORT: "${REDIS_PORT}"
-      MEDIA_ROOT: "/app/uploads"
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A citosharp inspect ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
     networks:
       - pandora_net
 
 volumes:
   pgdata:
-  redis_data:
   uploads_data:
 
 networks:

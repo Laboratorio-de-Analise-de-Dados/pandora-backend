@@ -1,10 +1,11 @@
 import json
+import logging
 import os
+import traceback
 
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 from analytics.models import GateModel
-from fcs_parser.tasks import process_experiment_files_task, recompute_file_data_task
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework.response import Response
 from rest_framework import status
@@ -31,6 +32,8 @@ from fcs_parser.serializers import (
     ParamListDataSerializer,
 )
 from fcs_parser.services.process_experiment_file import assemble_chunks
+
+logger = logging.getLogger(__name__)
 
 
 class ExperimentInitView(generics.CreateAPIView):
@@ -110,6 +113,8 @@ class ExperimentCompleteView(generics.CreateAPIView):
         ),
     )
     def post(self, request):
+        from fcs_parser.services.process_experiment_file import extract_metadata_from_zip
+
         file_id = request.data["fileId"]
         experiment = ExperimentModel.objects.get(id=file_id)
 
@@ -117,7 +122,7 @@ class ExperimentCompleteView(generics.CreateAPIView):
         final_name = f"{file_id}.zip"
 
         experiment.file_status = "uploaded"
-        experiment.status = "new"
+        experiment.status = "processing"
         experiment.save(update_fields=["file_status", "status"])
 
         file_instance = FileModel.objects.create(
@@ -126,37 +131,32 @@ class ExperimentCompleteView(generics.CreateAPIView):
             experiment=experiment,
         )
 
-        process_experiment_files_task.delay(file_instance.id)
+        try:
+            extract_metadata_from_zip(file_instance)
+        except Exception as e:
+            logger.error(
+                "Erro ao extrair metadados do experimento %s: %s",
+                experiment.id,
+                e,
+                exc_info=True,
+            )
+            experiment.status = "error"
+            experiment.error_info = {
+                "error_message": str(e),
+                "details": traceback.format_exc(),
+            }
+            experiment.save(update_fields=["status", "error_info"])
+            return Response(
+                {"status": "error", "detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-        return Response({"status": "processing"})
+        return Response({"status": "done"})
 
 
 class ExperimentListView(generics.ListAPIView):
     serializer_class = ListExperimentSerializer
     queryset = ExperimentModel.objects.all()
-
-    # def post(self, request):
-    #     serializer = ExperimentSerializer(data={**request.POST, **request.FILES})
-    #     if serializer.is_valid():
-    #         title = serializer.validated_data.get("title").replace(" ", "_")
-    #         file = serializer.validated_data.get("file")
-    #         experiment_type = serializer.validated_data.get("type")
-    #         try:
-    #             experiment_instance, created = ExperimentModel.objects.get_or_create(
-    #                 title=title, type=experiment_type
-    #             )
-    #             file_instance = FileModel.objects.create(
-    #                 file=file, file_name=file.name, experiment=experiment_instance
-    #             )
-    #             process_experiment_files_task.delay(file_instance.id)
-    #             return Response(
-    #                 model_to_dict(experiment_instance), status=status.HTTP_201_CREATED
-    #             )
-    #         except Exception as e:
-    #             return Response(
-    #                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
-    #             )
-    #     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
@@ -415,6 +415,8 @@ class ProcessFileDataView(generics.CreateAPIView):
         ),
     )
     def post(self, request, *args, **kwargs):
+        from fcs_parser.services.process_experiment_file import process_experiment_zip
+
         file_id = kwargs.get("file_id")
         file = get_object_or_404(FileModel, id=file_id)
         experiment = file.experiment
@@ -427,10 +429,29 @@ class ProcessFileDataView(generics.CreateAPIView):
         experiment.status = "processing"
         experiment.save(update_fields=["status"])
 
-        process_experiment_files_task.delay(file.id)
+        try:
+            process_experiment_zip(file)
+        except Exception as e:
+            logger.error(
+                "Erro ao processar experimento %s: %s",
+                experiment.id,
+                e,
+                exc_info=True,
+            )
+            experiment.status = "error"
+            experiment.error_info = {
+                "error_message": str(e),
+                "details": traceback.format_exc(),
+            }
+            experiment.save(update_fields=["status", "error_info"])
+            return Response(
+                {"message": f"Processing failed: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
         return Response(
-            {"message": "File processing scheduled."},
-            status=status.HTTP_202_ACCEPTED,
+            {"message": "File processing completed."},
+            status=status.HTTP_200_OK,
         )
 
 
@@ -493,7 +514,7 @@ class FileStatsView(APIView):
 class RecomputeFileDataView(APIView):
     """Reprocess a FileData from the experiment's ZIP (or legacy .fcs).
 
-    Dispatches Parquet regeneration and Redis density invalidation via Celery.
+    Rebuilds the Parquet cache synchronously and invalidates density cache.
     """
 
     @extend_schema(
@@ -515,8 +536,22 @@ class RecomputeFileDataView(APIView):
                 {"detail": "Sem fonte (ZIP ou .fcs) para reprocessar este arquivo."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        recompute_file_data_task.delay(file_data.id)
+
+        # Force rebuild by clearing parquet_path; next get_dataframe() rebuilds.
+        if file_data.parquet_path:
+            try:
+                if os.path.exists(file_data.parquet_path):
+                    os.remove(file_data.parquet_path)
+            except OSError:
+                pass
+            FileDataModel.objects.filter(pk=file_data.pk).update(parquet_path=None)
+
+        # Trigger rebuild now.
+        file_data.refresh_from_db()
+        file_data.get_dataframe()
+        invalidate_density(file_data.id)
+
         return Response(
-            {"status": "scheduled", "file_data_id": file_data.id},
-            status=status.HTTP_202_ACCEPTED,
+            {"status": "completed", "file_data_id": file_data.id},
+            status=status.HTTP_200_OK,
         )
