@@ -12,59 +12,86 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 
 from pathlib import Path
 import os
+from celery.schedules import crontab
 from dotenv import load_dotenv
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-env_path = BASE_DIR / '.env'
+env_path = BASE_DIR / ".env"
 if env_path.exists():
     load_dotenv(env_path)
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY')
+SECRET_KEY = os.getenv("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 't', 'yes')
-REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
-REDIS_PORT = os.getenv('REDIS_PORT', '6379')
+DEBUG = os.environ.get("DEBUG", "True").lower() in ("true", "1", "t", "yes")
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = os.getenv("REDIS_PORT", "6379")
 # APPEND_SLASH = True
-DATA_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024  
+DATA_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
 MEDIA_ROOT = os.environ.get("MEDIA_ROOT", BASE_DIR / "uploads")
 MEDIA_URL = "/media/"
-CELERY_BROKER_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/0'
-CELERY_RESULT_BACKEND = f'redis://{REDIS_HOST}:{REDIS_PORT}/0'
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = 'America/Sao_Paulo'
+CELERY_BROKER_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/0"
+CELERY_RESULT_BACKEND = f"redis://{REDIS_HOST}:{REDIS_PORT}/0"
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "America/Sao_Paulo"
 CELERY_TASK_TRACK_STARTED = True
+
+# Celery Beat: limpeza semanal de Parquet orfao/frio (recriavel do .fcs).
+PARQUET_MAX_IDLE_DAYS = int(os.getenv("PARQUET_MAX_IDLE_DAYS", 7))
+CELERY_BEAT_SCHEDULE = {
+    "cleanup-cold-parquet": {
+        "task": "fcs_parser.tasks.cleanup_cold_parquet_task",
+        "schedule": crontab(hour=3, minute=0, day_of_week="sunday"),
+        "kwargs": {"max_idle_days": PARQUET_MAX_IDLE_DAYS},
+    },
+    "cleanup-ephemeral-fcs": {
+        "task": "fcs_parser.tasks.cleanup_ephemeral_fcs_task",
+        "schedule": crontab(hour=4, minute=0, day_of_week="sunday"),
+    },
+}
+
+# Cache (Redis) — usado para density/heatmap com TTL deslizante.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": f"redis://{REDIS_HOST}:{REDIS_PORT}/1",
+    }
+}
+# Tempo de vida (segundos) do cache de density; renovado a cada acesso (sliding).
+DENSITY_CACHE_TTL = int(os.getenv("DENSITY_CACHE_TTL", 3600))
+
 # Application definition
 
 INSTALLED_APPS = [
-    'corsheaders',
+    "corsheaders",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    'fcs_parser',
-    'analytics',
+    "fcs_parser",
+    "analytics",
     "rest_framework",
     "rest_framework_simplejwt",
-    'accounts',
-    
+    "drf_spectacular",
+    "accounts",
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    'corsheaders.middleware.CorsMiddleware',
-    'django.middleware.common.CommonMiddleware',
+    "corsheaders.middleware.CorsMiddleware",
+    "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -75,17 +102,32 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
-CORS_ALLOW_ALL_ORIGINS=True
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Pandora Backend API",
+    "DESCRIPTION": (
+        "API do Pandora Backend (citosharp): autenticação JWT, gestão de "
+        "organizações/usuários, upload e processamento de arquivos FCS e "
+        "análise de gates (citometria de fluxo)."
+    ),
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SWAGGER_UI_SETTINGS": {
+        "persistAuthorization": True,
+    },
+}
+
+CORS_ALLOW_ALL_ORIGINS = True
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.gmail.com"
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 ROOT_URLCONF = "citosharp.urls"
-DEFAULT_FROM_EMAIL = os.getenv('EMAIL_HOST_USER')
+DEFAULT_FROM_EMAIL = os.getenv("EMAIL_HOST_USER")
 FRONTEND_URL = "https://app.project-pandora.com.br"
 
 TEMPLATES = [
@@ -109,7 +151,7 @@ WSGI_APPLICATION = "citosharp.wsgi.application"
 
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
-if os.environ.get('TEST'):
+if os.environ.get("TEST"):
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
@@ -119,12 +161,12 @@ if os.environ.get('TEST'):
 else:
     DATABASES = {
         "default": {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.getenv('DATABASE_NAME'),
-            'USER': os.getenv('DATABASE_USER'),
-            'PASSWORD': os.getenv('DATABASE_PASSWORD'),
-            'HOST': os.getenv('DATABASE_HOST'),
-            'PORT': os.getenv('DATABASE_PORT'),
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.getenv("DATABASE_NAME"),
+            "USER": os.getenv("DATABASE_USER"),
+            "PASSWORD": os.getenv("DATABASE_PASSWORD"),
+            "HOST": os.getenv("DATABASE_HOST"),
+            "PORT": os.getenv("DATABASE_PORT"),
         }
     }
 
@@ -164,7 +206,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
 
 STATIC_URL = "static/"
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')  
+STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
 

@@ -2,12 +2,23 @@ from django.db import models
 
 from fcs_parser.models import ExperimentModel, FileDataModel
 
+
 # Create your models here.
 class GateModel(models.Model):
 
     class Meta:
         db_table = "gate"
-        unique_together = ('name', 'file_data')
+        constraints = [
+            models.UniqueConstraint(
+                fields=["name", "parent"],
+                name="unique_gate_name_per_parent",
+            ),
+            models.UniqueConstraint(
+                fields=["name", "file_data"],
+                condition=models.Q(parent__isnull=True),
+                name="unique_gate_name_root_level",
+            ),
+        ]
 
     file_data = models.ForeignKey(
         FileDataModel, related_name="gates", on_delete=models.CASCADE, null=True
@@ -21,18 +32,47 @@ class GateModel(models.Model):
     parent = models.ForeignKey(
         "self", related_name="children", on_delete=models.CASCADE, null=True, blank=True
     )
+    copied_from = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="copies",
+    )
+    color = models.CharField(max_length=7, null=True, blank=True)
+
+    def __str__(self) -> str:
+        return f"Gate {self.id} – {self.name}"
 
     @classmethod
     def build_tree(cls, file_data_id):
         """
         Constrói uma estrutura de árvore de gates a partir de dados de um arquivo.
         """
-        gates = cls.objects.filter(file_data_id=file_data_id).values(
-            "id", "name", "parent_id", "gate_coordinates"
+        from analytics.models import AnalysisResult
+
+        gates = list(
+            cls.objects.filter(file_data_id=file_data_id).values(
+                "id", "name", "parent_id", "gate_coordinates", "copied_from_id", "color"
+            )
         )
 
+        # Busca analysis_result para todos os gates deste arquivo
+        gate_ids = [g["id"] for g in gates]
+        analysis_map = {}
+        for ar in AnalysisResult.objects.filter(gate_id__in=gate_ids).values(
+            "gate_id", "analysis_result"
+        ):
+            analysis_map[ar["gate_id"]] = ar["analysis_result"]
+
         # Cria um mapa de gates, preparando cada um para receber filhos
-        gate_map = {gate["id"]: {**gate, "children": []} for gate in gates}
+        gate_map = {}
+        for gate in gates:
+            entry = {**gate, "children": []}
+            ar = analysis_map.get(gate["id"])
+            if ar:
+                entry["analysis_result"] = {"analysis_result": ar}
+            gate_map[gate["id"]] = entry
         roots = []
 
         # Percorre todos os gates para construir a hierarquia
@@ -49,23 +89,35 @@ class GateModel(models.Model):
         return roots
 
 
-
 class DashboardModel(models.Model):
 
     class Meta:
         db_table = "dashboard"
-        unique_together = ('name', 'file_data')
+        unique_together = ("name", "file_data")
 
     name = models.CharField(max_length=50)
     dashboard_config = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
     file_data = models.ForeignKey(
-        FileDataModel, related_name="dashboards", on_delete=models.CASCADE, null=True, blank=True
+        FileDataModel,
+        related_name="dashboards",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
     )
+
+    def __str__(self) -> str:
+        return f"Dashboard {self.id} – {self.name}"
+
 
 class AnalysisResult(models.Model):
     class Meta:
-        db_table = 'analysis_result'
-        
-    gate = models.OneToOneField(GateModel, on_delete=models.CASCADE, primary_key=True, related_name='analysis_result')
+        db_table = "analysis_result"
+
+    gate = models.OneToOneField(
+        GateModel,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="analysis_result",
+    )
     analysis_result = models.JSONField(default=dict)

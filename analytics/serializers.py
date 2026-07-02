@@ -1,4 +1,5 @@
 
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from analytics.models import AnalysisResult, DashboardModel, GateModel
@@ -8,13 +9,15 @@ from fcs_parser.models import FileDataModel
 class DashboardSerializer(serializers.ModelSerializer):
     class Meta:
         model = DashboardModel
-        fields = ['id', 'name', 'dashboard_config', 'created_at']
+        fields = ['id', 'name', 'dashboard_config', 'created_at', 'file_data']
+        validators = []  # disable auto UniqueTogetherValidator; handled in create()
+
     def create(self, validated_data):
-        name = validated_data.get('name')
         dashboard_instance, created = DashboardModel.objects.update_or_create(
-            **validated_data
+            name=validated_data['name'],
+            file_data=validated_data['file_data'],
+            defaults={'dashboard_config': validated_data.get('dashboard_config', {})},
         )
-        print(f"Dashboard '{dashboard_instance.name}' {'criado' if created else 'atualizado'} via Serializer.")
         return dashboard_instance
         
 class GateSerializer(serializers.ModelSerializer):
@@ -27,13 +30,13 @@ class GateSerializer(serializers.ModelSerializer):
         required=True, 
         allow_null=False
     ) 
-    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False)
+    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False, default=None)
     class Meta: 
         model = GateModel
         fields = [
             'id', 'name', 'gate_coordinates', 'created_at', 
             'dashboard',
-            'file_data', 'parent', 
+            'file_data', 'parent', 'copied_from', 'color',
         ]
         read_only_fields = ['id', 'created_at'] 
 
@@ -63,14 +66,21 @@ class ListGateSerializer(serializers.ModelSerializer):
         queryset=FileDataModel.objects.all(),
         allow_null=True,
     )
-    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False)
+    parent_id = serializers.PrimaryKeyRelatedField(
+        source="parent", queryset=GateModel.objects.all(), allow_null=True, required=False
+    )
     analysis_result = AnalysisResultSerializer(read_only=True)
     depth = 1
     
+    copied_from_id = serializers.PrimaryKeyRelatedField(
+        source="copied_from", read_only=True
+    )
+
     class Meta:
         model = GateModel
-        fields = ['id', 'created_at','parent', 'children', 'file_data', 'name', 'gate_coordinates', 'analysis_result']
+        fields = ['id', 'created_at', 'parent_id', 'children', 'file_data', 'name', 'gate_coordinates', 'analysis_result', 'copied_from_id', 'color']
 
+    @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_children(self, obj):
          # Serializa os filhos do gate
         children = obj.children.all()
