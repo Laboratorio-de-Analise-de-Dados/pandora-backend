@@ -1,0 +1,111 @@
+name: 🏗️🚀 CI/CD Pandora Backend
+
+# UM pipeline, dois processos encadeados (igual a um .gitlab-ci.yml com stages):
+#
+#   [build]  --(só se passar)-->  [deploy]
+#
+#   - build : roda AUTOMÁTICO em todo push na main. Builda e publica a imagem
+#             no Docker Hub (tags `latest` e `sha-<commit>`).
+#   - deploy: NÃO roda sozinho. Fica PAUSADO esperando sua aprovação manual
+#             (via "Required reviewers" do environment `production`) e só existe
+#             se o `build` tiver terminado com sucesso (`needs: build`).
+#
+# Ou seja: você dispara o build (push), e o deploy só acontece com sua intenção
+# (clicar "Review deployments -> Approve"), e nunca sem um build verde antes.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Sem `environment:` de propósito -> o build não passa pelo portão de
+    # aprovação. Os secrets abaixo precisam existir a NÍVEL DE REPOSITÓRIO
+    # (Settings -> Secrets and variables -> Actions -> Repository secrets):
+    # DOCKER_USER, DOCKER_TOKEN, SECRET_KEY.
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Calcula a tag da imagem
+        id: meta
+        run: echo "image_tag=sha-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Login no Docker Hub
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USER }}" --password-stdin
+
+      - name: Build da imagem
+        run: |
+          IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
+          docker build \
+            --build-arg SECRET_KEY="${{ secrets.SECRET_KEY }}" \
+            -t "$IMAGE_NAME:${{ steps.meta.outputs.image_tag }}" \
+            -t "$IMAGE_NAME:latest" .
+
+      - name: Push da imagem
+        run: |
+          IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
+          docker push "$IMAGE_NAME:${{ steps.meta.outputs.image_tag }}"
+          docker push "$IMAGE_NAME:latest"
+
+  deploy:
+    needs: build # só roda se o build terminou com SUCESSO
+    runs-on: ubuntu-latest
+    environment: production # <- habilite "Required reviewers" aqui: é o portão manual do deploy
+    steps:
+      - name: Checkout (só pra pegar o docker-compose.prod.yml)
+        uses: actions/checkout@v4
+
+      - name: Copia o compose pro servidor
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "docker-compose.prod.yml"
+          target: "/opt/pandora/backend"
+
+      - name: Deploy via SSH (pull da imagem que o build publicou + up)
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ vars.POSTGRES_DB }}
+          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
+          DATABASE_PORT: ${{ vars.DATABASE_PORT }}
+          DEBUG: ${{ vars.DEBUG }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
+          EMAIL_HOST_USER: ${{ secrets.EMAIL_HOST_USER }}
+          EMAIL_HOST_PASSWORD: ${{ secrets.EMAIL_HOST_PASSWORD }}
+          DOCKER_USER: ${{ secrets.DOCKER_USER }}
+          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS,EMAIL_HOST_USER,EMAIL_HOST_PASSWORD,DOCKER_USER,DOCKER_TOKEN,IMAGE_TAG
+          script: |
+            set -e
+            cd /opt/pandora/backend
+
+            echo "🌐 Garantindo a rede pandora_net..."
+            docker network inspect pandora_net >/dev/null 2>&1 || docker network create pandora_net
+
+            echo "🔑 Login no Docker Hub..."
+            echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USER" --password-stdin
+
+            echo "📥 Subindo imagem: $IMAGE_TAG"
+            export IMAGE_TAG
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+
+            echo "🧹 Limpando imagens antigas..."
+            docker image prune -f
+
+            echo "✅ Deploy da imagem $IMAGE_TAG concluído!"
