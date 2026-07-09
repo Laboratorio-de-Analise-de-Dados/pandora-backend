@@ -16,12 +16,10 @@ def _version(file_data_id) -> int:
 def invalidate_density(file_data_id):
     """Invalidate every density cache entry derived from a file (its file + gate heatmaps)."""
     try:
-        cache.incr(f"density:ver:{file_data_id}")
+        v = cache.get(f"density:ver:{file_data_id}") or 1
+        cache.set(f"density:ver:{file_data_id}", v + 1, None)
     except Exception:
-        try:
-            cache.set(f"density:ver:{file_data_id}", 2, None)
-        except Exception:
-            pass
+        pass
 
 
 def density_cache_key(

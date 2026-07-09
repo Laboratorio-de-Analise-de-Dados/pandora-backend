@@ -13,6 +13,7 @@ import shutil
 import zipfile
 
 import pandas as pd
+import readfcs
 from django.conf import settings
 
 from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
@@ -46,6 +47,68 @@ def assemble_chunks(experiment: ExperimentModel) -> str:
             os.remove(chunk_path)
 
     return final_path
+
+
+def extract_metadata_from_zip(file_model: FileModel) -> list[str]:
+    """Extract only metadata (headers + channel names) from each .fcs in the ZIP.
+
+    Creates FileDataModel rows with ``parquet_path=None`` so that data is
+    parsed lazily on first access via ``get_dataframe()``.
+
+    This is lightweight: reads only the FCS header/text segment (no event data),
+    keeping RAM usage minimal during upload.
+
+    Returns the list of channel names (``values``) found in the first file.
+    """
+    experiment = file_model.experiment
+    zip_path = file_model.file.path
+    directory_path = _extract_dir(experiment.id)
+
+    os.makedirs(directory_path, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(directory_path)
+
+    values: list[str] = []
+
+    try:
+        for root, _dirs, files in os.walk(directory_path):
+            for file_name in sorted(files):
+                if not file_name.endswith(".fcs"):
+                    continue
+
+                complete_path = os.path.join(root, file_name)
+                headers, _ = readfcs.view(complete_path)
+                channels_df = readfcs.ReadFCS(complete_path).channels
+                channel_names = channels_df["PnN"].tolist()
+
+                if not values:
+                    values = channel_names
+
+                FileDataModel.objects.create(
+                    headers=headers,
+                    data_set=None,
+                    experiment=experiment,
+                    file_name=file_name,
+                    file=file_model,
+                    parquet_path=None,
+                )
+
+        experiment.zip_path = zip_path
+        experiment.values = values
+        experiment.status = "done"
+        experiment.save(update_fields=["zip_path", "values", "status"])
+
+        logger.info(
+            "Metadados do Experimento %s ('%s') extraídos com sucesso.",
+            experiment.id,
+            experiment.title,
+        )
+    finally:
+        if os.path.isdir(directory_path):
+            shutil.rmtree(directory_path, ignore_errors=True)
+            logger.info("Diretório temporário '%s' removido.", directory_path)
+
+    return values
 
 
 def process_experiment_zip(file_model: FileModel) -> list[str]:
