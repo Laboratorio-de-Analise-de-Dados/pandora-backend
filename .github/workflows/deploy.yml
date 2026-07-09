@@ -1,42 +1,71 @@
-name: 🚀 CI/CD Pandora Backend
+name: 🚀 Deploy Pandora Backend (Produção)
 
+# O DEPLOY É LIBERADO PELA VERSÃO QUE VOCÊ DEFINE.
+#
+# Fluxo:
+#   - Você cria uma versão (git tag `vX.Y.Z`) num commit da main.
+#   - Isso dispara este workflow, que builda a imagem daquele commit com a
+#     tag da versão, publica no Docker Hub e sobe em produção.
+#   - Sem tag de versão = sem deploy. A main sozinha nunca vai pra prod.
+#
+# Rollback / redeploy: rode manualmente (workflow_dispatch) informando uma
+# versão já existente (ex: v1.1.0).
+#
+# STAGING (futuro): dá pra adicionar um trigger separado — ex. tags de
+# pré-release `v*-rc*` apontando pra `environment: staging` — mantendo a mesma
+# mecânica de "a versão libera o deploy". Ver bloco comentado no fim.
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch: # 🔑 permite rodar manualmente, sem inputs
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão a (re)deployar em produção (tag existente, ex: v1.1.0)"
+        required: true
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
-    environment: production
+    environment: production # habilite "Required reviewers" aqui pra exigir aprovação manual
     steps:
-      - name: Checkout código
-        uses: actions/checkout@v3
+      - name: Resolve a versão
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${{ github.ref_name }}"      # a própria tag criada, ex: v1.2.0
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "🏷️  Versão alvo: $VERSION"
+
+      - name: Checkout do commit da versão
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.v.outputs.version }}
 
       - name: Login no Docker Hub
         run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USER }}" --password-stdin
 
-      - name: Build da imagem
+      - name: Build + push da imagem versionada
         run: |
           IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
-          COMMIT_SHA=${{ github.sha }}
+          VERSION=${{ steps.v.outputs.version }}
           docker build \
             --build-arg SECRET_KEY="${{ secrets.SECRET_KEY }}" \
-            -t "$IMAGE_NAME:$COMMIT_SHA" -t "$IMAGE_NAME:latest" .
+            -t "$IMAGE_NAME:$VERSION" .
+          docker push "$IMAGE_NAME:$VERSION"
 
-      - name: Push da imagem
-        run: |
-          IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
-          COMMIT_SHA=${{ github.sha }}
-          docker push "$IMAGE_NAME:$COMMIT_SHA"
-          docker push "$IMAGE_NAME:latest"
+      - name: Copia o compose pro servidor
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "docker-compose.prod.yml"
+          target: "/opt/pandora/backend"
 
-  deploy:
-    runs-on: ubuntu-latest
-    environment: production
-    needs: build
-    steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
@@ -45,50 +74,48 @@ jobs:
           POSTGRES_DB: ${{ vars.POSTGRES_DB }}
           DATABASE_HOST: ${{ vars.DATABASE_HOST }}
           DATABASE_PORT: ${{ vars.DATABASE_PORT }}
-          REDIS_HOST: ${{ vars.REDIS_HOST }}
-          REDIS_PORT: ${{ vars.REDIS_PORT }}
           DEBUG: ${{ vars.DEBUG }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
           EMAIL_HOST_USER: ${{ secrets.EMAIL_HOST_USER }}
           EMAIL_HOST_PASSWORD: ${{ secrets.EMAIL_HOST_PASSWORD }}
           DOCKER_USER: ${{ secrets.DOCKER_USER }}
+          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
+          IMAGE_TAG: ${{ steps.v.outputs.version }}
         with:
-          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,REDIS_HOST,REDIS_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS,EMAIL_HOST_USER,EMAIL_HOST_PASSWORD, DOCKER_USER
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS,EMAIL_HOST_USER,EMAIL_HOST_PASSWORD,DOCKER_USER,DOCKER_TOKEN,IMAGE_TAG
           script: |
             set -e
+            cd /opt/pandora/backend
 
-            if ! docker network inspect pandora_net >/dev/null 2>&1; then
-              echo "🔧 Criando rede externa 'pandora_net'..."
-              docker network create pandora_net
-            else
-              echo "✅ Rede 'pandora_net' já existe"
-            fi
+            echo "🌐 Garantindo a rede pandora_net..."
+            docker network inspect pandora_net >/dev/null 2>&1 || docker network create pandora_net
 
-            echo "📥 Clonando repositório..."
-            rm -rf pandora-backend/
-            git clone git@github.com:Laboratorio-de-Analise-de-Dados/pandora-backend.git
-            cd pandora-backend
-            git checkout main
+            echo "🔑 Login no Docker Hub..."
+            echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USER" --password-stdin
 
-            echo "📦 Movendo docker-compose.prod.yml para pasta anterior..."
-            cp docker-compose.prod.yml ../docker-compose.prod.yml
-
-            echo "🧹 Removendo repositório clonado..."
-            cd ..
-            rm -rf pandora-backend/
-
-            echo "📥 Baixando imagem do Docker Hub..."
-            IMAGE_NAME=${DOCKER_USER}/pandora-backend
-            docker pull "$IMAGE_NAME:latest"
-
-            echo "🚀 Subindo containers..."
+            echo "📥 Subindo versão: $IMAGE_TAG"
+            export IMAGE_TAG
+            docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d
 
-            echo "🧹 Removendo docker-compose.prod.yml..."
-            rm -f docker-compose.prod.yml
+            echo "🧹 Limpando imagens antigas..."
+            docker image prune -f
 
-            echo "✅ Deploy concluído!"
+            echo "✅ Deploy da versão $IMAGE_TAG concluído!"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGING (exemplo pra quando você tiver o ambiente):
+# crie um deploy-staging.yml quase idêntico, mudando:
+#   on:
+#     push:
+#       tags:
+#         - "v*.*.*-rc*"     # tags de pré-release (ex: v1.2.0-rc.1) => staging
+#   jobs:
+#     deploy:
+#       environment: staging  # secrets/vars próprios do staging + reviewers
+# Assim: tag estável (v1.2.0) => prod; tag rc (v1.2.0-rc.1) => staging.
+# ─────────────────────────────────────────────────────────────────────────────

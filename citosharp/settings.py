@@ -12,7 +12,6 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 
 from pathlib import Path
 import os
-from celery.schedules import crontab
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -28,8 +27,6 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DEBUG", "True").lower() in ("true", "1", "t", "yes")
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = os.getenv("REDIS_PORT", "6379")
 # APPEND_SLASH = True
 DATA_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
@@ -37,33 +34,14 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
 MEDIA_ROOT = os.environ.get("MEDIA_ROOT", BASE_DIR / "uploads")
 MEDIA_URL = "/media/"
-CELERY_BROKER_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/0"
-CELERY_RESULT_BACKEND = f"redis://{REDIS_HOST}:{REDIS_PORT}/0"
-CELERY_ACCEPT_CONTENT = ["json"]
-CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_TIMEZONE = "America/Sao_Paulo"
-CELERY_TASK_TRACK_STARTED = True
-
-# Celery Beat: limpeza semanal de Parquet orfao/frio (recriavel do .fcs).
 PARQUET_MAX_IDLE_DAYS = int(os.getenv("PARQUET_MAX_IDLE_DAYS", 7))
-CELERY_BEAT_SCHEDULE = {
-    "cleanup-cold-parquet": {
-        "task": "fcs_parser.tasks.cleanup_cold_parquet_task",
-        "schedule": crontab(hour=3, minute=0, day_of_week="sunday"),
-        "kwargs": {"max_idle_days": PARQUET_MAX_IDLE_DAYS},
-    },
-    "cleanup-ephemeral-fcs": {
-        "task": "fcs_parser.tasks.cleanup_ephemeral_fcs_task",
-        "schedule": crontab(hour=4, minute=0, day_of_week="sunday"),
-    },
-}
 
-# Cache (Redis) — usado para density/heatmap com TTL deslizante.
+# Cache — file-based (zero extra RAM; no Redis dependency).
+CACHE_DIR = os.path.join(MEDIA_ROOT, "cache")
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": f"redis://{REDIS_HOST}:{REDIS_PORT}/1",
+        "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+        "LOCATION": CACHE_DIR,
     }
 }
 # Tempo de vida (segundos) do cache de density; renovado a cada acesso (sliding).

@@ -18,21 +18,6 @@ services:
     networks:
       - pandora_net
 
-  redis:
-    image: redis:6-alpine
-    container_name: pandora_redis
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - pandora_net
-
   web:
     build:
       context: .
@@ -46,10 +31,8 @@ services:
       DATABASE_PASSWORD: secret_pass
       DATABASE_HOST: pandora_db
       DATABASE_PORT: 5432
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
       MEDIA_ROOT: "/app/uploads" # mesma pasta que o volume
-    command: bash -c 'while !</dev/tcp/db/5432; do sleep 1; done; while !</dev/tcp/redis/6379; do sleep 1; done; python manage.py makemigrations &&  python manage.py migrate && python manage.py runserver 0.0.0.0:8000'
+    command: bash -c 'while !</dev/tcp/db/5432; do sleep 1; done; python manage.py makemigrations &&  python manage.py migrate && python manage.py runserver 0.0.0.0:8000'
     volumes:
       - .:/app
       - uploads_data:/app/uploads # pasta de uploads compartilhada
@@ -59,45 +42,11 @@ services:
       - "${WEB_PORT:-8085}:8000"
     depends_on:
       - db
-      - redis
-    networks:
-      - pandora_net
-
-  celery_worker:
-    build:
-      context: .
-      args:
-        SECRET_KEY: v0v8JHJuM8OzY2
-    container_name: pandora_celery_worker
-    environment:
-      SECRET_KEY: v0v8JHJuM8OzY2
-      DATABASE_NAME: pandora_db
-      DATABASE_USER: postgres
-      DATABASE_PASSWORD: secret_pass
-      DATABASE_HOST: pandora_db
-      DATABASE_PORT: 5432
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      MEDIA_ROOT: "/app/uploads" # mesma pasta que o volume
-    command: celery -A citosharp worker -l info
-    volumes:
-      - .:/app
-      - uploads_data:/app/uploads # compartilha os uploads com web
-    depends_on:
-      - db
-      - redis
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A citosharp inspect ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
     networks:
       - pandora_net
 
 volumes:
   db_data:
-  redis_data:
   uploads_data:
 networks:
   pandora_net:

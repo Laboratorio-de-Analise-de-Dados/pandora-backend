@@ -44,10 +44,9 @@ class CreateGateView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         gate_instance = serializer.save()
 
-        # Dispara recálculo de métricas (% parent, % total) para o gate criado
-        from analytics.tasks import recalculate_gate_analysis_task
+        from analytics.tasks import recalculate_gate_analysis
 
-        recalculate_gate_analysis_task.delay(gate_instance.id)
+        recalculate_gate_analysis(gate_instance.id)
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -81,9 +80,9 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         if update_fields:
             gate.save(update_fields=update_fields)
 
-        from analytics.tasks import recalculate_gate_analysis_task
+        from analytics.tasks import recalculate_gate_analysis
 
-        recalculate_gate_analysis_task.delay(gate.id)
+        recalculate_gate_analysis(gate.id)
 
         if new_coords is not None:
             from utils.density import invalidate_density
@@ -481,7 +480,7 @@ class ApplyGateView(APIView):
                 children = list(g.children.select_related("dashboard").all())
                 queue.extend(children)
 
-        from analytics.tasks import recalculate_gate_analysis_task
+        from analytics.tasks import recalculate_gate_analysis
         from utils.density import invalidate_density
 
         total_created = 0
@@ -569,7 +568,7 @@ class ApplyGateView(APIView):
                 copied_from__isnull=False,
             )
             for rg in root_gates:
-                recalculate_gate_analysis_task.delay(rg.id)
+                recalculate_gate_analysis(rg.id)
 
         return Response(
             {"created": total_created, "skipped": total_skipped, "details": details},
