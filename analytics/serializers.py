@@ -75,16 +75,24 @@ class ListGateSerializer(serializers.ModelSerializer):
     copied_from_id = serializers.PrimaryKeyRelatedField(
         source="copied_from", read_only=True
     )
+    plot_config = serializers.SerializerMethodField()
 
     class Meta:
         model = GateModel
-        fields = ['id', 'created_at', 'parent_id', 'children', 'file_data', 'name', 'gate_coordinates', 'analysis_result', 'copied_from_id', 'color']
+        fields = ['id', 'created_at', 'parent_id', 'children', 'file_data', 'name', 'gate_coordinates', 'analysis_result', 'copied_from_id', 'color', 'plot_config']
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_children(self, obj):
          # Serializa os filhos do gate
         children = obj.children.all()
         return GateSerializer(children, many=True).data
+
+    @extend_schema_field(serializers.DictField())
+    def get_plot_config(self, obj):
+        dashboard = getattr(obj, "dashboard", None)
+        if not dashboard:
+            return {}
+        return dashboard.dashboard_config.get("plot_config", {})
 
 
 

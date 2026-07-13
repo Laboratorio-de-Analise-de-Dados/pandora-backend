@@ -80,6 +80,14 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         if update_fields:
             gate.save(update_fields=update_fields)
 
+        plot_config = request.data.get("plot_config")
+        if plot_config is not None:
+            dashboard = gate.dashboard
+            dashboard_config = dashboard.dashboard_config or {}
+            dashboard_config["plot_config"] = plot_config
+            dashboard.dashboard_config = dashboard_config
+            dashboard.save(update_fields=["dashboard_config"])
+
         from analytics.tasks import recalculate_gate_analysis
 
         recalculate_gate_analysis(gate.id)
