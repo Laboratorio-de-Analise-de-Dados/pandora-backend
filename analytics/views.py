@@ -77,16 +77,20 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         if new_color is not None:
             gate.color = new_color if new_color else None
             update_fields.append("color")
+        new_plot_config = request.data.get("plot_config")
+        if new_plot_config is not None:
+            gate.plot_config = new_plot_config
+            update_fields.append("plot_config")
         if update_fields:
             gate.save(update_fields=update_fields)
 
-        from analytics.tasks import recalculate_gate_analysis
-
-        recalculate_gate_analysis(gate.id)
-
+        # Só recalcula métricas/invalida densidade quando a geometria muda.
+        # Alterações de nome/cor/plot_config não afetam a análise.
         if new_coords is not None:
+            from analytics.tasks import recalculate_gate_analysis
             from utils.density import invalidate_density
 
+            recalculate_gate_analysis(gate.id)
             invalidate_density(gate.file_data_id)
 
         serializer = self.get_serializer(gate)
@@ -539,6 +543,7 @@ class ApplyGateView(APIView):
                         file_data_id=target_fd_id,
                         name=gate_name,
                         gate_coordinates=gate.gate_coordinates,
+                        plot_config=gate.plot_config,
                         dashboard=new_dash,
                         parent_id=new_parent_id,
                         copied_from=gate,

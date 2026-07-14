@@ -25,6 +25,10 @@ class GateModel(models.Model):
     )
     name = models.CharField(max_length=50, db_index=True)
     gate_coordinates = models.JSONField(default=dict)
+    # View config (eixos, escalas, limites, cutoff, modo) usada para exibir este
+    # gate. Persiste por estratégia de gate e é clonada ao aplicar entre arquivos,
+    # pra o usuário não voltar sempre pro FSC/SSC ao trocar de arquivo.
+    plot_config = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     dashboard = models.ForeignKey(
         "DashboardModel", related_name="gates", on_delete=models.CASCADE
@@ -53,7 +57,13 @@ class GateModel(models.Model):
 
         gates = list(
             cls.objects.filter(file_data_id=file_data_id).values(
-                "id", "name", "parent_id", "gate_coordinates", "copied_from_id", "color"
+                "id",
+                "name",
+                "parent_id",
+                "gate_coordinates",
+                "plot_config",
+                "copied_from_id",
+                "color",
             )
         )
 
