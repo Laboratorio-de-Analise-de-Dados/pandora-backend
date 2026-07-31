@@ -24,6 +24,8 @@ services:
       args:
         SECRET_KEY: v0v8JHJuM8OzY2
     container_name: pandora_web
+    env_file:
+      - .env
     environment:
       SECRET_KEY: v0v8JHJuM8OzY2
       DATABASE_NAME: pandora_db
