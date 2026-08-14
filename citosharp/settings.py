@@ -47,6 +47,27 @@ CACHES = {
 # Tempo de vida (segundos) do cache de density; renovado a cada acesso (sliding).
 DENSITY_CACHE_TTL = int(os.getenv("DENSITY_CACHE_TTL", 3600))
 
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "accounts": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": True,
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+}
+
 # Application definition
 
 INSTALLED_APPS = [

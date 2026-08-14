@@ -53,8 +53,8 @@ def send_invite_email(invite: Invite) -> bool:
     try:
         msg.send()
         return True
-    except Exception as e:
-        logger.warning("Falha ao enviar email de convite: %s", e)
+    except Exception:
+        logger.exception("Falha ao enviar email de convite")
         return False
 
 
@@ -88,6 +88,6 @@ def send_password_reset_email(user, reset_link: str) -> bool:
     try:
         msg.send()
         return True
-    except Exception as e:
-        logger.warning("Falha ao enviar email de recuperação: %s", e)
+    except Exception:
+        logger.exception("Falha ao enviar email de recuperação")
         return False
