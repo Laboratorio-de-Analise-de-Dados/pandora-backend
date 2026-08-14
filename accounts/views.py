@@ -37,7 +37,7 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from .serializers import get_or_create_default_roles
-from accounts.services.send_mail import send_password_reset_email
+from accounts.services.send_mail import send_invite_email, send_password_reset_email
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -164,8 +164,11 @@ class InviteListCreateView(SerializerByMethodMixin, generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         instance = self.perform_create(serializer)
+        email_sent = send_invite_email(instance)
         output = InviteSerializer(instance, context={"request": request})
-        return Response(output.data, status=status.HTTP_201_CREATED)
+        return Response(
+            {**output.data, "email_sent": email_sent}, status=status.HTTP_201_CREATED
+        )
 
 
 class InviteAcceptView(generics.GenericAPIView):
@@ -308,15 +311,19 @@ class PasswordResetRequestView(generics.GenericAPIView):
         email = serializer.validated_data["email"]
 
         user = User.objects.filter(email__iexact=email).first()
+        email_sent = False
         if user:
             token = default_token_generator.make_token(user)
             reset_link = (
                 f"{settings.FRONTEND_URL}/reset-password?token={user.id}:{token}"
             )
-            send_password_reset_email(user, reset_link)
+            email_sent = send_password_reset_email(user, reset_link)
 
         return Response(
-            {"detail": "Se o email existir, você receberá um link de recuperação."},
+            {
+                "detail": "Se o email existir, você receberá um link de recuperação.",
+                "email_sent": email_sent,
+            },
             status=status.HTTP_200_OK,
         )
 

@@ -23,7 +23,7 @@ def create_invite(email: str, organization: Organization, role: Role) -> Invite:
     return invite
 
 
-def send_invite_email(invite: Invite) -> None:
+def send_invite_email(invite: Invite) -> bool:
     link = f"{settings.FRONTEND_URL}/invite/{invite.token}"
     subject = f"Convite para entrar na organização {invite.organization.name}"
     text_content = (
@@ -52,11 +52,13 @@ def send_invite_email(invite: Invite) -> None:
     msg.attach_alternative(html_content, "text/html")
     try:
         msg.send()
+        return True
     except Exception as e:
         logger.warning("Falha ao enviar email de convite: %s", e)
+        return False
 
 
-def send_password_reset_email(user, reset_link: str) -> None:
+def send_password_reset_email(user, reset_link: str) -> bool:
     subject = "Recuperação de senha - Pandora"
     text_content = (
         f"Olá, {user.username}.\n\n"
@@ -85,5 +87,7 @@ def send_password_reset_email(user, reset_link: str) -> None:
     msg.attach_alternative(html_content, "text/html")
     try:
         msg.send()
+        return True
     except Exception as e:
         logger.warning("Falha ao enviar email de recuperação: %s", e)
+        return False
