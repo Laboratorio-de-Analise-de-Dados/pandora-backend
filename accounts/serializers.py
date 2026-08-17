@@ -136,6 +136,17 @@ class UserRegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Role inválida para cadastro público.")
         return value
 
+    def validate(self, attrs):
+        if attrs.get("organization_id") and not attrs.get("invite_token"):
+            raise serializers.ValidationError(
+                {"organization_id": "Não é possível escolher organização sem convite."}
+            )
+        if attrs.get("role") and not attrs.get("invite_token"):
+            raise serializers.ValidationError(
+                {"role": "Não é possível escolher role sem convite."}
+            )
+        return attrs
+
     def validate_invite_token(self, value):
         try:
             invite = Invite.objects.select_related("organization", "role").get(
@@ -189,9 +200,11 @@ class UserRegisterSerializer(serializers.ModelSerializer):
 
 
 class UserDetailSerializer(serializers.ModelSerializer):
+    memberships = MembershipSerializer(source="memberships", many=True, read_only=True)
+
     class Meta:
         model = User
-        fields = ["id", "username", "email", "is_super_admin", "auth_provider"]
+        fields = ["id", "username", "email", "is_super_admin", "auth_provider", "memberships"]
 
 
 class RoleSerializer(serializers.ModelSerializer):

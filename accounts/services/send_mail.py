@@ -24,24 +24,21 @@ def create_invite(email: str, organization: Organization, role: Role) -> Invite:
 
 
 def send_invite_email(invite: Invite) -> bool:
-    link = f"{settings.FRONTEND_URL}/invite/{invite.token}"
-    subject = f"Convite para entrar na organização {invite.organization.name}"
+    subject = f"Você foi convidado para entrar na organização {invite.organization.name}"
     text_content = (
-        f"Você foi convidado para entrar na organização {invite.organization.name}.\n"
-        f"Aceite o convite clicando no link: {link}\n\n"
-        f"Se não tiver conta, você poderá criar após clicar."
+        f"Você foi convidado para participar da organização {invite.organization.name}\n"
+        f"como {invite.role.name}.\n\n"
+        f"Para aceitar, acesse o Pandora com este email e confirme o convite na página inicial.\n"
+        f"Se ainda não tem conta, cadastre-se com este mesmo email."
     )
     html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; color: #333;">
-            <h2 style="color: #2c3e50;">Convite para entrar na organização <strong>{invite.organization.name}</strong></h2>
-            <p>Você foi convidado para participar da organização <strong>{invite.organization.name}</strong>.</p>
-            <p style="margin:20px 0;">
-                <a href="{link}" style="background-color:#4CAF50; color:white; padding:10px 15px; text-decoration:none; border-radius:5px;">
-                    Aceitar convite
-                </a>
-            </p>
-            <p>Se não tiver conta, você poderá criar após clicar.</p>
+            <h2 style="color: #2c3e50;">Você foi convidado para <strong>{invite.organization.name}</strong></h2>
+            <p>Você foi convidado para participar da organização <strong>{invite.organization.name}</strong>
+            como <strong>{invite.role.name}</strong>.</p>
+            <p>Para aceitar o convite, acesse o Pandora com este email e confirme o convite na página inicial.</p>
+            <p>Se ainda não tem conta, cadastre-se usando este mesmo email.</p>
         </body>
         </html>
     """

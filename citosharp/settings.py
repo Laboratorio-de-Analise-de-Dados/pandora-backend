@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
+from datetime import timedelta
 from pathlib import Path
 import os
 from dotenv import load_dotenv
@@ -31,7 +32,7 @@ DEBUG = os.environ.get("DEBUG", "True").lower() in ("true", "1", "t", "yes")
 DATA_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 
-ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
+ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 MEDIA_ROOT = os.environ.get("MEDIA_ROOT", BASE_DIR / "uploads")
 MEDIA_URL = "/media/"
 PARQUET_MAX_IDLE_DAYS = int(os.getenv("PARQUET_MAX_IDLE_DAYS", 7))
@@ -104,6 +105,15 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.getenv("JWT_ACCESS_TOKEN_LIFETIME_MINUTES", "15"))),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.getenv("JWT_REFRESH_TOKEN_LIFETIME_DAYS", "7"))),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": False,
+    "ALGORITHM": "HS256",
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
+
 SPECTACULAR_SETTINGS = {
     "TITLE": "Pandora Backend API",
     "DESCRIPTION": (
@@ -118,7 +128,19 @@ SPECTACULAR_SETTINGS = {
     },
 }
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if CORS_ALLOWED_ORIGINS:
+    CORS_ALLOW_ALL_ORIGINS = False
+else:
+    CORS_ALLOW_ALL_ORIGINS = (
+        os.environ.get("CORS_ALLOW_ALL_ORIGINS", "True").lower()
+        in ("true", "1", "t", "yes")
+    )
+
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.gmail.com"
 EMAIL_PORT = 587
