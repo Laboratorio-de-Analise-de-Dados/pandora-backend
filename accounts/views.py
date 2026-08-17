@@ -5,7 +5,7 @@ import urllib.parse
 import requests
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
-from django.shortcuts import redirect
+from django.shortcuts import get_object_or_404, redirect
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import generics, serializers
 from accounts.permissions.has_permission import IsOrgAdmin, IsSuperAdmin
@@ -188,6 +188,20 @@ class InviteAcceptView(generics.GenericAPIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class InviteDeclineView(generics.GenericAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        token = self.kwargs["token"]
+        user = request.user
+        invite = get_object_or_404(
+            Invite, token=token, email__iexact=user.email, status="pending"
+        )
+        invite.status = "declined"
+        invite.save(update_fields=["status"])
+        return Response({"detail": "Convite recusado."}, status=status.HTTP_200_OK)
 
 
 class InviteRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):

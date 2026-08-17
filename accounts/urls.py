@@ -5,6 +5,7 @@ from .views import (
     GoogleAuthCallbackView,
     GoogleAuthInitView,
     InviteAcceptView,
+    InviteDeclineView,
     InviteListCreateView,
     InvitePublicDetailView,
     InviteRetrieveUpdateDestroyView,
@@ -72,6 +73,9 @@ urlpatterns = [
     ),
     path(
         "invites/accept/<str:token>/", InviteAcceptView.as_view(), name="invite_accept"
+    ),
+    path(
+        "invites/decline/<str:token>/", InviteDeclineView.as_view(), name="invite_decline"
     ),
     path("roles/", RoleListCreateView.as_view(), name="role_list_create"),
     path(
