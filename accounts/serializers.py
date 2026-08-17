@@ -199,14 +199,6 @@ class UserRegisterSerializer(serializers.ModelSerializer):
         return user
 
 
-class UserDetailSerializer(serializers.ModelSerializer):
-    memberships = MembershipSerializer(source="memberships", many=True, read_only=True)
-
-    class Meta:
-        model = User
-        fields = ["id", "username", "email", "is_super_admin", "auth_provider", "memberships"]
-
-
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Role
@@ -221,6 +213,21 @@ class MembershipSerializer(serializers.ModelSerializer):
     class Meta:
         model = Membership
         fields = ["id", "user", "organization", "role", "status", "joined_at"]
+
+
+class UserDetailSerializer(serializers.ModelSerializer):
+    memberships = MembershipSerializer(source="memberships", many=True, read_only=True)
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "email",
+            "is_super_admin",
+            "auth_provider",
+            "memberships",
+        ]
 
 
 class MembershipCreateSerializer(serializers.ModelSerializer):
