@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
+from datetime import timedelta
 from pathlib import Path
 import os
 from dotenv import load_dotenv
@@ -31,7 +32,7 @@ DEBUG = os.environ.get("DEBUG", "True").lower() in ("true", "1", "t", "yes")
 DATA_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 150 * 1024 * 1024
 
-ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
+ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 MEDIA_ROOT = os.environ.get("MEDIA_ROOT", BASE_DIR / "uploads")
 MEDIA_URL = "/media/"
 PARQUET_MAX_IDLE_DAYS = int(os.getenv("PARQUET_MAX_IDLE_DAYS", 7))
@@ -46,6 +47,27 @@ CACHES = {
 }
 # Tempo de vida (segundos) do cache de density; renovado a cada acesso (sliding).
 DENSITY_CACHE_TTL = int(os.getenv("DENSITY_CACHE_TTL", 3600))
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "accounts": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": True,
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+}
 
 # Application definition
 
@@ -81,6 +103,15 @@ REST_FRAMEWORK = {
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.getenv("JWT_ACCESS_TOKEN_LIFETIME_MINUTES", "15"))),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.getenv("JWT_REFRESH_TOKEN_LIFETIME_DAYS", "7"))),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": False,
+    "ALGORITHM": "HS256",
+    "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
 SPECTACULAR_SETTINGS = {
@@ -191,3 +222,20 @@ STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_USER_MODEL = "accounts.User"
+
+# Microsoft Entra ID / Azure AD SSO (desativado por padrado; preenchido futuramente)
+MICROSOFT_CLIENT_ID = os.getenv("MICROSOFT_CLIENT_ID", "")
+MICROSOFT_CLIENT_SECRET = os.getenv("MICROSOFT_CLIENT_SECRET", "")
+MICROSOFT_TENANT_ID = os.getenv("MICROSOFT_TENANT_ID", "common")
+MICROSOFT_REDIRECT_URI = os.getenv("MICROSOFT_REDIRECT_URI", "")
+MICROSOFT_AUTH_ENABLED = bool(
+    MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET and MICROSOFT_REDIRECT_URI
+)
+
+# Google OAuth2 SSO
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "")
+GOOGLE_AUTH_ENABLED = bool(
+    GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI
+)
