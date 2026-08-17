@@ -11,6 +11,7 @@ django-cors-headers==4.7.0
 djangorestframework==3.16.0
 djangorestframework_simplejwt==5.5.1
 drf-spectacular==0.29.0
+requests==2.32.3
 executing==2.2.0
 FlowIO==1.4.0
 gunicorn==23.0.0

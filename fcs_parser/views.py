@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import generics, serializers
 from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
 from utils.density import (
     DEFAULT_COFACTOR,
     compute_density,
@@ -37,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 
 class ExperimentInitView(generics.CreateAPIView):
+    permission_classes = [IsAuthenticated]
+
     @extend_schema(
         request=inline_serializer(
             name="ExperimentInitRequest",
@@ -61,11 +64,15 @@ class ExperimentInitView(generics.CreateAPIView):
             status="uploading",
             file_status="uploading",
             total_chunks=total,
+            organization_id=request.data.get("organizationId"),
+            created_by=request.user,
         )
         return Response({"fileId": str(experiment.id)}, status=201)
 
 
 class UploadChunkView(generics.CreateAPIView):
+    permission_classes = [IsAuthenticated]
+
     @extend_schema(
         request=inline_serializer(
             name="UploadChunkRequest",
@@ -102,6 +109,8 @@ class UploadChunkView(generics.CreateAPIView):
 
 
 class ExperimentCompleteView(generics.CreateAPIView):
+    permission_classes = [IsAuthenticated]
+
     @extend_schema(
         request=inline_serializer(
             name="ExperimentCompleteRequest",
@@ -113,7 +122,9 @@ class ExperimentCompleteView(generics.CreateAPIView):
         ),
     )
     def post(self, request):
-        from fcs_parser.services.process_experiment_file import extract_metadata_from_zip
+        from fcs_parser.services.process_experiment_file import (
+            extract_metadata_from_zip,
+        )
 
         file_id = request.data["fileId"]
         experiment = ExperimentModel.objects.get(id=file_id)
@@ -155,20 +166,43 @@ class ExperimentCompleteView(generics.CreateAPIView):
 
 
 class ExperimentListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
     serializer_class = ListExperimentSerializer
-    queryset = ExperimentModel.objects.all()
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_super_admin:
+            return ExperimentModel.objects.all()
+        org_ids = user.memberships.filter(status="active").values_list(
+            "organization_id", flat=True
+        )
+        return ExperimentModel.objects.filter(
+            organization_id__in=org_ids
+        ) | ExperimentModel.objects.filter(created_by=user)
 
 
 class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
+    permission_classes = [IsAuthenticated]
     lookup_url_kwarg = "experiment_id"
     serializer_class = ListExperimentSerializer
-    queryset = ExperimentModel.objects.all()
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_super_admin:
+            return ExperimentModel.objects.all()
+        org_ids = user.memberships.filter(status="active").values_list(
+            "organization_id", flat=True
+        )
+        return ExperimentModel.objects.filter(
+            organization_id__in=org_ids
+        ) | ExperimentModel.objects.filter(created_by=user)
 
     def perform_destroy(self, instance):
         return instance.delete()
 
 
 class GetExperimentFiles(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
     lookup_url_kwarg = "experiment_id"
     serializer_class = ListFileDataSerializer
 
@@ -199,6 +233,7 @@ class GetExperimentFiles(generics.ListAPIView):
 
 
 class ListFileParams(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
     lookup_field = "file_id"
     serializer_class = ParamListDataSerializer
 
@@ -223,6 +258,7 @@ class ListFileParams(generics.ListAPIView):
 
 
 class FileDensityView(APIView):
+    permission_classes = [IsAuthenticated]
     """Return density (heatmap) or subsampled scatter for a file's data."""
 
     @extend_schema(
@@ -406,6 +442,7 @@ class FileDensityView(APIView):
 
 
 class ProcessFileDataView(generics.CreateAPIView):
+    permission_classes = [IsAuthenticated]
 
     @extend_schema(
         request=None,
@@ -456,6 +493,7 @@ class ProcessFileDataView(generics.CreateAPIView):
 
 
 class FileStatsView(APIView):
+    permission_classes = [IsAuthenticated]
     """Return summary and per-channel statistics for the entire file (no gate).
 
     Computes the same metrics as gate analysis but on the full dataset so the
@@ -512,6 +550,7 @@ class FileStatsView(APIView):
 
 
 class RecomputeFileDataView(APIView):
+    permission_classes = [IsAuthenticated]
     """Reprocess a FileData from the experiment's ZIP (or legacy .fcs).
 
     Rebuilds the Parquet cache synchronously and invalidates density cache.

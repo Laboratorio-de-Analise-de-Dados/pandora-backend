@@ -131,6 +131,14 @@ def compute_density(
     if len(x) == 0:
         return None
 
+    # Empilha na borda (estilo FlowJo): pontos fora do range sao grampeados ao
+    # limite em vez de descartados, para que a densidade fora do eixo apareca
+    # acumulada na borda em vez de sumir silenciosamente.
+    if x_range:
+        x = x.clip(lower=x_range[0], upper=x_range[1])
+    if y_range:
+        y = y.clip(lower=y_range[0], upper=y_range[1])
+
     xv = apply_scale(x.values, x_scale, cofactor)
     yv = apply_scale(y.values, y_scale, cofactor)
 
@@ -194,8 +202,9 @@ def compute_histogram(
 
     x = pd.to_numeric(df[x_col], errors="coerce").dropna()
 
+    # Empilha na borda (estilo FlowJo): grampeia ao limite em vez de descartar.
     if x_range:
-        x = x[(x >= x_range[0]) & (x <= x_range[1])]
+        x = x.clip(lower=x_range[0], upper=x_range[1])
 
     if len(x) == 0:
         return None
@@ -339,10 +348,12 @@ def subsample_scatter(
 
     subset = df[[x_col, y_col]].dropna()
 
+    # Empilha na borda (estilo FlowJo): grampeia os pontos fora do range ao
+    # limite em vez de descarta-los, para o usuario ver que ha eventos ali.
     if x_range:
-        subset = subset[(subset[x_col] >= x_range[0]) & (subset[x_col] <= x_range[1])]
+        subset[x_col] = subset[x_col].clip(lower=x_range[0], upper=x_range[1])
     if y_range:
-        subset = subset[(subset[y_col] >= y_range[0]) & (subset[y_col] <= y_range[1])]
+        subset[y_col] = subset[y_col].clip(lower=y_range[0], upper=y_range[1])
 
     if len(subset) > sample:
         subset = subset.sample(n=sample, random_state=42)
