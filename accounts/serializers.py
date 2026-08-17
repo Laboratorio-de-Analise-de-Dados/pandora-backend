@@ -114,9 +114,11 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
 class UserRegisterSerializer(serializers.ModelSerializer):
     organization_id = serializers.IntegerField(
-        write_only=True, required=False, allow_null=True
+        write_only=True, required=False, allow_null=True, default=None
     )
-    role = serializers.CharField(write_only=True, required=False, default=Role.MEMBER)
+    role = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, default=""
+    )
     invite_token = serializers.CharField(write_only=True, required=False)
 
     class Meta:
@@ -132,7 +134,7 @@ class UserRegisterSerializer(serializers.ModelSerializer):
         extra_kwargs = {"password": {"write_only": True}}
 
     def validate_role(self, value):
-        if value not in (Role.ORG_ADMIN, Role.MEMBER):
+        if value and value not in (Role.ORG_ADMIN, Role.MEMBER):
             raise serializers.ValidationError("Role inválida para cadastro público.")
         return value
 
@@ -166,8 +168,8 @@ class UserRegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         organization_id = validated_data.pop("organization_id", None)
-        role_name = validated_data.pop("role", Role.MEMBER)
-        invite_token = validated_data.pop("invite_token", None)
+        role_name = validated_data.pop("role") or Role.MEMBER
+        validated_data.pop("invite_token", None)
         invite = getattr(self, "invite", None)
 
         user = User(
