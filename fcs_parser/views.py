@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import traceback
-
+from django.db.models import Q
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 from analytics.models import GateModel
@@ -49,22 +49,46 @@ class ExperimentInitView(generics.CreateAPIView):
                 "totalChunks": serializers.IntegerField(),
             },
         ),
-        responses=inline_serializer(
-            name="ExperimentInitResponse",
-            fields={"fileId": serializers.CharField()},
-        ),
+        responses={
+            201: inline_serializer(
+                name="ExperimentInitResponse",
+                fields={"fileId": serializers.CharField()},
+            ),
+            400: inline_serializer(
+                name="ExperimentInitErrorResponse",
+                fields={"detail": serializers.CharField()},
+            ),
+        },
     )
     def post(self, request):
         title = request.data.get("title").replace(" ", "_")
         experiment_type = request.data.get("type")
+        organization_id = request.data.get("organizationId")
         total = request.data.get("totalChunks")
+        if organization_id:
+
+            filter_query = Q(title=title, organization_id=organization_id)
+        else:
+            # Escopo Pessoal (sem organização e criado pelo mesmo usuário)
+            filter_query = Q(
+                title=title, organization__isnull=True, created_by=request.user
+            )
+
+        if ExperimentModel.objects.filter(filter_query).exists():
+            return Response(
+                {
+                    "detail": "Já existe um experimento com este título nesta organização."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         experiment = ExperimentModel.objects.create(
             title=title,
             type=experiment_type,
             status="uploading",
             file_status="uploading",
             total_chunks=total,
-            organization_id=request.data.get("organizationId"),
+            organization_id=organization_id,
             created_by=request.user,
         )
         return Response({"fileId": str(experiment.id)}, status=201)
