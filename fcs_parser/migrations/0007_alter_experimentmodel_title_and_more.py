@@ -7,18 +7,18 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('fcs_parser', '0006_experimentmodel_zip_path'),
+        ("fcs_parser", "0006_experimentmodel_zip_path"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='experimentmodel',
-            name='title',
+            model_name="experimentmodel",
+            name="title",
             field=models.CharField(max_length=50),
         ),
         migrations.AlterUniqueTogether(
-            name='experimentmodel',
-            unique_together={('title', 'created_by')},
+            name="experimentmodel",
+            unique_together={("title", "created_by")},
         ),
     ]
