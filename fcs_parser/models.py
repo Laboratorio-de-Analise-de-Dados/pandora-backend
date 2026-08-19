@@ -59,7 +59,24 @@ class ExperimentModel(models.Model):
     zip_path = models.CharField(max_length=512, null=True, blank=True)
 
     class Meta:
-        unique_together = [["title", "created_by"]]
+        constraints = [
+            # Evita que o MESMO usuário crie experimentos com títulos iguais na MESMA organização
+            models.UniqueConstraint(
+                fields=["title", "created_by", "organization"],
+                name="unique_title_per_user_and_org",
+                condition=models.Q(organization__isnull=False),
+            ),
+            # Evita que o MESMO usuário crie experimentos pessoais com títulos iguais
+            models.UniqueConstraint(
+                fields=["title", "created_by"],
+                name="unique_title_per_user_personal",
+                condition=models.Q(organization__isnull=True),
+            ),
+        ]
+
+    @property
+    def is_personal(self) -> bool:
+        return self.organization_id is None
 
     def __str__(self) -> str:
         return f"Experiment {self.id} – {self.title} ({self.status})"

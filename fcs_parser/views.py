@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import traceback
-
+from django.db.models import Q
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 from analytics.models import GateModel
@@ -40,34 +40,29 @@ logger = logging.getLogger(__name__)
 class ExperimentInitView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        request=inline_serializer(
-            name="ExperimentInitRequest",
-            fields={
-                "title": serializers.CharField(),
-                "type": serializers.CharField(),
-                "totalChunks": serializers.IntegerField(),
-            },
-        ),
-        responses=inline_serializer(
-            name="ExperimentInitResponse",
-            fields={"fileId": serializers.CharField()},
-        ),
-    )
     def post(self, request):
-        title = request.data.get("title").replace(" ", "_")
-        experiment_type = request.data.get("type")
-        total = request.data.get("totalChunks")
+        title = request.data.get("title", "").replace(" ", "_")
+        organization_id = request.data.get("organizationId")
+        if ExperimentModel.objects.filter(
+            title=title, created_by=request.user, organization_id=organization_id
+        ).exists():
+            return Response(
+                {
+                    "detail": "Você já possui um experimento com este título neste escopo."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         experiment = ExperimentModel.objects.create(
             title=title,
-            type=experiment_type,
+            type=request.data.get("type"),
             status="uploading",
             file_status="uploading",
-            total_chunks=total,
-            organization_id=request.data.get("organizationId"),
+            total_chunks=request.data.get("totalChunks"),
+            organization_id=organization_id,
             created_by=request.user,
         )
-        return Response({"fileId": str(experiment.id)}, status=201)
+        return Response({"fileId": str(experiment.id)}, status=status.HTTP_201_CREATED)
 
 
 class UploadChunkView(generics.CreateAPIView):
