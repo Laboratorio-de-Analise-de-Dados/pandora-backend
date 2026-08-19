@@ -40,58 +40,29 @@ logger = logging.getLogger(__name__)
 class ExperimentInitView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        request=inline_serializer(
-            name="ExperimentInitRequest",
-            fields={
-                "title": serializers.CharField(),
-                "type": serializers.CharField(),
-                "totalChunks": serializers.IntegerField(),
-            },
-        ),
-        responses={
-            201: inline_serializer(
-                name="ExperimentInitResponse",
-                fields={"fileId": serializers.CharField()},
-            ),
-            400: inline_serializer(
-                name="ExperimentInitErrorResponse",
-                fields={"detail": serializers.CharField()},
-            ),
-        },
-    )
     def post(self, request):
-        title = request.data.get("title").replace(" ", "_")
-        experiment_type = request.data.get("type")
+        title = request.data.get("title", "").replace(" ", "_")
         organization_id = request.data.get("organizationId")
-        total = request.data.get("totalChunks")
-        if organization_id:
-
-            filter_query = Q(title=title, organization_id=organization_id)
-        else:
-            # Escopo Pessoal (sem organização e criado pelo mesmo usuário)
-            filter_query = Q(
-                title=title, organization__isnull=True, created_by=request.user
-            )
-
-        if ExperimentModel.objects.filter(filter_query).exists():
+        if ExperimentModel.objects.filter(
+            title=title, created_by=request.user, organization_id=organization_id
+        ).exists():
             return Response(
                 {
-                    "detail": "Já existe um experimento com este título nesta organização."
+                    "detail": "Você já possui um experimento com este título neste escopo."
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         experiment = ExperimentModel.objects.create(
             title=title,
-            type=experiment_type,
+            type=request.data.get("type"),
             status="uploading",
             file_status="uploading",
-            total_chunks=total,
+            total_chunks=request.data.get("totalChunks"),
             organization_id=organization_id,
             created_by=request.user,
         )
-        return Response({"fileId": str(experiment.id)}, status=201)
+        return Response({"fileId": str(experiment.id)}, status=status.HTTP_201_CREATED)
 
 
 class UploadChunkView(generics.CreateAPIView):
