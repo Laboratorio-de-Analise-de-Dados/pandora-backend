@@ -218,7 +218,7 @@ class MembershipSerializer(serializers.ModelSerializer):
 
 
 class UserDetailSerializer(serializers.ModelSerializer):
-    memberships = MembershipSerializer(source="memberships", many=True, read_only=True)
+    memberships = MembershipSerializer(many=True, read_only=True)
 
     class Meta:
         model = User
