@@ -78,6 +78,13 @@ class ExperimentInitView(generics.CreateAPIView):
         raw_org_id = request.data.get("organizationId")
         if raw_org_id in (None, ""):
             organization_id = None
+            if ExperimentModel.objects.filter(
+                title=title, created_by=request.user, organization__isnull=True
+            ).exists():
+                return Response(
+                    {"detail": "Você já possui um experimento pessoal com este título."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         else:
             try:
                 organization_id = int(raw_org_id)
@@ -109,14 +116,6 @@ class ExperimentInitView(generics.CreateAPIView):
             ).exists():
                 return Response(
                     {"detail": "Título já criado para esse laboratório."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        else:
-            if ExperimentModel.objects.filter(
-                title=title, created_by=request.user, organization__isnull=True
-            ).exists():
-                return Response(
-                    {"detail": "Você já possui um experimento pessoal com este título."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
