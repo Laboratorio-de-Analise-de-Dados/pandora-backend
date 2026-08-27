@@ -4,7 +4,9 @@ import os
 import traceback
 
 from django.conf import settings
+from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
+from accounts.models import Organization
 from analytics.models import GateModel
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework.response import Response
@@ -47,6 +49,9 @@ class ExperimentInitView(generics.CreateAPIView):
                 "title": serializers.CharField(),
                 "type": serializers.CharField(),
                 "totalChunks": serializers.IntegerField(),
+                "organizationId": serializers.IntegerField(
+                    required=False, allow_null=True
+                ),
             },
         ),
         responses=inline_serializer(
@@ -55,18 +60,74 @@ class ExperimentInitView(generics.CreateAPIView):
         ),
     )
     def post(self, request):
-        title = request.data.get("title").replace(" ", "_")
+        raw_title = request.data.get("title")
+        if not isinstance(raw_title, str) or not raw_title.strip():
+            return Response(
+                {"detail": "Título é obrigatório."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        title = raw_title.strip().replace(" ", "_")
+
         experiment_type = request.data.get("type")
+        if not experiment_type:
+            return Response(
+                {"detail": "Tipo é obrigatório."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
         total = request.data.get("totalChunks")
-        experiment = ExperimentModel.objects.create(
-            title=title,
-            type=experiment_type,
-            status="uploading",
-            file_status="uploading",
-            total_chunks=total,
-            organization_id=request.data.get("organizationId"),
-            created_by=request.user,
-        )
+
+        raw_org_id = request.data.get("organizationId")
+        if raw_org_id in (None, ""):
+            organization_id = None
+        else:
+            try:
+                organization_id = int(raw_org_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "organizationId inválido."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if not Organization.objects.filter(id=organization_id).exists():
+                return Response(
+                    {"detail": "Laboratório não encontrado."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if (
+                not request.user.is_super_admin
+                and not request.user.memberships.filter(
+                    organization_id=organization_id, status="active"
+                ).exists()
+            ):
+                return Response(
+                    {"detail": "Você não tem permissão para criar experimentos neste laboratório."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            if ExperimentModel.objects.filter(
+                title=title, organization_id=organization_id
+            ).exists():
+                return Response(
+                    {"detail": "Título já criado para esse laboratório."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            experiment = ExperimentModel.objects.create(
+                title=title,
+                type=experiment_type,
+                status="uploading",
+                file_status="uploading",
+                total_chunks=total,
+                organization_id=organization_id,
+                created_by=request.user,
+            )
+        except IntegrityError:
+            return Response(
+                {"detail": "Título já criado para esse laboratório."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         return Response({"fileId": str(experiment.id)}, status=201)
 
 

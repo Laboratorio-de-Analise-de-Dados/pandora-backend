@@ -34,7 +34,7 @@ class ExperimentModel(models.Model):
     ]
 
     id = models.BigAutoField(primary_key=True)
-    title = models.CharField(max_length=50, unique=True)
+    title = models.CharField(max_length=50)
     type = models.CharField(max_length=100, null=True)
     values = ArrayField(models.TextField(), blank=True, default=list)
     active = models.BooleanField(default=True)
@@ -57,6 +57,9 @@ class ExperimentModel(models.Model):
         related_name="created_experiments",
     )
     zip_path = models.CharField(max_length=512, null=True, blank=True)
+
+    class Meta:
+        unique_together = [["title", "organization"]]
 
     def __str__(self) -> str:
         return f"Experiment {self.id} – {self.title} ({self.status})"
