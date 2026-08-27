@@ -2,8 +2,10 @@ import base64
 import hashlib
 import secrets
 import urllib.parse
+from datetime import timedelta
 import requests
 from django.conf import settings
+from django.utils import timezone
 from django.contrib.auth.tokens import default_token_generator
 from django.shortcuts import get_object_or_404, redirect
 from drf_spectacular.utils import extend_schema, inline_serializer
@@ -230,6 +232,53 @@ class MyPendingInvitesView(generics.ListAPIView):
         return Invite.objects.filter(
             email__iexact=self.request.user.email, status="pending"
         ).select_related("organization", "role")
+
+
+class MyOrganizationPendingInvitesView(generics.ListAPIView):
+    """Convites pendentes enviados para organizações que o usuário administra."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = InviteSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_super_admin:
+            return Invite.objects.filter(status="pending").select_related(
+                "organization", "role"
+            )
+        admin_org_ids = Membership.objects.filter(
+            user=user,
+            role__name=Role.ORG_ADMIN,
+            status="active",
+        ).values_list("organization_id", flat=True)
+        return Invite.objects.filter(
+            organization_id__in=admin_org_ids, status="pending"
+        ).select_related("organization", "role")
+
+
+class InviteResendView(generics.GenericAPIView):
+    """Reenvia um convite pendente, renovando a validade."""
+
+    permission_classes = [IsAuthenticated, IsOrgAdmin]
+    serializer_class = InviteSerializer
+    queryset = Invite.objects.all()
+
+    def post(self, request, *args, **kwargs):
+        org_id = self.kwargs["organization_id"]
+        invite = get_object_or_404(
+            Invite,
+            pk=self.kwargs["pk"],
+            organization_id=org_id,
+            status="pending",
+        )
+        invite.expires_at = timezone.now() + timedelta(hours=24)
+        invite.save(update_fields=["expires_at"])
+        email_sent = send_invite_email(invite)
+        serializer = self.get_serializer(invite, context={"request": request})
+        return Response(
+            {**serializer.data, "email_sent": email_sent},
+            status=status.HTTP_200_OK,
+        )
 
 
 class RoleListCreateView(generics.ListCreateAPIView):
