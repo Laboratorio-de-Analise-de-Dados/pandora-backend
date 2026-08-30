@@ -48,6 +48,27 @@ class ParamListDataSerializer(serializers.ModelSerializer):
         fields = ["id", "file_name", "data_set", "gates"]
 
 
+class UpdateExperimentSerializer(serializers.ModelSerializer):
+    """Escrita de experimento: só os campos que o usuário pode corrigir."""
+
+    values = serializers.ListField(child=serializers.CharField(), required=False)
+
+    class Meta:
+        model = ExperimentModel
+        fields = ["title", "type", "values"]
+
+    def validate_title(self, value):
+        title = value.strip().replace(" ", "_")
+        if not title:
+            raise serializers.ValidationError("Título é obrigatório.")
+        return title
+
+    def validate_type(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Tipo é obrigatório.")
+        return value.strip()
+
+
 class ListExperimentSerializer(serializers.ModelSerializer):
     values = serializers.ListField(child=serializers.CharField())
     organization = OrganizationListSerializer(read_only=True)

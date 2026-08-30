@@ -33,6 +33,7 @@ from fcs_parser.serializers import (
     ListExperimentSerializer,
     ListFileDataSerializer,
     ParamListDataSerializer,
+    UpdateExperimentSerializer,
 )
 from fcs_parser.services.process_experiment_file import assemble_chunks
 
@@ -249,10 +250,12 @@ class ExperimentListView(generics.ListAPIView):
         ) | ExperimentModel.objects.filter(created_by=user)
 
 
-class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
+class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     lookup_url_kwarg = "experiment_id"
     serializer_class = ListExperimentSerializer
+    # PUT exigiria o payload completo do experimento; a edição é sempre parcial.
+    http_method_names = ["get", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
         user = self.request.user
@@ -264,6 +267,44 @@ class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
         return ExperimentModel.objects.filter(
             organization_id__in=org_ids
         ) | ExperimentModel.objects.filter(created_by=user)
+
+    def get_serializer_class(self):
+        if self.request.method == "PATCH":
+            return UpdateExperimentSerializer
+        return ListExperimentSerializer
+
+    def can_write(self, experiment) -> bool:
+        user = self.request.user
+        if user.is_super_admin or experiment.created_by_id == user.id:
+            return True
+        if experiment.organization_id is None:
+            return False
+        return user.memberships.filter(
+            organization_id=experiment.organization_id, status="active"
+        ).exists()
+
+    def update(self, request, *args, **kwargs):
+        experiment = self.get_object()
+        if not self.can_write(experiment):
+            return Response(
+                {"detail": "Você não tem permissão para editar este experimento."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = self.get_serializer(experiment, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            serializer.save()
+        except IntegrityError:
+            return Response(
+                {"detail": "Título já criado para esse laboratório."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        experiment.refresh_from_db()
+        return Response(
+            ListExperimentSerializer(experiment).data, status=status.HTTP_200_OK
+        )
 
     def perform_destroy(self, instance):
         return instance.delete()
