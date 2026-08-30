@@ -4,6 +4,7 @@ import os
 import traceback
 
 from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -38,6 +39,7 @@ from fcs_parser.serializers import (
     UpdateExperimentSerializer,
 )
 from fcs_parser.services.process_experiment_file import assemble_chunks
+from utils.validators import experiment_file_extension
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,7 @@ class ExperimentInitView(generics.CreateAPIView):
                 "title": serializers.CharField(),
                 "type": serializers.CharField(),
                 "totalChunks": serializers.IntegerField(),
+                "fileName": serializers.CharField(required=False),
                 "organizationId": serializers.IntegerField(
                     required=False, allow_null=True
                 ),
@@ -90,6 +93,17 @@ class ExperimentInitView(generics.CreateAPIView):
 
         total = request.data.get("totalChunks")
 
+        # `fileName` é opcional para não quebrar clientes antigos, que só
+        # enviavam ZIP.
+        raw_file_name = request.data.get("fileName")
+        if raw_file_name not in (None, ""):
+            try:
+                experiment_file_extension(raw_file_name)
+            except DjangoValidationError as exc:
+                return Response(
+                    {"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST
+                )
+
         raw_org_id = request.data.get("organizationId")
         if raw_org_id in (None, ""):
             organization_id = None
@@ -97,7 +111,9 @@ class ExperimentInitView(generics.CreateAPIView):
                 title=title, created_by=request.user, organization__isnull=True
             ).exists():
                 return Response(
-                    {"detail": "Você já possui um experimento pessoal com este título."},
+                    {
+                        "detail": "Você já possui um experimento pessoal com este título."
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         else:
@@ -122,7 +138,9 @@ class ExperimentInitView(generics.CreateAPIView):
                 ).exists()
             ):
                 return Response(
-                    {"detail": "Você não tem permissão para criar experimentos neste laboratório."},
+                    {
+                        "detail": "Você não tem permissão para criar experimentos neste laboratório."
+                    },
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
@@ -197,7 +215,10 @@ class ExperimentCompleteView(generics.CreateAPIView):
     @extend_schema(
         request=inline_serializer(
             name="ExperimentCompleteRequest",
-            fields={"fileId": serializers.CharField()},
+            fields={
+                "fileId": serializers.CharField(),
+                "fileName": serializers.CharField(required=False),
+            },
         ),
         responses=inline_serializer(
             name="ExperimentCompleteResponse",
@@ -206,14 +227,27 @@ class ExperimentCompleteView(generics.CreateAPIView):
     )
     def post(self, request):
         from fcs_parser.services.process_experiment_file import (
+            extract_metadata_from_fcs,
             extract_metadata_from_zip,
         )
 
         file_id = request.data["fileId"]
+        raw_file_name = request.data.get("fileName")
+        try:
+            extension = (
+                experiment_file_extension(raw_file_name)
+                if raw_file_name not in (None, "")
+                else ".zip"
+            )
+        except DjangoValidationError as exc:
+            return Response(
+                {"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST
+            )
+
         experiment = ExperimentModel.objects.get(id=file_id)
 
-        final_path = assemble_chunks(experiment)
-        final_name = f"{file_id}.zip"
+        final_path = assemble_chunks(experiment, extension)
+        final_name = f"{file_id}{extension}"
 
         experiment.file_status = "uploaded"
         experiment.status = "processing"
@@ -226,7 +260,10 @@ class ExperimentCompleteView(generics.CreateAPIView):
         )
 
         try:
-            extract_metadata_from_zip(file_instance)
+            if extension == ".fcs":
+                extract_metadata_from_fcs(file_instance)
+            else:
+                extract_metadata_from_zip(file_instance)
         except Exception as e:
             logger.error(
                 "Erro ao extrair metadados do experimento %s: %s",

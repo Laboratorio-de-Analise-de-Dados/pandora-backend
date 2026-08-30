@@ -27,14 +27,14 @@ def _extract_dir(experiment_id: int) -> str:
     return os.path.join(settings.MEDIA_ROOT, "fcs_files", str(experiment_id))
 
 
-def assemble_chunks(experiment: ExperimentModel) -> str:
-    """Concatenate uploaded chunks into the final ZIP file.
+def assemble_chunks(experiment: ExperimentModel, extension: str = ".zip") -> str:
+    """Concatenate uploaded chunks into the final file (.zip or .fcs).
 
-    Returns the path to the assembled ZIP.
+    Returns the path to the assembled file.
     Raises ``ValueError`` if any chunk is missing.
     """
     chunk_dir = os.path.join(settings.MEDIA_ROOT, "chunks")
-    final_name = f"{experiment.id}.zip"
+    final_name = f"{experiment.id}{extension}"
     final_path = os.path.join(settings.MEDIA_ROOT, final_name)
 
     with open(final_path, "wb") as outfile:
@@ -107,6 +107,44 @@ def extract_metadata_from_zip(file_model: FileModel) -> list[str]:
         if os.path.isdir(directory_path):
             shutil.rmtree(directory_path, ignore_errors=True)
             logger.info("Diretório temporário '%s' removido.", directory_path)
+
+    return values
+
+
+def extract_metadata_from_fcs(file_model: FileModel) -> list[str]:
+    """Metadados de um experimento enviado como um único .fcs (sem ZIP).
+
+    Cria um único ``FileDataModel`` apontando para o .fcs no disco via
+    ``fcs_path`` — sem `zip_path`, esse é o caminho que o
+    ``FileDataModel.get_dataframe()`` usa para reconstruir o Parquet na
+    primeira leitura.
+    """
+    experiment = file_model.experiment
+    fcs_path = file_model.file.path
+
+    headers, _ = readfcs.view(fcs_path)
+    channels_df = readfcs.ReadFCS(fcs_path).channels
+    values = channels_df["PnN"].tolist()
+
+    FileDataModel.objects.create(
+        headers=headers,
+        data_set=None,
+        experiment=experiment,
+        file_name=file_model.file_name,
+        file=file_model,
+        fcs_path=fcs_path,
+        parquet_path=None,
+    )
+
+    experiment.values = values
+    experiment.status = "done"
+    experiment.save(update_fields=["values", "status"])
+
+    logger.info(
+        "Metadados do Experimento %s ('%s') extraídos de um .fcs solto.",
+        experiment.id,
+        experiment.title,
+    )
 
     return values
 
