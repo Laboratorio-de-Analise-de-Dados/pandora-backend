@@ -6,6 +6,7 @@ import traceback
 from django.conf import settings
 from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from accounts.models import Organization
 from analytics.models import GateModel
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
@@ -28,6 +29,7 @@ from utils.density import (
     subsample_scatter,
 )
 from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
+from fcs_parser.permissions import can_edit_experiment, experiments_visible_to
 from fcs_parser.serializers import (
     ExperimentSerializer,
     ListExperimentSerializer,
@@ -37,6 +39,18 @@ from fcs_parser.serializers import (
 from fcs_parser.services.process_experiment_file import assemble_chunks
 
 logger = logging.getLogger(__name__)
+
+INACTIVE_FILE_DETAIL = "Amostra desabilitada. Reative-a para continuar a análise."
+
+
+def get_active_file_data_or_error(file_id):
+    """Busca um FileData ativo. Devolve (file_data, None) ou (None, Response)."""
+    file_data = get_object_or_404(FileDataModel, id=file_id)
+    if not file_data.active:
+        return None, Response(
+            {"detail": INACTIVE_FILE_DETAIL}, status=status.HTTP_409_CONFLICT
+        )
+    return file_data, None
 
 
 class ExperimentInitView(generics.CreateAPIView):
@@ -238,15 +252,7 @@ class ExperimentListView(generics.ListAPIView):
     serializer_class = ListExperimentSerializer
 
     def get_queryset(self):
-        user = self.request.user
-        if user.is_super_admin:
-            return ExperimentModel.objects.all()
-        org_ids = user.memberships.filter(status="active").values_list(
-            "organization_id", flat=True
-        )
-        return ExperimentModel.objects.filter(
-            organization_id__in=org_ids
-        ) | ExperimentModel.objects.filter(created_by=user)
+        return experiments_visible_to(self.request.user)
 
 
 class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
@@ -255,18 +261,92 @@ class RetrieveDeleteExperimentView(generics.RetrieveDestroyAPIView):
     serializer_class = ListExperimentSerializer
 
     def get_queryset(self):
-        user = self.request.user
-        if user.is_super_admin:
-            return ExperimentModel.objects.all()
-        org_ids = user.memberships.filter(status="active").values_list(
-            "organization_id", flat=True
-        )
-        return ExperimentModel.objects.filter(
-            organization_id__in=org_ids
-        ) | ExperimentModel.objects.filter(created_by=user)
+        return experiments_visible_to(self.request.user)
 
     def perform_destroy(self, instance):
         return instance.delete()
+
+
+class DisableFileDataView(APIView):
+    """POST /experiment/file/<file_id>/disable — desabilita (freezer) uma amostra.
+
+    Nada é apagado: dados em disco e gates continuam intactos e a amostra pode
+    ser reativada em /enable.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="FileDataActiveResponse",
+            fields={
+                "id": serializers.IntegerField(),
+                "file_name": serializers.CharField(),
+                "active": serializers.BooleanField(),
+                "deactivated_at": serializers.DateTimeField(allow_null=True),
+            },
+        ),
+    )
+    def post(self, request, file_id):
+        file_data = get_object_or_404(
+            FileDataModel.objects.select_related("experiment"), id=file_id
+        )
+        if not can_edit_experiment(request.user, file_data.experiment):
+            return Response(
+                {"detail": "Você não tem permissão para alterar este experimento."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if file_data.active:
+            file_data.active = False
+            file_data.deactivated_at = timezone.now()
+            file_data.deactivated_by = request.user
+            file_data.save(update_fields=["active", "deactivated_at", "deactivated_by"])
+            invalidate_density(file_data.id)
+
+        return Response(
+            {
+                "id": file_data.id,
+                "file_name": file_data.file_name,
+                "active": file_data.active,
+                "deactivated_at": file_data.deactivated_at,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class EnableFileDataView(APIView):
+    """POST /experiment/file/<file_id>/enable — reativa uma amostra desabilitada."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=None, responses=None)
+    def post(self, request, file_id):
+        file_data = get_object_or_404(
+            FileDataModel.objects.select_related("experiment"), id=file_id
+        )
+        if not can_edit_experiment(request.user, file_data.experiment):
+            return Response(
+                {"detail": "Você não tem permissão para alterar este experimento."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not file_data.active:
+            file_data.active = True
+            file_data.deactivated_at = None
+            file_data.deactivated_by = None
+            file_data.save(update_fields=["active", "deactivated_at", "deactivated_by"])
+
+        return Response(
+            {
+                "id": file_data.id,
+                "file_name": file_data.file_name,
+                "active": file_data.active,
+                "deactivated_at": file_data.deactivated_at,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class GetExperimentFiles(generics.ListAPIView):
@@ -277,8 +357,20 @@ class GetExperimentFiles(generics.ListAPIView):
     def get_queryset(self):
         experiment_id = self.kwargs.get("experiment_id")
         queryset = FileDataModel.objects.filter(experiment_id=experiment_id)
+        if self.request.query_params.get("include_inactive") != "true":
+            queryset = queryset.filter(active=True)
         return queryset
 
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="include_inactive",
+                type=bool,
+                required=False,
+                description="Inclui amostras desabilitadas na listagem (default: false)",
+            )
+        ]
+    )
     def list(self, request, *args, **kwargs):
         # Retrieve the queryset of files
         queryset = self.get_queryset()
@@ -318,6 +410,10 @@ class ListFileParams(generics.ListAPIView):
             limit = 10000
 
         file_data = self.get_queryset()
+        if not file_data.active:
+            return Response(
+                {"detail": INACTIVE_FILE_DETAIL}, status=status.HTTP_409_CONFLICT
+            )
         dataset = normalize_columns(file_data.get_dataframe())
         dataset = dataset.head(limit)
         file_data.data_set = json.loads(dataset.to_json(orient="records"))
@@ -458,7 +554,9 @@ class FileDensityView(APIView):
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
 
-        file_data = get_object_or_404(FileDataModel, id=file_id)
+        file_data, error = get_active_file_data_or_error(file_id)
+        if error:
+            return error
         dataset = normalize_columns(file_data.get_dataframe())
 
         base = {
@@ -578,7 +676,9 @@ class FileStatsView(APIView):
         ),
     )
     def get(self, request, file_id):
-        file_data = get_object_or_404(FileDataModel, id=file_id)
+        file_data, error = get_active_file_data_or_error(file_id)
+        if error:
+            return error
         dataset = normalize_columns(file_data.get_dataframe())
 
         if dataset.empty:
@@ -635,7 +735,9 @@ class RecomputeFileDataView(APIView):
         ),
     )
     def post(self, request, file_id):
-        file_data = get_object_or_404(FileDataModel, id=file_id)
+        file_data, error = get_active_file_data_or_error(file_id)
+        if error:
+            return error
         has_zip = bool(getattr(file_data.experiment, "zip_path", None))
         has_fcs = bool(file_data.fcs_path)
         if not has_zip and not has_fcs:
