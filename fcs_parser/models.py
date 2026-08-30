@@ -118,6 +118,19 @@ class FileDataModel(models.Model):
     file = models.ForeignKey(
         FileModel, on_delete=models.CASCADE, related_name="extracted_data"
     )
+    # Freezer: amostra desabilitada sai das listagens e das análises, mas os
+    # dados (Parquet/ZIP) e os gates continuam intactos e podem ser reativados.
+    # A limpeza física de arquivos inativos e frios depende de uma rotina de
+    # retenção ainda não implementada — sem ela o disco cresce indefinidamente.
+    active = models.BooleanField(default=True, db_index=True)
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    deactivated_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deactivated_files",
+    )
 
     class Meta:
         db_table = "file_data"

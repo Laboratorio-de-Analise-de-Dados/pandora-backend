@@ -36,8 +36,8 @@ class ListFileDataSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = FileDataModel
-        fields = ["id", "file_name", "gates"]
-        read_only_fields = ["id"]
+        fields = ["id", "file_name", "gates", "active", "deactivated_at"]
+        read_only_fields = ["id", "active", "deactivated_at"]
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):

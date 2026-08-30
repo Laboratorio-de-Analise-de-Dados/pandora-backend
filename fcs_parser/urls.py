@@ -1,6 +1,8 @@
 from django.urls import path
 
 from .views import (
+    DisableFileDataView,
+    EnableFileDataView,
     ExperimentCompleteView,
     ExperimentInitView,
     ExperimentListView,
@@ -25,6 +27,8 @@ urlpatterns = [
     path("file/<int:file_id>/density", FileDensityView.as_view()),
     path("file/<int:file_id>/recompute", RecomputeFileDataView.as_view()),
     path("file/<int:file_id>/stats", FileStatsView.as_view()),
+    path("file/<int:file_id>/disable", DisableFileDataView.as_view()),
+    path("file/<int:file_id>/enable", EnableFileDataView.as_view()),
     path("<str:experiment_id>/", RetrieveDeleteExperimentView.as_view()),
     path("file/<int:file_id>/process", ProcessFileDataView.as_view()),
     path("", ExperimentListView.as_view())
