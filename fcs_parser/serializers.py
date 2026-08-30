@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from accounts.serializers import OrganizationListSerializer
 from analytics.serializers import ListGateSerializer
 from utils.validators import validate_zip_file
 from .models import ExperimentModel, FileDataModel
@@ -49,6 +50,7 @@ class ParamListDataSerializer(serializers.ModelSerializer):
 
 class ListExperimentSerializer(serializers.ModelSerializer):
     values = serializers.ListField(child=serializers.CharField())
+    organization = OrganizationListSerializer(read_only=True)
 
     class Meta:
         model = ExperimentModel

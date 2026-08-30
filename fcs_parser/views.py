@@ -2,9 +2,11 @@ import json
 import logging
 import os
 import traceback
-from django.db.models import Q
+
 from django.conf import settings
+from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
+from accounts.models import Organization
 from analytics.models import GateModel
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework.response import Response
@@ -40,29 +42,100 @@ logger = logging.getLogger(__name__)
 class ExperimentInitView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        request=inline_serializer(
+            name="ExperimentInitRequest",
+            fields={
+                "title": serializers.CharField(),
+                "type": serializers.CharField(),
+                "totalChunks": serializers.IntegerField(),
+                "organizationId": serializers.IntegerField(
+                    required=False, allow_null=True
+                ),
+            },
+        ),
+        responses=inline_serializer(
+            name="ExperimentInitResponse",
+            fields={"fileId": serializers.CharField()},
+        ),
+    )
     def post(self, request):
-        title = request.data.get("title", "").replace(" ", "_")
-        organization_id = request.data.get("organizationId")
-        if ExperimentModel.objects.filter(
-            title=title, created_by=request.user, organization_id=organization_id
-        ).exists():
+        raw_title = request.data.get("title")
+        if not isinstance(raw_title, str) or not raw_title.strip():
             return Response(
-                {
-                    "detail": "Você já possui um experimento com este título neste escopo."
-                },
+                {"detail": "Título é obrigatório."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        title = raw_title.strip().replace(" ", "_")
+
+        experiment_type = request.data.get("type")
+        if not experiment_type:
+            return Response(
+                {"detail": "Tipo é obrigatório."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        total = request.data.get("totalChunks")
+
+        raw_org_id = request.data.get("organizationId")
+        if raw_org_id in (None, ""):
+            organization_id = None
+            if ExperimentModel.objects.filter(
+                title=title, created_by=request.user, organization__isnull=True
+            ).exists():
+                return Response(
+                    {"detail": "Você já possui um experimento pessoal com este título."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            try:
+                organization_id = int(raw_org_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "organizationId inválido."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if not Organization.objects.filter(id=organization_id).exists():
+                return Response(
+                    {"detail": "Laboratório não encontrado."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if (
+                not request.user.is_super_admin
+                and not request.user.memberships.filter(
+                    organization_id=organization_id, status="active"
+                ).exists()
+            ):
+                return Response(
+                    {"detail": "Você não tem permissão para criar experimentos neste laboratório."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            if ExperimentModel.objects.filter(
+                title=title, created_by=request.user, organization_id=organization_id
+            ).exists():
+                return Response(
+                    {"detail": "Título já criado para esse laboratório."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            experiment = ExperimentModel.objects.create(
+                title=title,
+                type=experiment_type,
+                status="uploading",
+                file_status="uploading",
+                total_chunks=total,
+                organization_id=organization_id,
+                created_by=request.user,
+            )
+        except IntegrityError:
+            return Response(
+                {"detail": "Título já criado para esse laboratório."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        experiment = ExperimentModel.objects.create(
-            title=title,
-            type=request.data.get("type"),
-            status="uploading",
-            file_status="uploading",
-            total_chunks=request.data.get("totalChunks"),
-            organization_id=organization_id,
-            created_by=request.user,
-        )
-        return Response({"fileId": str(experiment.id)}, status=status.HTTP_201_CREATED)
+        return Response({"fileId": str(experiment.id)}, status=201)
 
 
 class UploadChunkView(generics.CreateAPIView):
