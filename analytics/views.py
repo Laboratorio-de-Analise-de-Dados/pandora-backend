@@ -3,14 +3,25 @@ import logging
 from collections import deque
 
 import pandas as pd
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from fcs_parser.serializers import ParamListDataSerializer
 from rest_framework import generics, serializers
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView, Response, status
+from fcs_parser.permissions import can_edit_experiment
+from analytics.gate_scope import (
+    SCOPE_EXPERIMENT,
+    gates_in_experiment_scope,
+)
 from analytics.models import DashboardModel, GateModel
-from analytics.serializers import DashboardSerializer, GateSerializer
+from analytics.serializers import (
+    DashboardSerializer,
+    GateBatchDeleteSerializer,
+    GateSerializer,
+    GateUpdateSerializer,
+)
 from utils.density import (
     DEFAULT_COFACTOR,
     apply_gate_filter,
@@ -26,6 +37,55 @@ from utils.density import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _propagate_name_and_color(gate, new_name, new_color, color_changed):
+    """Aplica nome/cor do *gate* nas cópias dele nas outras amostras.
+
+    Devolve (ids_propagados, conflitos). Uma cópia entra em `conflitos` quando o
+    novo nome já existe no mesmo nível da amostra de destino — as constraints
+    `unique_gate_name_per_parent`/`unique_gate_name_root_level` impedem a
+    renomeação, e as demais amostras seguem sendo atualizadas.
+    """
+    propagated = []
+    conflicts = []
+
+    for copy in gates_in_experiment_scope(gate).select_related("file_data"):
+        fields = []
+        if new_name is not None and copy.name != new_name:
+            clash = (
+                GateModel.objects.filter(
+                    file_data_id=copy.file_data_id,
+                    parent_id=copy.parent_id,
+                    name=new_name,
+                )
+                .exclude(id=copy.id)
+                .exists()
+            )
+            if clash:
+                conflicts.append(
+                    {
+                        "gate_id": copy.id,
+                        "file_data_id": copy.file_data_id,
+                        "file_name": copy.file_data.file_name,
+                        "detail": "Já existe um gate com esse nome neste nível.",
+                    }
+                )
+            else:
+                copy.name = new_name
+                fields.append("name")
+
+        if color_changed:
+            normalized = new_color if new_color else None
+            if copy.color != normalized:
+                copy.color = normalized
+                fields.append("color")
+
+        if fields:
+            copy.save(update_fields=fields)
+            propagated.append(copy.id)
+
+    return propagated, conflicts
 
 
 class CreateGateView(generics.CreateAPIView):
@@ -62,27 +122,64 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         gate_id = self.kwargs.get(self.lookup_url_kwarg)
         return get_object_or_404(GateModel, pk=gate_id)
 
+    @extend_schema(request=GateUpdateSerializer, responses=GateSerializer)
     def patch(self, request, *args, **kwargs):
         gate = self.get_object()
+        payload = GateUpdateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+
         update_fields = []
-        new_name = request.data.get("name")
+        new_name = data.get("name")
         if new_name is not None:
             gate.name = new_name
             update_fields.append("name")
-        new_coords = request.data.get("gate_coordinates")
+        new_coords = data.get("gate_coordinates")
         if new_coords is not None:
             gate.gate_coordinates = new_coords
             update_fields.append("gate_coordinates")
-        new_color = request.data.get("color")
+        new_color = data.get("color")
         if new_color is not None:
             gate.color = new_color if new_color else None
             update_fields.append("color")
-        new_plot_config = request.data.get("plot_config")
+        new_plot_config = data.get("plot_config")
         if new_plot_config is not None:
             gate.plot_config = new_plot_config
             update_fields.append("plot_config")
-        if update_fields:
-            gate.save(update_fields=update_fields)
+
+        if data["scope"] == SCOPE_EXPERIMENT and not (
+            request.user.is_authenticated
+            and can_edit_experiment(request.user, gate.file_data.experiment)
+        ):
+            return Response(
+                {"detail": "Você não tem permissão para alterar este experimento."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        propagated_ids = []
+        conflicts = []
+        with transaction.atomic():
+            if update_fields:
+                try:
+                    gate.save(update_fields=update_fields)
+                except IntegrityError:
+                    return Response(
+                        {
+                            "detail": (
+                                "Já existe um gate com esse nome neste nível da "
+                                "amostra."
+                            )
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+            if data["scope"] == SCOPE_EXPERIMENT:
+                propagated_ids, conflicts = _propagate_name_and_color(
+                    gate,
+                    new_name=new_name,
+                    new_color=new_color,
+                    color_changed="color" in data,
+                )
 
         # Só recalcula métricas/invalida densidade quando a geometria muda.
         # Alterações de nome/cor/plot_config não afetam a análise.
@@ -94,7 +191,14 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
             invalidate_density(gate.file_data_id)
 
         serializer = self.get_serializer(gate)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(
+            {
+                **serializer.data,
+                "propagated_gate_ids": propagated_ids,
+                "conflicts": conflicts,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class GetGateDataView(generics.ListAPIView):
@@ -383,6 +487,117 @@ def _resolve_target_parent(source_gate, target_fd_id, id_map):
         target_parent_id = match.id
 
     return target_parent_id
+
+
+class DeleteGateBatchView(APIView):
+    """POST /analytics/gate/delete-batch — exclui gates com escopo explícito.
+
+    Operação inversa do `ApplyGateView`: remove o gate só na amostra atual
+    (`scope="file"`, default) ou também as cópias dele nas demais amostras do
+    mesmo experimento (`scope="experiment"`). Nunca atinge outros experimentos
+    nem amostras desabilitadas.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=GateBatchDeleteSerializer,
+        responses=inline_serializer(
+            name="DeleteGateBatchResponse",
+            fields={
+                "deleted": serializers.IntegerField(),
+                "details": serializers.ListField(child=serializers.DictField()),
+            },
+        ),
+    )
+    def post(self, request):
+        payload = GateBatchDeleteSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+
+        source_gates = list(
+            GateModel.objects.filter(id__in=data["source_gate_ids"]).select_related(
+                "file_data"
+            )
+        )
+        if len(source_gates) != len(set(data["source_gate_ids"])):
+            return Response(
+                {"detail": "Um ou mais gates não foram encontrados."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        for gate in source_gates:
+            if not can_edit_experiment(request.user, gate.file_data.experiment):
+                return Response(
+                    {
+                        "detail": (
+                            "Você não tem permissão para alterar este experimento."
+                        )
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        targets = {}
+        for gate in source_gates:
+            if data["scope"] == SCOPE_EXPERIMENT:
+                scoped = gates_in_experiment_scope(
+                    gate,
+                    target_file_data_ids=data["target_file_data_ids"],
+                    include_source=data["include_source"],
+                )
+                for copy in scoped:
+                    targets[copy.id] = copy
+                if data["include_source"]:
+                    targets[gate.id] = gate
+            else:
+                targets[gate.id] = gate
+
+        if not targets:
+            return Response(
+                {"deleted": 0, "details": []},
+                status=status.HTTP_200_OK,
+            )
+
+        # A FK `parent` é CASCADE: apagar um gate leva os sub-gates junto. Sem
+        # `recursive` a operação é recusada para o usuário não perder a árvore
+        # abaixo sem ter escolhido isso.
+        if not data["recursive"]:
+            with_children = GateModel.objects.filter(
+                parent_id__in=list(targets.keys())
+            ).exclude(id__in=list(targets.keys()))
+            if with_children.exists():
+                return Response(
+                    {
+                        "detail": (
+                            "Os gates selecionados possuem sub-gates. Reenvie com "
+                            '"recursive": true para excluir a árvore inteira.'
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        per_file = {}
+        for gate in targets.values():
+            per_file[gate.file_data_id] = per_file.get(gate.file_data_id, 0) + 1
+
+        with transaction.atomic():
+            deleted, _ = GateModel.objects.filter(id__in=list(targets.keys())).delete()
+
+        from utils.density import invalidate_density
+
+        for file_data_id in per_file:
+            invalidate_density(file_data_id)
+
+        return Response(
+            {
+                "deleted": deleted,
+                "details": [
+                    {"file_data_id": fd_id, "gates_deleted": count}
+                    for fd_id, count in per_file.items()
+                ],
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class ApplyGateView(APIView):
