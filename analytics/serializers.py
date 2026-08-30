@@ -2,6 +2,7 @@
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
+from analytics.gate_scope import SCOPE_CHOICES, SCOPE_EXPERIMENT, SCOPE_FILE
 from analytics.models import AnalysisResult, DashboardModel, GateModel
 from fcs_parser.models import FileDataModel
 
@@ -53,6 +54,55 @@ class GateSerializer(serializers.ModelSerializer):
         # Serializa os filhos do gate
         children = obj.children.all()
         return GateSerializer(children, many=True).data
+
+class GateBatchDeleteSerializer(serializers.Serializer):
+    """Payload de POST /analytics/gate/delete-batch."""
+
+    source_gate_ids = serializers.ListField(
+        child=serializers.IntegerField(), allow_empty=False
+    )
+    scope = serializers.ChoiceField(choices=SCOPE_CHOICES, default=SCOPE_FILE)
+    target_file_data_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, default=list
+    )
+    recursive = serializers.BooleanField(default=True)
+    include_source = serializers.BooleanField(default=False)
+
+    def validate(self, data):
+        if data["scope"] == SCOPE_FILE and data["target_file_data_ids"]:
+            raise serializers.ValidationError(
+                {
+                    "target_file_data_ids": (
+                        'Só é aceito com scope="experiment"; no escopo do arquivo a '
+                        "exclusão atinge apenas os gates informados."
+                    )
+                }
+            )
+        return data
+
+
+class GateUpdateSerializer(serializers.Serializer):
+    """Payload de PATCH /analytics/gate/<gate_id>.
+
+    `scope="experiment"` propaga nome e cor para as cópias do gate nas demais
+    amostras do experimento. Geometria e `plot_config` nunca são propagados.
+    """
+
+    name = serializers.CharField(max_length=50, required=False)
+    color = serializers.CharField(max_length=7, required=False, allow_blank=True)
+    gate_coordinates = serializers.JSONField(required=False)
+    plot_config = serializers.JSONField(required=False)
+    scope = serializers.ChoiceField(choices=SCOPE_CHOICES, default=SCOPE_FILE)
+
+    def validate(self, data):
+        if data["scope"] == SCOPE_EXPERIMENT and not (
+            "name" in data or "color" in data
+        ):
+            raise serializers.ValidationError(
+                {"scope": 'scope="experiment" exige "name" e/ou "color".'}
+            )
+        return data
+
 
 class AnalysisResultSerializer(serializers.ModelSerializer):
     class Meta:
