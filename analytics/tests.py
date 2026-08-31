@@ -168,6 +168,40 @@ class GateScopeTestCase(TestCase):
         self.assertEqual(len(res.data["conflicts"]), 1)
         self.assertEqual(res.data["conflicts"][0]["gate_id"], self.copy_b.id)
 
+    def test_patch_coordinates_detaches_copy_from_family(self):
+        res = self._patch_gate(
+            self.copy_b,
+            gate_coordinates={
+                "type": "rectangle",
+                "x_axis": "FSC-A",
+                "y_axis": "SSC-A",
+                "startX": 0,
+                "endX": 1,
+                "startY": 0,
+                "endY": 1,
+            },
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.copy_b.refresh_from_db()
+        self.assertIsNone(self.copy_b.copied_from_id)
+
+        res = self._patch_gate(self.source, name="CD4+", scope="experiment")
+
+        self.assertEqual(res.status_code, 200)
+        self.copy_b.refresh_from_db()
+        self.copy_c.refresh_from_db()
+        self.assertEqual(self.copy_b.name, "P1")
+        self.assertEqual(self.copy_c.name, "CD4+")
+        self.assertEqual(res.data["propagated_gate_ids"], [self.copy_c.id])
+
+    def test_patch_name_and_color_keeps_copy_attached(self):
+        res = self._patch_gate(self.copy_b, name="CD8+", color="#00ff00")
+
+        self.assertEqual(res.status_code, 200)
+        self.copy_b.refresh_from_db()
+        self.assertEqual(self.copy_b.copied_from_id, self.source.id)
+
     def test_patch_experiment_scope_requires_name_or_color(self):
         res = self._patch_gate(self.source, scope="experiment", plot_config={"a": 1})
 
