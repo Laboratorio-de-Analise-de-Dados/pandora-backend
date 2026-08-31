@@ -138,6 +138,12 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         if new_coords is not None:
             gate.gate_coordinates = new_coords
             update_fields.append("gate_coordinates")
+            # Geometria customizada desfaz o vínculo com a família de cópias: a
+            # partir daqui o gate é próprio da amostra e não acompanha mais as
+            # operações em escopo de experimento (nome, cor, exclusão em lote).
+            if gate.copied_from_id:
+                gate.copied_from = None
+                update_fields.append("copied_from")
         new_color = data.get("color")
         if new_color is not None:
             gate.color = new_color if new_color else None
