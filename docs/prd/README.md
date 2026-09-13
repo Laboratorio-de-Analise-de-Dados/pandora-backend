@@ -11,6 +11,7 @@
 | [BE-07](BE-07-subsamples.md) | Subsamples e caminho do ZIP | Parcial (#78); escopo de gates pendente |
 | [BE-08](BE-08-historico-rollback.md) | Histórico e rollback da análise | Não iniciado |
 | [BE-09](BE-09-headers-fcs.md) | Expor metadados do header FCS | Na branch `chore/ai-setup`, PR pendente |
+| [BE-10](BE-10-copia-de-experimento-e-dedup-por-guid.md) | Cópia de experimento sem re-upload + dedup por `guid` | Proposto |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na
