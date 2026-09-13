@@ -135,7 +135,7 @@ class GateScopeTestCase(GateFixtureMixin, TestCase):
 
         res = self._delete_batch(source_gate_ids=[self.source.id])
 
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 404)
         self.assertTrue(GateModel.objects.filter(id=self.source.id).exists())
 
     def test_patch_file_scope_does_not_propagate(self):
@@ -341,7 +341,7 @@ class GateScopeTestCase(GateFixtureMixin, TestCase):
 
         res = self._patch_gate(self.source, name="CD4+", scope="experiment")
 
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 404)
         self.copy_b.refresh_from_db()
         self.assertEqual(self.copy_b.name, "P1")
 
@@ -444,3 +444,93 @@ class GateSubsampleScopeTestCase(GateFixtureMixin, TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertFalse(GateModel.objects.filter(id=self.source.id).exists())
         self.assertTrue(GateModel.objects.filter(id=self.copy_b.id).exists())
+
+
+class GatePermissionTestCase(GateFixtureMixin, TestCase):
+    """ADR-0014: gates passam pelo queryset escopado (gates_visible_to).
+
+    Anônimo recebe 401; quem está fora do experimento recebe 404 — nunca 200
+    com dados alheios.
+    """
+
+    def test_anonimo_recebe_401_em_todos_os_endpoints(self):
+        client = APIClient()
+        checks = [
+            (client.get, f"/analytics/gate/{self.source.id}/list"),
+            (client.get, f"/analytics/gate/{self.source.id}/density"),
+            (client.patch, f"/analytics/gate/{self.source.id}"),
+            (client.delete, f"/analytics/gate/{self.source.id}"),
+            (client.post, "/analytics/gate"),
+            (client.post, "/analytics/gate/apply"),
+            (client.post, "/analytics/gate/delete-batch"),
+        ]
+        for call, url in checks:
+            with self.subTest(url=url):
+                self.assertEqual(call(url).status_code, 401)
+
+    def test_outsider_404_nas_leituras_de_gate(self):
+        self.client.force_authenticate(self.outsider)
+        urls = [
+            f"/analytics/gate/{self.source.id}/list",
+            f"/analytics/gate/{self.source.id}/density?x=FSC-A&y=SSC-A",
+        ]
+        for url in urls:
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_outsider_404_nas_escritas_de_gate(self):
+        self.client.force_authenticate(self.outsider)
+        self.assertEqual(self._patch_gate(self.source, name="X").status_code, 404)
+        self.assertEqual(
+            self.client.delete(f"/analytics/gate/{self.source.id}").status_code,
+            404,
+        )
+        self.assertEqual(
+            self._delete_batch(source_gate_ids=[self.source.id]).status_code, 404
+        )
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.name, "P1")
+
+    def test_outsider_nao_cria_gate_em_amostra_alheia(self):
+        self.client.force_authenticate(self.outsider)
+        res = self.client.post(
+            "/analytics/gate",
+            {
+                "name": "P1",
+                "gate_coordinates": {},
+                "file_data": self.file_a.id,
+                "dashboard": {
+                    "name": "dash",
+                    "dashboard_config": {},
+                    "file_data": self.file_a.id,
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 403)
+
+    def test_outsider_nao_aplica_gate_proprio_em_amostra_alheia(self):
+        own_exp = ExperimentModel.objects.create(
+            title="dele", type="t", created_by=self.outsider
+        )
+        own_gate = self._gate(self._file(own_exp, "x.fcs"), "P1")
+        self.client.force_authenticate(self.outsider)
+
+        res = self.client.post(
+            "/analytics/gate/apply",
+            {
+                "source_gate_ids": [own_gate.id],
+                "target_file_data_ids": [self.file_b.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 404)
+
+    def test_dono_segue_editando_o_gate(self):
+        res = self._patch_gate(self.source, name="P1-renomeado")
+
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.name, "P1-renomeado")

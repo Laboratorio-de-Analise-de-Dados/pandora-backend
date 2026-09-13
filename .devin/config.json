@@ -24,7 +24,6 @@
 			"Exec(python manage.py shell*)",
 			"Exec(python manage.py repair_source_path*)",
 			"Exec(docker*)",
-			"Exec(celery*)",
 			"Write(**/.env*)",
 			"Read(**/.env*)"
 		],

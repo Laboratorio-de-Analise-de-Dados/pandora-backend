@@ -29,11 +29,13 @@ análise.
 - **Python 3.13** / **Django 5.2** + **Django REST Framework**
 - **JWT** (`djangorestframework-simplejwt`) para autenticação
 - **PostgreSQL** como banco de dados
-- **Celery** + **Redis** para processamento assíncrono dos arquivos FCS
 - **Pandas** + **PyArrow** para manipulação de dados e cache em Parquet
 - **drf-spectacular** para geração automática da documentação OpenAPI
 - **Docker** / **docker-compose** para ambiente local e produção
 - **Black** para formatação de código
+
+> Não há Celery/Redis: o processamento (parse FCS, recálculo de gates) é
+> síncrono, na request. Reintroduzir fila exige ADR novo.
 
 ---
 
@@ -41,29 +43,29 @@ análise.
 
 ### Com Docker (recomendado)
 
-Sobe a API, o banco PostgreSQL, o Redis e o worker do Celery de uma vez.
+Sobe a API e o banco PostgreSQL de uma vez.
 
 ```bash
 # 1. crie a rede externa usada pelo compose (apenas na primeira vez)
 docker network create pandora_net
 
-# 2. suba os serviços (já roda migrations automaticamente)
+# 2. suba os serviços (já roda `migrate` automaticamente)
 docker compose up --build
 ```
 
 A API ficará disponível em `http://localhost:8085` (mapeada para a porta 8000 do
 container). A porta pode ser alterada com a variável `WEB_PORT`.
 
-> O `docker-compose.yml` já executa `makemigrations && migrate` antes de subir
-> o servidor. Se precisar forçar uma migration manualmente:
+> O compose roda só `migrate` na subida. Mudou um model? Gere a migration
+> dentro do container (o volume `.:/app` escreve o arquivo de volta no host)
+> e commite junto:
 > ```bash
-> docker compose exec web python manage.py migrate
+> docker compose exec web python manage.py makemigrations
 > ```
 
 ### Localmente sem Docker
 
-Pré-requisitos: Python 3.13, uma instância de PostgreSQL e (para o
-processamento assíncrono) um Redis.
+Pré-requisitos: Python 3.13 e uma instância de PostgreSQL.
 
 ```bash
 # 1. ambiente virtual
@@ -79,12 +81,6 @@ cp .env.example .env
 # 4. migrações e servidor
 python manage.py migrate
 python manage.py runserver
-```
-
-Para rodar o worker do Celery (necessário para processar os arquivos FCS):
-
-```bash
-celery -A citosharp worker -l info
 ```
 
 ---
@@ -104,13 +100,13 @@ ambiente). As principais:
 | `DATABASE_PASSWORD` | Senha do banco |
 | `DATABASE_HOST` | Host do banco |
 | `DATABASE_PORT` | Porta do banco |
-| `REDIS_HOST` | Host do Redis (padrão `redis`) |
-| `REDIS_PORT` | Porta do Redis (padrão `6379`) |
 | `MEDIA_ROOT` | Diretório onde os uploads são salvos |
 | `PARQUET_MAX_IDLE_DAYS` | Dias sem acesso antes de limpar Parquet frio (padrão `7`) |
+| `DENSITY_CACHE_TTL` | TTL (s) do cache de density em disco (padrão `3600`) |
+| `CORS_ALLOWED_ORIGINS` | Origens permitidas, separadas por vírgula |
 | `EMAIL_HOST_USER` | Usuário SMTP (envio de convites por e-mail) |
 | `EMAIL_HOST_PASSWORD` | Senha SMTP |
-| `TEST` | Se definida, usa SQLite em vez do PostgreSQL (útil para testes) |
+| `TEST` | Se definida, usa SQLite em vez do PostgreSQL — **não roda a suíte de testes** (os models usam `ArrayField`, que é Postgres-only) |
 
 ---
 
@@ -126,9 +122,9 @@ fcs_parser/     Upload, processamento e storage de dados FCS
 analytics/      Gates, análises estatísticas, density/heatmaps
 ```
 
-Lógica pesada (parsing de FCS, recálculo de gates) roda em tasks **Celery**
-assíncronas. O Redis serve tanto como broker do Celery quanto como cache de
-density/heatmap.
+Lógica pesada (parsing de FCS, recálculo de gates) roda **sincronamente** na
+request, em funções de `*/tasks.py` e `management/commands/` (sem Celery). O
+cache de density/heatmap é `FileBasedCache` em disco (`MEDIA_ROOT/cache`).
 
 ### Modelo de dados principal
 
@@ -161,7 +157,7 @@ upload é a fonte da verdade imutável**:
 L0  ZIP (MEDIA_ROOT/{id}.zip)     ← fonte da verdade, nunca deletado
 L1  .fcs extraídos (efêmeros)     ← extraídos sob demanda, removidos após uso
 L2  Parquet (MEDIA_ROOT/parquet/) ← cache morno, regenerável do ZIP
-L3  Redis                         ← cache quente (density, heatmaps), TTL deslizante
+L3  FileBasedCache (MEDIA_ROOT/cache/) ← cache quente (density), TTL deslizante
 ```
 
 **Fluxo de leitura** (`FileDataModel.get_dataframe()`):
@@ -180,9 +176,8 @@ Frontend                         Backend
    │                                │
    └── POST /complete/  ────────>   │  assemble_chunks() → ZIP
                                     │  Cria FileModel
-                                    │  Dispara process_experiment_files_task
                                     │
-                                    └── (Celery) process_experiment_zip()
+                                    └── (síncrono) extract_metadata_from_zip()
                                          │  Extrai ZIP → /fcs_files/{id}/
                                          │  Para cada .fcs:
                                          │    parse → FCSResult
@@ -221,15 +216,14 @@ Root Gate (file_data)
 Para calcular métricas do Gate C: aplica filtro A → B → C sobre o dataset
 original. Métricas calculadas: count, %Parent, %Total, MFI por canal, CV.
 
-### Tasks Celery
+### Processamento pesado (síncrono)
 
-| Task | Frequência | Descrição |
+| Função / comando | Gatilho | Descrição |
 | --- | --- | --- |
-| `process_experiment_files_task` | Sob demanda | Processa ZIP de upload → FileData + Parquet |
-| `recompute_file_data_task` | Sob demanda | Regenera Parquet de um FileData a partir do ZIP |
-| `recalculate_gate_analysis_task` | Sob demanda | Recalcula métricas de um gate |
-| `cleanup_cold_parquet_task` | Semanal (dom 3h) | Remove Parquets órfãos e frios (>7d sem acesso) |
-| `cleanup_ephemeral_fcs_task` | Semanal (dom 4h) | Remove diretórios de extração abandonados |
+| `process_experiment_zip` / `extract_metadata_from_zip` | `POST .../complete/` | Processa ZIP de upload → FileData + Parquet |
+| `RecomputeFileDataView` | `POST /file/<id>/recompute` | Regenera Parquet de um FileData a partir do ZIP |
+| `recalculate_gate_analysis` | `post_save` de GateModel | Recalcula métricas de um gate |
+| `cleanup_cold_parquet` | `manage.py cleanup_parquet` (cron) | Remove Parquets órfãos e frios (>7d sem acesso) |
 
 ---
 
@@ -269,7 +263,8 @@ original. Métricas calculadas: count, %Parent, %Total, MFI por canal, CV.
 | Receber request e retornar response | `app/views.py` |
 | Definição de tabelas/campos | `app/models.py` |
 | Validação de input da API | `app/serializers.py` |
-| Processamento pesado/assíncrono | `app/tasks.py` (Celery) |
+| Escopo de acesso (quem vê/edita o quê) | `app/permissions.py` |
+| Processamento pesado | `app/tasks.py` (função síncrona) ou `management/commands/` |
 | Helpers reutilizáveis entre apps | `utils/` |
 
 ### Convenções de código
@@ -301,13 +296,14 @@ Ao implementar algo novo, considere:
 1. **ZIP é a fonte da verdade** — nunca delete o ZIP. Todo dado derivado
    (Parquet, .fcs extraído, JSON) é cache/efêmero e deve ser regenerável.
 
-2. **Cache é descartável** — Parquet, Redis, .fcs extraído podem ser
-   limpos sem perda. O código deve sempre ter um fallback para reconstruir
-   a partir do ZIP.
+2. **Cache é descartável** — Parquet, FileBasedCache, .fcs extraído podem
+   ser limpos sem perda. O código deve sempre ter um fallback para
+   reconstruir a partir do ZIP.
 
-3. **Processamento pesado vai pro Celery** — se a operação pode demorar
-   mais que ~2s (parsing FCS, recálculo de gates, density), faça uma task.
-   Views devem retornar `202 Accepted` e o front monitora o status.
+3. **Processamento pesado hoje é síncrono** — mora em funções de
+   `*/tasks.py`/`services/`, chamadas na request. Se uma operação nova
+   passar de ~2s de forma recorrente, a conversa sobre fila é decisão de
+   arquitetura (ADR novo), não implementação direta.
 
 4. **Hierarquia de gates é uma árvore** — qualquer cálculo sobre um gate
    precisa percorrer toda a cadeia de pais. Nunca calcule métricas de um
@@ -321,9 +317,12 @@ Ao implementar algo novo, considere:
    em task + view + outro lugar, extraia pra um service. Nunca duplique
    pipelines de dados.
 
-7. **Permissões vêm depois** — a infraestrutura RBAC existe em `accounts/`
-   mas ainda não está aplicada nas views de `fcs_parser` e `analytics`.
-   Isso será feito no final.
+7. **Todo lookup é escopado** — buscar objeto por id passa por um queryset
+   de `fcs_parser/permissions.py` (`experiments_visible_to`,
+   `file_data_visible_to`, `uploads_visible_to`) ou
+   `analytics/permissions.py` (`gates_visible_to`). Nunca
+   `Model.objects.get(id=...)` cru numa view — vaza objeto alheio (IDOR)
+   e devolve 500 em vez de 404. Ver ADR-0014.
 
 ### O que NÃO fazer
 
@@ -391,21 +390,40 @@ python manage.py spectacular --file schema.yml
 
 | Método | Rota | Descrição |
 | --- | --- | --- |
-| `GET` | `/experiment/` | Lista experimentos |
+| `GET` | `/experiment/` | Lista experimentos (`?include_inactive=true` inclui inativados) |
 | `POST` | `/experiment/init/` | Inicia um experimento e o upload em chunks |
 | `POST` | `/experiment/upload-chunk/` | Envia um chunk do arquivo |
-| `POST` | `/experiment/complete/` | Finaliza o upload e dispara o processamento |
-| `GET/DELETE` | `/experiment/<experiment_id>/` | Detalha / remove um experimento |
+| `POST` | `/experiment/complete/` | Finaliza o upload e processa o ZIP |
+| `POST` | `/experiment/check-hash/` | Dedup: informa se o SHA-256 já existe |
+| `GET/PATCH/DELETE` | `/experiment/<experiment_id>/` | Detalha / edita / **inativa** um experimento |
+| `POST` | `/experiment/<experiment_id>/copy` | Copia a análise para outro contexto |
+| `GET` | `/experiment/<experiment_id>/download` | ZIP reconstruído por subsample |
+| `POST` | `/experiment/<experiment_id>/files/init` | Inicia upload anexado ao experimento |
+| `POST` | `/experiment/files/upload-chunk/` | Chunk do upload de arquivo |
+| `POST` | `/experiment/files/complete/` | Finaliza upload anexado e extrai amostras |
+| `GET` | `/experiment/<experiment_id>/subsamples/` | Lista/cria subsamples |
+| `PATCH/DELETE` | `/experiment/<experiment_id>/subsamples/<id>/` | Renomeia / inativa subsample |
 | `GET` | `/experiment/list/data/<experiment_id>/` | Lista os arquivos de um experimento |
 | `GET` | `/experiment/file/<file_id>/list` | Lista os parâmetros de um arquivo |
-| `POST` | `/experiment/file/<file_id>/process` | Processa os dados de um arquivo |
+| `GET` | `/experiment/file/<file_id>/density` | Heatmap/scatter da amostra |
+| `GET` | `/experiment/file/<file_id>/stats` | Estatísticas por canal |
+| `GET` | `/experiment/file/<file_id>/headers` | Metadados do header FCS |
+| `POST` | `/experiment/file/<file_id>/process` | Reprocessa o upload do arquivo |
+| `POST` | `/experiment/file/<file_id>/recompute` | Regenera o Parquet a partir do ZIP |
+| `POST` | `/experiment/file/<file_id>/disable` | Inativa (freezer) a amostra |
+| `POST` | `/experiment/file/<file_id>/enable` | Reativa a amostra |
+| `PATCH` | `/experiment/file/<file_id>/subsample` | Move a amostra entre subsamples |
 
 ### Análise (gates) — prefixo `/analytics/`
 
 | Método | Rota | Descrição |
 | --- | --- | --- |
-| `GET/POST` | `/analytics/gate` | Lista / cria gates |
-| `GET` | `/analytics/gate/<gate_id>/list` | Lista os dados de um gate |
+| `POST` | `/analytics/gate` | Cria gate |
+| `PATCH/DELETE` | `/analytics/gate/<gate_id>` | Renomeia/edita / remove gate |
+| `POST` | `/analytics/gate/apply` | Copia gates para outras amostras |
+| `POST` | `/analytics/gate/delete-batch` | Exclui gates com escopo explícito |
+| `GET` | `/analytics/gate/<gate_id>/list` | Dados filtrados por um gate |
+| `GET` | `/analytics/gate/<gate_id>/density` | Heatmap/scatter do gate |
 
 ---
 
@@ -417,21 +435,25 @@ python manage.py spectacular --file schema.yml
 ├── analytics/           # gates, análises estatísticas e density/heatmaps
 │   ├── models.py        #   GateModel, DashboardModel, AnalysisResult
 │   ├── views.py         #   CRUD de gates, density por gate, dados filtrados
-│   └── tasks.py         #   recalculate_gate_analysis_task
+│   ├── permissions.py   #   escopo de gates (gates_visible_to)
+│   └── tasks.py         #   recalculate_gate_analysis (síncrono)
 ├── fcs_parser/          # upload (em chunks) e processamento de arquivos FCS
 │   ├── models.py        #   ExperimentModel, FileModel, FileDataModel
 │   ├── views.py         #   init/chunk/complete upload, density, stats
-│   ├── tasks.py         #   process, recompute, cleanup tasks
+│   ├── permissions.py   #   escopo de experimento/amostra/upload
+│   ├── tasks.py         #   cleanup de parquet (síncrono)
+│   ├── management/commands/  # cleanup_parquet, repair_source_path
 │   └── services/        #   lógica de negócio (pipeline unificado)
 │       ├── process_fcs.py              # parse .fcs → FCSResult
 │       ├── process_experiment_file.py  # ZIP → extract → parse → FileData
+│       ├── copy_experiment.py          # clonar experimento entre contextos
 │       ├── decompressor.py             # extração de arquivos comprimidos
 │       └── header_parser.py            # serialização de headers FCS
 ├── utils/               # utilitários compartilhados
 │   ├── density.py       #   density engine (heatmap, scatter, histograma)
 │   ├── mixins.py        #   SerializerByMethodMixin
-│   └── validators.py    #   validação de ZIP
-├── citosharp/           # configuração do projeto Django (settings, urls, celery)
+│   └── validators.py    #   validação de ZIP/extensão
+├── citosharp/           # configuração do projeto Django (settings, urls)
 ├── docs/                # documentação adicional (ver server_config.md)
 ├── docker-compose.yml / docker-compose.prod.yml
 └── requirements.txt

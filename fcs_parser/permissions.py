@@ -2,22 +2,47 @@
 
 Centraliza a regra "quais experimentos este usuário alcança" para que views de
 experimento, de arquivo e de gate compartilhem o mesmo critério.
+
+Todo lookup por id passa por um queryset escopado daqui (ADR-0014):
+``get_object_or_404(file_data_visible_to(user), id=...)`` devolve 404 para
+objeto fora do escopo em vez de vazar a existência dele.
 """
 
-from fcs_parser.models import ExperimentModel
+from rest_framework.exceptions import PermissionDenied
+
+from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
 
 
-def experiments_visible_to(user):
-    """Experimentos que o usuário pode ler."""
+def experiments_visible_to(user, include_inactive=False):
+    """Experimentos que o usuário pode ler.
+
+    Inativos ficam fora por default (ADR-0005); ``include_inactive=True``
+    implementa o ``?include_inactive=true`` das listagens.
+    """
+    qs = ExperimentModel.objects.all()
+    if not include_inactive:
+        qs = qs.filter(active=True)
     if user.is_super_admin:
-        return ExperimentModel.objects.all()
+        return qs
 
     org_ids = user.memberships.filter(status="active").values_list(
         "organization_id", flat=True
     )
-    return ExperimentModel.objects.filter(
-        organization_id__in=org_ids
-    ) | ExperimentModel.objects.filter(created_by=user)
+    return qs.filter(organization_id__in=org_ids) | qs.filter(created_by=user)
+
+
+def file_data_visible_to(user):
+    """Amostras alcançáveis: o experimento precisa ser visível e ativo.
+
+    O ``active`` da própria amostra NÃO é filtrado aqui — cada endpoint decide
+    (listagens filtram, endpoints de escrita precisam achar inativas).
+    """
+    return FileDataModel.objects.filter(experiment__in=experiments_visible_to(user))
+
+
+def uploads_visible_to(user):
+    """Uploads (FileModel) alcançáveis pelo usuário."""
+    return FileModel.objects.filter(experiment__in=experiments_visible_to(user))
 
 
 def can_edit_experiment(user, experiment) -> bool:
@@ -55,3 +80,14 @@ def can_move_experiment(user, experiment) -> bool:
         status="active",
         role__name="org_admin",
     ).exists()
+
+
+def require_can_edit_experiment(user, experiment):
+    """Levanta PermissionDenied (403) quando ``can_edit_experiment`` falha."""
+    if not can_edit_experiment(user, experiment):
+        raise PermissionDenied("Você não tem permissão para alterar este experimento.")
+
+
+def require_can_edit_file_data(user, file_data):
+    """Mesma regra, atalho para quem já tem a amostra na mão."""
+    require_can_edit_experiment(user, file_data.experiment)

@@ -11,6 +11,7 @@ from .views import (
     ExperimentFileInitView,
     ExperimentInitView,
     ExperimentListView,
+    ExperimentRestoreView,
     FileDensityView,
     FileHashCheckView,
     FileHeadersView,
@@ -26,7 +27,7 @@ from .views import (
     UploadChunkView,
 )
 
-app_name = "fcs_parse"
+app_name = "fcs_parser"
 
 urlpatterns = [
     path("init/", ExperimentInitView.as_view()),
@@ -38,6 +39,7 @@ urlpatterns = [
     path("<int:experiment_id>/files/init", ExperimentFileInitView.as_view()),
     path("<int:experiment_id>/download", ExperimentDownloadView.as_view()),
     path("<int:experiment_id>/copy", ExperimentCopyView.as_view()),
+    path("<int:experiment_id>/restore", ExperimentRestoreView.as_view()),
     path("list/data/<str:experiment_id>/", GetExperimentFiles.as_view()),
     path("file/<str:file_id>/list", ListFileParams.as_view()),
     path("file/<int:file_id>/density", FileDensityView.as_view()),
@@ -63,5 +65,5 @@ urlpatterns = [
     ),
     path("<str:experiment_id>/", RetrieveDeleteExperimentView.as_view()),
     path("file/<int:file_id>/process", ProcessFileDataView.as_view()),
-    path("", ExperimentListView.as_view())
+    path("", ExperimentListView.as_view()),
 ]

@@ -10,7 +10,11 @@ from fcs_parser.serializers import ParamListDataSerializer
 from rest_framework import generics, serializers
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView, Response, status
-from fcs_parser.permissions import can_edit_experiment
+from fcs_parser.permissions import (
+    file_data_visible_to,
+    require_can_edit_file_data,
+)
+from analytics.permissions import gates_visible_to, require_can_edit_gate
 from analytics.gate_scope import (
     PROPAGATING_SCOPES,
     SCOPE_EXPERIMENT,
@@ -118,6 +122,7 @@ def _propagate_gate_changes(
 
 
 class CreateGateView(generics.CreateAPIView):
+    permission_classes = [IsAuthenticated]
     serializer_class = GateSerializer
 
     def post(self, request, *args, **kwargs):
@@ -126,13 +131,20 @@ class CreateGateView(generics.CreateAPIView):
 
         dashboard_serializer = DashboardSerializer(data=dashboard_data)
         dashboard_serializer.is_valid(raise_exception=True)
+        # O dashboard ancora o gate numa amostra — escrita exige can_edit
+        # no experimento dela.
+        require_can_edit_file_data(
+            request.user, dashboard_serializer.validated_data["file_data"]
+        )
 
         dash_instance = dashboard_serializer.save()
         data["dashboard"] = dash_instance.id
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        author = request.user if request.user.is_authenticated else None
-        gate_instance = serializer.save(created_by=author)
+        gate_file_data = serializer.validated_data.get("file_data")
+        if gate_file_data is not None:
+            require_can_edit_file_data(request.user, gate_file_data)
+        gate_instance = serializer.save(created_by=request.user)
 
         from analytics.tasks import recalculate_gate_analysis
 
@@ -144,17 +156,22 @@ class CreateGateView(generics.CreateAPIView):
 class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
     """PATCH/DELETE /analytics/gate/<gate_id> — rename or delete a gate."""
 
+    permission_classes = [IsAuthenticated]
     serializer_class = GateSerializer
     lookup_url_kwarg = "gate_id"
-    queryset = GateModel.objects.all()
 
     def get_object(self):
         gate_id = self.kwargs.get(self.lookup_url_kwarg)
-        return get_object_or_404(GateModel, pk=gate_id)
+        return get_object_or_404(gates_visible_to(self.request.user), pk=gate_id)
+
+    def perform_destroy(self, instance):
+        require_can_edit_gate(self.request.user, instance)
+        instance.delete()
 
     @extend_schema(request=GateUpdateSerializer, responses=GateSerializer)
     def patch(self, request, *args, **kwargs):
         gate = self.get_object()
+        require_can_edit_gate(request.user, gate)
         payload = GateUpdateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
@@ -185,15 +202,6 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         if new_plot_config is not None:
             gate.plot_config = new_plot_config
             update_fields.append("plot_config")
-
-        if scope in PROPAGATING_SCOPES and not (
-            request.user.is_authenticated
-            and can_edit_experiment(request.user, gate.file_data.experiment)
-        ):
-            return Response(
-                {"detail": "Você não tem permissão para alterar este experimento."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
 
         if data["dry_run"]:
             affected = []
@@ -270,12 +278,13 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class GetGateDataView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
     serializer_class = GateSerializer
     lookup_url_kwarg = "gate_id"
 
     def get_object(self):
         gate_id = self.kwargs.get(self.lookup_url_kwarg)
-        return get_object_or_404(GateModel, pk=gate_id)
+        return get_object_or_404(gates_visible_to(self.request.user), pk=gate_id)
 
     def _apply_gate_filter(
         self, dataset: pd.DataFrame, gate: GateModel
@@ -322,6 +331,8 @@ class GetGateDataView(generics.ListAPIView):
 
 class GateDensityView(APIView):
     """Return density (heatmap) or subsampled scatter for a gate's filtered data."""
+
+    permission_classes = [IsAuthenticated]
 
     @extend_schema(
         parameters=[
@@ -430,7 +441,7 @@ class GateDensityView(APIView):
         x_range = parse_range(request.query_params, "xmin", "xmax")
         y_range = parse_range(request.query_params, "ymin", "ymax")
 
-        gate = get_object_or_404(GateModel, pk=gate_id)
+        gate = get_object_or_404(gates_visible_to(request.user), pk=gate_id)
 
         cache_key = density_cache_key(
             "gate",
@@ -585,9 +596,9 @@ class DeleteGateBatchView(APIView):
         data = payload.validated_data
 
         source_gates = list(
-            GateModel.objects.filter(id__in=data["source_gate_ids"]).select_related(
-                "file_data"
-            )
+            gates_visible_to(request.user)
+            .filter(id__in=data["source_gate_ids"])
+            .select_related("file_data", "file_data__experiment")
         )
         if len(source_gates) != len(set(data["source_gate_ids"])):
             return Response(
@@ -596,15 +607,7 @@ class DeleteGateBatchView(APIView):
             )
 
         for gate in source_gates:
-            if not can_edit_experiment(request.user, gate.file_data.experiment):
-                return Response(
-                    {
-                        "detail": (
-                            "Você não tem permissão para alterar este experimento."
-                        )
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+            require_can_edit_gate(request.user, gate)
 
         targets = {}
         for gate in source_gates:
@@ -715,6 +718,8 @@ class ApplyGateView(APIView):
     sub-gates existentes.
     """
 
+    permission_classes = [IsAuthenticated]
+
     @extend_schema(
         request=inline_serializer(
             name="ApplyGateRequest",
@@ -749,7 +754,7 @@ class ApplyGateView(APIView):
         recursive = request.data.get("recursive", True)
         on_conflict = request.data.get("on_conflict", "replace")
         dry_run = bool(request.data.get("dry_run", False))
-        author = request.user if request.user.is_authenticated else None
+        author = request.user
 
         if not source_ids or not target_ids:
             return Response(
@@ -758,11 +763,14 @@ class ApplyGateView(APIView):
             )
 
         source_gates = list(
-            GateModel.objects.filter(id__in=source_ids).select_related(
+            gates_visible_to(request.user)
+            .filter(id__in=source_ids)
+            .select_related(
                 "dashboard",
                 "parent",
                 "parent__parent",
                 "parent__parent__parent",
+                "file_data__experiment",
             )
         )
         if len(source_gates) != len(source_ids):
@@ -770,6 +778,10 @@ class ApplyGateView(APIView):
                 {"detail": "One or more source gates not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        # Aplicar exporta a estratégia de análise — exige can_edit na origem
+        # (mesmo critério zero trust do ExperimentCopyView).
+        for gate in source_gates:
+            require_can_edit_gate(request.user, gate)
 
         # Exclude source file(s) from target list to prevent self-copy.
         source_file_ids = {g.file_data_id for g in source_gates}
@@ -779,6 +791,21 @@ class ApplyGateView(APIView):
                 {"detail": "No valid target files (source file excluded)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # Destinos: só amostras visíveis e editáveis pelo usuário.
+        target_files = {
+            fd.id: fd
+            for fd in file_data_visible_to(request.user)
+            .filter(id__in=target_ids)
+            .select_related("experiment")
+        }
+        if len(target_files) != len(set(target_ids)):
+            return Response(
+                {"detail": "One or more target files not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        for fd in target_files.values():
+            require_can_edit_file_data(request.user, fd)
 
         # Auto-expand quadrant groups: if a quadrant gate is selected, include all 4 Qs.
         expanded = set(source_ids)
