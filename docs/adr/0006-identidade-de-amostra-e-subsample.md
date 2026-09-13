@@ -1,6 +1,6 @@
 # ADR-0006 — Identidade da amostra é o caminho no ZIP; subsample é tabela
 
-- **Status:** Aceito
+- **Status:** Aceito — identidade de conteúdo parcialmente substituída por ADR-0012 (`source_path` vira dica de agrupamento)
 - **Data:** 2026-09-12
 - **Contexto do código:** `fcs_parser/models.py` (`FileDataModel.source_path`, `SubsampleModel`), `fcs_parser/services/process_experiment_file.py`, migrations `0010`/`0011`
 

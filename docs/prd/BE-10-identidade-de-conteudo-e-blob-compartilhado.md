@@ -1,9 +1,10 @@
-# BE-10 — Cópia de experimento sem re-upload e dedup de storage por `guid`
+# BE-10 — Identidade de conteúdo (`content_guid`, `sha256`) e blob compartilhado
 
-**Repo:** pandora-backend · **Tipo:** feature · **Base:** `chore/ai-setup`
+**Repo:** pandora-backend · **Tipo:** feature/refactor · **Base:** `chore/ai-setup`
 **Status:** Proposto — direção discutida, escopo a fechar antes de codar.
-Depende do [BE-09](BE-09-headers-fcs.md) (headers expostos) e conversa com
-[BE-08](BE-08-historico-rollback.md) (histórico/rollback).
+Depende do [BE-09](BE-09-headers-fcs.md) (headers expostos), conversa com
+[BE-08](BE-08-historico-rollback.md) (histórico/rollback) e destrava
+[BE-11](BE-11-copiar-mover-experimento.md) e [BE-12](BE-12-dedup-no-upload.md).
 
 ## Problema
 
@@ -40,17 +41,10 @@ O `guid` é do `.fcs` individual; o hash é do blob upado (ZIP ou `.fcs` solto):
 Hoje `FileModel.experiment` é `OneToOne` — blob filho único. O desenho é
 tirar essa posse: `FileModel` vira "arquivo guardado" puro (path, sha256,
 tamanho) e quem liga experimento↔blob é o `FileDataModel` (já tem as duas
-FKs). Copiar experimento = linhas novas de `FileDataModel`/`Subsample`/`Gate`
-apontando pro **mesmo** `FileModel` — nenhum byte duplicado, análise
-independente. Upload com `sha256` já existente → avisar o usuário
-("arquivo já enviado, será reutilizado") ou pedir confirmação antes de subir
-duplicado — a decisão de UX fica no front.
-
-```
-POST /experiment/<id>/copy
-Body: { "title"?, "organization_id": <id> | null }   # null = pessoal
-201 { "experiment_id": <novo_id> }
-```
+FKs). Copiar/mover experimento ([BE-11](BE-11-copiar-mover-experimento.md)) =
+linhas novas de `FileDataModel`/`Subsample`/`Gate` apontando pro **mesmo**
+`FileModel` — nenhum byte duplicado, análise independente. Upload com
+`sha256` já existente reutiliza o blob ([BE-12](BE-12-dedup-no-upload.md)).
 
 ### 3. Política de freeze/delete (futura — não faz parte desta entrega)
 
