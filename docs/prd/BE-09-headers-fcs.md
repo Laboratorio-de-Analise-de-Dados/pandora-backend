@@ -9,7 +9,7 @@
 capturados por `readfcs.view()` no processamento e normalizados por
 `transform_key()`/`serialize_value()`. Mas o dado ficava preso no banco: nenhum
 endpoint o expunha, então o front não conseguia mostrar metadados como data de
-aquisição (`$date`), equipamento (`$cyt`) ou total de eventos (`tot`).
+aquisição (`date`), equipamento (`cyt`) ou total de eventos (`tot`).
 
 ## Escopo
 
@@ -25,7 +25,7 @@ GET /experiment/file/<file_id>/headers
 200 {
   "file_data_id": 12,
   "file_name": "tempo1_A01.fcs",
-  "headers": { "$date": "...", "$cyt": "...", "tot": 50000, ... }
+  "headers": { "date": "...", "cyt": "...", "tot": 50000, ... }
 }
 404 amostra inexistente ou de outro experimento do usuário
 ```
@@ -47,7 +47,7 @@ GET /experiment/file/<file_id>/headers
 
 - [x] `GET` retorna `file_data_id`, `file_name` e `headers` completos.
 - [x] `manage.py check` e checagem de sintaxe ok (validado no container).
-- [ ] Resposta validada contra arquivo real com `$date`/`$cyt`/`tot`
+- [ ] Resposta validada contra arquivo real com `date`/`cyt`/`tot`
       (verificação manual no front, FE-11).
 
 ## Fora de escopo

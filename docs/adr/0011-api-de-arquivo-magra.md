@@ -33,7 +33,7 @@ A API de arquivo permanece magra. Na prática:
 
 ## Alternativas consideradas
 
-### A) Serializer curado de headers (whitelist `$date`, `$cyt`, `tot`, ...)
+### A) Serializer curado de headers (whitelist `date`, `cyt`, `tot`, ...)
 
 Descartada. Os keywords FCS variam por equipamento e versão do padrão; uma
 whitelist apodrece e esconderia campos que o usuário pode querer inspecionar.
