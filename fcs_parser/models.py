@@ -83,7 +83,14 @@ class ExperimentModel(models.Model):
 
 
 class FileModel(models.Model):
-    """Model for Experiment Files"""
+    """Referência experimento ↔ blob físico (ZIP ou .fcs solto).
+
+    Um experimento tem um único upload (OneToOne), mas vários FileModel
+    podem apontar para o mesmo caminho em disco: copiar um experimento ou
+    reutilizar um upload duplicado cria uma nova linha com o mesmo ``file``
+    sem duplicar bytes. ``sha256`` é a identidade do blob — duas linhas com
+    o mesmo hash são o mesmo arquivo físico.
+    """
 
     class Meta:
         db_table = "experiment_files"
@@ -91,6 +98,8 @@ class FileModel(models.Model):
     id = models.BigAutoField(primary_key=True)
     file_name = models.CharField(max_length=256, null=True)
     file = models.FileField(upload_to="", null=True)
+    # SHA-256 do blob físico; nulo em uploads antigos (backfill incremental).
+    sha256 = models.CharField(max_length=64, null=True, blank=True, db_index=True)
     experiment = models.OneToOneField(ExperimentModel, on_delete=models.CASCADE)
 
     def get_file_url(self):
@@ -151,6 +160,11 @@ class FileDataModel(models.Model):
     # real da amostra: dois arquivos podem ter o mesmo `file_name` em pastas
     # diferentes.
     source_path = models.CharField(max_length=512, blank=True, default="")
+    # Identidade lógica do .fcs (keyword `guid` do header). Âncora de
+    # cópia/rollback; `source_path` fica como dica de agrupamento inicial.
+    content_guid = models.CharField(
+        max_length=256, null=True, blank=True, db_index=True
+    )
     subsample = models.ForeignKey(
         "SubsampleModel",
         null=True,
@@ -192,7 +206,13 @@ class FileDataModel(models.Model):
                 fields=["experiment", "source_path"],
                 condition=~models.Q(source_path=""),
                 name="unique_source_path_per_experiment",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["experiment", "content_guid"],
+                condition=~models.Q(content_guid__isnull=True)
+                & ~models.Q(content_guid=""),
+                name="unique_content_guid_per_experiment",
+            ),
         ]
 
     def __str__(self) -> str:

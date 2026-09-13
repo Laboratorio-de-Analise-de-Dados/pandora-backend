@@ -36,7 +36,13 @@ from fcs_parser.models import (
     FileModel,
     SubsampleModel,
 )
-from fcs_parser.permissions import can_edit_experiment, experiments_visible_to
+from fcs_parser.permissions import (
+    can_edit_experiment,
+    can_move_experiment,
+    experiments_visible_to,
+    is_org_member,
+)
+from fcs_parser.services.copy_experiment import copy_experiment
 from fcs_parser.serializers import (
     ExperimentSerializer,
     ListExperimentSerializer,
@@ -45,7 +51,10 @@ from fcs_parser.serializers import (
     SubsampleSerializer,
     UpdateExperimentSerializer,
 )
-from fcs_parser.services.process_experiment_file import assemble_chunks
+from fcs_parser.services.process_experiment_file import (
+    assemble_chunks,
+    file_sha256,
+)
 from utils.validators import experiment_file_extension
 
 logger = logging.getLogger(__name__)
@@ -253,18 +262,40 @@ class ExperimentCompleteView(generics.CreateAPIView):
 
         experiment = ExperimentModel.objects.get(id=file_id)
 
-        final_path = assemble_chunks(experiment, extension)
-        final_name = f"{file_id}{extension}"
+        # BE-12: com `reuse`, o blob físico já existe — a nova linha de
+        # FileModel aponta para o mesmo caminho, sem receber chunks.
+        sha256 = request.data.get("sha256")
+        reuse = request.data.get("reuse") is True
+        if reuse:
+            donor = FileModel.objects.filter(sha256=sha256).first()
+            if donor is None or not donor.file:
+                return Response(
+                    {"detail": "Nenhum arquivo conhecido com este hash."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            file_instance = FileModel.objects.create(
+                file=donor.file.name,
+                file_name=raw_file_name or donor.file_name,
+                sha256=sha256,
+                experiment=experiment,
+            )
+        else:
+            final_path = assemble_chunks(experiment, extension)
+            final_name = f"{file_id}{extension}"
+            try:
+                sha256 = file_sha256(final_path)
+            except OSError:
+                sha256 = None
+            file_instance = FileModel.objects.create(
+                file=final_path,
+                file_name=final_name,
+                sha256=sha256,
+                experiment=experiment,
+            )
 
         experiment.file_status = "uploaded"
         experiment.status = "processing"
         experiment.save(update_fields=["file_status", "status"])
-
-        file_instance = FileModel.objects.create(
-            file=final_path,
-            file_name=final_name,
-            experiment=experiment,
-        )
 
         try:
             if extension == ".fcs":
@@ -325,9 +356,48 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
             organization_id=experiment.organization_id, status="active"
         ).exists()
 
+    def _resolve_move(self, request, experiment):
+        """Valida o PATCH de contexto (`organization_id`) — mover, não copiar.
+
+        Devolve (organization_id, None) autorizado ou (None, Response) de erro.
+        """
+        if not can_move_experiment(request.user, experiment):
+            return None, Response(
+                {
+                    "detail": "Mover exige ser o dono ou admin na origem do experimento."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        raw = request.data.get("organization_id")
+        if raw in (None, ""):
+            return None, None
+        try:
+            organization_id = int(raw)
+        except (TypeError, ValueError):
+            return None, Response(
+                {"detail": "organization_id inválido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not Organization.objects.filter(id=organization_id).exists():
+            return None, Response(
+                {"detail": "Laboratório não encontrado."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not is_org_member(request.user, organization_id):
+            return None, Response(
+                {"detail": "Você não é membro do laboratório de destino."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return organization_id, None
+
     def update(self, request, *args, **kwargs):
         experiment = self.get_object()
-        if not self.can_write(experiment):
+        moving = "organization_id" in request.data
+        if moving:
+            organization_id, error = self._resolve_move(request, experiment)
+            if error:
+                return error
+        elif not self.can_write(experiment):
             return Response(
                 {"detail": "Você não tem permissão para editar este experimento."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -337,6 +407,9 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
         serializer.is_valid(raise_exception=True)
         try:
             serializer.save()
+            if moving:
+                experiment.organization_id = organization_id
+                experiment.save(update_fields=["organization"])
         except IntegrityError:
             return Response(
                 {"detail": "Título já criado para esse laboratório."},
@@ -1016,6 +1089,131 @@ class FileHeadersView(APIView):
                 "file_data_id": file_data.id,
                 "file_name": file_data.file_name,
                 "headers": file_data.headers or {},
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ExperimentCopyView(APIView):
+    """POST /experiment/<experiment_id>/copy — copia a análise para outro contexto.
+
+    Zero trust: exige ``can_edit_experiment`` na origem (um viewer não exporta
+    a estratégia de análise de outra pessoa) e membership ativa na
+    organização de destino — ``organization_id`` nulo copia para o espaço
+    pessoal do próprio usuário. A cópia reutiliza o blob físico (mesmo
+    ``file``/``sha256``) mas cria linhas novas de amostras, subsamples e
+    gates: editar uma não toca a outra.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=inline_serializer(
+            name="ExperimentCopyRequest",
+            fields={
+                "title": serializers.CharField(required=False),
+                "organization_id": serializers.IntegerField(
+                    required=False, allow_null=True
+                ),
+            },
+        ),
+        responses={201: ListExperimentSerializer},
+    )
+    def post(self, request, experiment_id):
+        source = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        if not can_edit_experiment(request.user, source):
+            return Response(
+                {
+                    "detail": "Copiar exige permissão de edição no experimento de origem."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        raw = request.data.get("organization_id")
+        if raw in (None, ""):
+            organization_id = None
+        else:
+            try:
+                organization_id = int(raw)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "organization_id inválido."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not Organization.objects.filter(id=organization_id).exists():
+                return Response(
+                    {"detail": "Laboratório não encontrado."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not is_org_member(request.user, organization_id):
+                return Response(
+                    {"detail": "Você não é membro do laboratório de destino."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        title = request.data.get("title")
+        if title is not None and (not isinstance(title, str) or not title.strip()):
+            return Response(
+                {"detail": "Título inválido."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        clone = copy_experiment(
+            source,
+            user=request.user,
+            title=title,
+            organization_id=organization_id,
+        )
+        return Response(
+            ListExperimentSerializer(clone).data, status=status.HTTP_201_CREATED
+        )
+
+
+class FileHashCheckView(APIView):
+    """POST /experiment/check-hash/ — dedup de upload por SHA-256 (BE-12).
+
+    O cliente calcula o hash localmente e pergunta se o blob já existe;
+    existindo, o upload pode ser pulado e o blob reutilizado no
+    ``complete/`` (``reuse: true``). Nunca bloqueia o upload — é aviso e
+    conveniência de storage, não portão de permissão.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=inline_serializer(
+            name="FileHashCheckRequest",
+            fields={"sha256": serializers.CharField()},
+        ),
+        responses=inline_serializer(
+            name="FileHashCheckResponse",
+            fields={
+                "exists": serializers.BooleanField(),
+                "file_name": serializers.CharField(allow_null=True),
+            },
+        ),
+    )
+    def post(self, request):
+        sha256 = request.data.get("sha256")
+        if (
+            not isinstance(sha256, str)
+            or len(sha256) != 64
+            or any(c not in "0123456789abcdef" for c in sha256.lower())
+        ):
+            return Response(
+                {"detail": "sha256 deve ser um hash hexadecimal de 64 caracteres."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        match = (
+            FileModel.objects.filter(sha256=sha256.lower())
+            .order_by("id")
+            .first()
+        )
+        return Response(
+            {
+                "exists": match is not None,
+                "file_name": match.file_name if match else None,
             },
             status=status.HTTP_200_OK,
         )

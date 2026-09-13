@@ -7,6 +7,7 @@ lives.  Tasks and views delegate here instead of reimplementing it.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
@@ -30,6 +31,23 @@ logger = logging.getLogger(__name__)
 def _extract_dir(experiment_id: int) -> str:
     """Temporary directory for extracted .fcs files (ephemeral)."""
     return os.path.join(settings.MEDIA_ROOT, "fcs_files", str(experiment_id))
+
+
+def file_sha256(path: str) -> str:
+    """SHA-256 de um arquivo em disco, lido em blocos (blob identity)."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _content_guid(headers: dict | None) -> str | None:
+    """GUID do .fcs vindo do header (readfcs normaliza para `guid`)."""
+    if not headers:
+        return None
+    guid = headers.get("guid")
+    return str(guid) if guid not in (None, "") else None
 
 
 def assemble_chunks(experiment: ExperimentModel, extension: str = ".zip") -> str:
@@ -117,6 +135,7 @@ def extract_metadata_from_zip(file_model: FileModel) -> list[str]:
                     experiment=experiment,
                     file_name=file_name,
                     source_path=relative_path.replace(os.sep, "/"),
+                    content_guid=_content_guid(headers),
                     subsample=subsample_for_path(experiment, relative_path),
                     file=file_model,
                     parquet_path=None,
@@ -161,6 +180,7 @@ def extract_metadata_from_fcs(file_model: FileModel) -> list[str]:
         experiment=experiment,
         file_name=file_model.file_name,
         source_path=file_model.file_name or "",
+        content_guid=_content_guid(headers),
         file=file_model,
         fcs_path=fcs_path,
         parquet_path=None,
@@ -220,6 +240,7 @@ def process_experiment_zip(file_model: FileModel) -> list[str]:
                     experiment=experiment,
                     file_name=file_name,
                     source_path=relative_path.replace(os.sep, "/"),
+                    content_guid=_content_guid(result.headers),
                     subsample=subsample_for_path(experiment, relative_path),
                     file=file_model,
                 )

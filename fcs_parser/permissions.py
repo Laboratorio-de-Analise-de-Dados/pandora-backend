@@ -29,3 +29,29 @@ def can_edit_experiment(user, experiment) -> bool:
     return user.memberships.filter(
         organization_id=experiment.organization_id, status="active"
     ).exists()
+
+
+def is_org_member(user, organization_id: int) -> bool:
+    """Membro ativo da organização (ou super admin)."""
+    if user.is_super_admin:
+        return True
+    return user.memberships.filter(
+        organization_id=organization_id, status="active"
+    ).exists()
+
+
+def can_move_experiment(user, experiment) -> bool:
+    """Mover muda quem vê o experimento — exige dono ou admin na origem.
+
+    Dono = ``created_by``; admin = super admin ou membership ativa com papel
+    ``org_admin`` na organização de origem.
+    """
+    if user.is_super_admin or experiment.created_by_id == user.id:
+        return True
+    if experiment.organization_id is None:
+        return False
+    return user.memberships.filter(
+        organization_id=experiment.organization_id,
+        status="active",
+        role__name="org_admin",
+    ).exists()
