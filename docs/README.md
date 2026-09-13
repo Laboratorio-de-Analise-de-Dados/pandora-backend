@@ -7,9 +7,10 @@
   (inclusive as ruins) de ter escolhido esse caminho.
 - `server_config.md` — configuração do servidor de produção.
 
-Os PRDs do front vivem em `pandora-front/docs/prd/`, e os ADRs que valem para os
-dois repos estão duplicados lá com o mesmo número **apenas quando a decisão tem
-efeito nos dois lados** (ex.: identidade de amostra, escopo de propagação).
+Os PRDs e ADRs do front vivem em `pandora-front/docs/`, com numeração própria e
+independente desta. Decisão de produto/domínio (o que o sistema garante) fica
+aqui; decisão de UI/arquitetura de front fica lá, com link cruzado por nome
+(`pandora-backend/docs/adr/0006`) — nunca duplicada, para não divergirem.
 
 ## Convenções
 
