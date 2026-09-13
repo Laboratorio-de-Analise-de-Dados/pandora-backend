@@ -20,55 +20,61 @@ observadas:
 
 ## Escopo
 
-### 1. `guid` como identidade de conteúdo
+### 1. Identidade em duas colunas novas (cada uma no nível certo)
 
-- `headers.guid` passa a ser a chave de conteúdo do arquivo **dentro do
-  experimento** (medido: zero duplicados internos na base atual).
-- Validação no processamento: dois arquivos com o mesmo `guid` no mesmo
-  experimento → tratar como duplicata (rejeitar ou marcar, definir com BE-01).
-- Fallback para arquivos sem `guid`: `source_path` (ADR-0006) — o guid
-  complementa, não substitui.
-- Referências de análise (gates propagados, histórico, rollback) passam a
-  poder mirar `guid` — sobrevive a rename/movimentação no ZIP e à cópia.
+O `guid` é do `.fcs` individual; o hash é do blob upado (ZIP ou `.fcs` solto):
 
-### 2. Copiar experimento para pessoal ou outra organização
+- `FileDataModel.content_guid` — keyword `guid` do header FCS, promovido a
+  coluna no parse. Identidade de conteúdo **da amostra**, âncora de
+  referências de análise (gates propagados, histórico/rollback do BE-08).
+  `UniqueConstraint(experiment, content_guid)` — medido: zero duplicados
+  internos na base atual; quem não grava `guid` fica `null` e cai no
+  `source_path` (que vira só dica de agrupamento pro subsample inicial, não
+  mais identidade — ajustar ADR-0006 em ADR novo).
+- `FileModel.sha256` — hash do blob no upload. Chave definitiva da dedup de
+  storage: `guid`+metadados (`cyt`/`date`/`inst`/`tot`) é a camada
+  metodizável de confirmação, o hash decide bytes iguais.
+
+### 2. `FileModel` vira o blob compartilhado (quase-`StoredFile`)
+
+Hoje `FileModel.experiment` é `OneToOne` — blob filho único. O desenho é
+tirar essa posse: `FileModel` vira "arquivo guardado" puro (path, sha256,
+tamanho) e quem liga experimento↔blob é o `FileDataModel` (já tem as duas
+FKs). Copiar experimento = linhas novas de `FileDataModel`/`Subsample`/`Gate`
+apontando pro **mesmo** `FileModel` — nenhum byte duplicado, análise
+independente. Upload com `sha256` já existente → avisar o usuário
+("arquivo já enviado, será reutilizado") ou pedir confirmação antes de subir
+duplicado — a decisão de UX fica no front.
 
 ```
 POST /experiment/<id>/copy
-Body: { "title"?, "organization_id": <id> | null }   # null = espaço pessoal
-
+Body: { "title"?, "organization_id": <id> | null }   # null = pessoal
 201 { "experiment_id": <novo_id> }
-403 sem permissão no experimento origem ou na org destino
 ```
 
-- Cria experimento novo com **novas** linhas de `FileDataModel`, `Subsample`
-  e `Gate` (estado inicial copiado) — a cópia é independente: editar um não
-  toca o outro.
-- O blob físico não é duplicado: cada `FileDataModel` da cópia referencia o
-  mesmo arquivo físico do original, localizado via `guid` (ou `source_path`).
+### 3. Rotina de retenção/limpeza (storage)
 
-### 3. Rotina de dedup de storage
+Manter o original como fonte de verdade (ADR-0004) e pagar parse sob demanda
+é o desenho atual — a rotina fecha o ciclo:
 
-- Cruzar `guid` + `cyt` + `date` + `inst` (+ `tot`/tamanho como sanidade):
-  todos iguais = mesmo conteúdo → uma cópia física, N referências lógicas.
-- Só consolida/limpa o que não é referenciado por experimento ativo — nunca
-  apaga arquivo em uso (mesma regra do ADR-0005: nada é deletado de verdade).
-- **Nota honesta:** `guid` é keyword escrita pelo software de aquisição — não
-  é hash de integridade e pode colidir em cenários fora da base medida
-  (export re-escrito, software que gera valor constante). Para dedup de
-  *bytes* a chave definitiva é `sha256` do arquivo, calculado no upload e
-  barato de adicionar; `guid`+metadados serve como chave lógica barata e o
-  hash resolve ambiguidade. Decidir na implementação se o `sha256` entra junto.
+- Parquet é cache com TTL — `FileDataModel.last_accessed` já existe; frio
+  demais → apaga (regenera do blob quando requisitado).
+- Blob (`FileModel`) sem nenhum `FileDataModel` referenciando → órfão,
+  remove (única deleção física permitida — fora da regra do ADR-0005, que é
+  sobre dados de análise, não storage).
+- `.fcs` extraído solto no disco (resto de parse) → limpa; só o blob e o
+  cache Parquet persistem.
 
 ## Arquivos a tocar (quando implementar)
 
-- `fcs_parser/models.py` — referência de blob físico desacoplada de
-  `FileDataModel` (ou coluna `content_ref`/`sha256` nova)
-- `fcs_parser/services/process_fcs.py` — extrair `guid` (e hash) no parse
-- `fcs_parser/views.py` + `urls.py` — `ExperimentCopyView`
-- `fcs_parser/services/` — rotina de dedup (management command ou Celery)
-- `docs/adr/` — se a identidade de conteúdo virar constraint de modelo, ADR
-  novo (mexe com ADR-0006)
+- `fcs_parser/models.py` — `FileModel.experiment` sai de `OneToOne`
+  (ou a FK migra pro uso via `FileDataModel`); colunas `sha256` e
+  `content_guid`; `UniqueConstraint(experiment, content_guid)`
+- `fcs_parser/services/process_fcs.py` — extrai `guid` e `sha256` no parse
+- `fcs_parser/views.py` + `urls.py` — `ExperimentCopyView`; `init/` avisando
+  hash já existente
+- `fcs_parser/services/` — rotina de retenção (management command ou Celery)
+- `docs/adr/` — ADR novo marcando a mudança de identidade (mexe com ADR-0006)
 
 ## Critérios de aceite
 
