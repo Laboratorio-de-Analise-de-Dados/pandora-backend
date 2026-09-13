@@ -83,13 +83,12 @@ class ExperimentModel(models.Model):
 
 
 class FileModel(models.Model):
-    """Referência experimento ↔ blob físico (ZIP ou .fcs solto).
+    """Um upload de arquivo pertencente a um experimento.
 
-    Um experimento tem um único upload (OneToOne), mas vários FileModel
-    podem apontar para o mesmo caminho em disco: copiar um experimento ou
-    reutilizar um upload duplicado cria uma nova linha com o mesmo ``file``
-    sem duplicar bytes. ``sha256`` é a identidade do blob — duas linhas com
-    o mesmo hash são o mesmo arquivo físico.
+    Um experimento pode receber vários uploads ao longo do tempo (FK) —
+    cada FileModel é um blob (sempre ZIP; `.fcs` solto é aglutinado num
+    ZIP no complete). Copiar um experimento cria outra linha apontando pro
+    mesmo ``file`` sem duplicar bytes; ``sha256`` é a identidade do blob.
     """
 
     class Meta:
@@ -100,7 +99,12 @@ class FileModel(models.Model):
     file = models.FileField(upload_to="", null=True)
     # SHA-256 do blob físico; nulo em uploads antigos (backfill incremental).
     sha256 = models.CharField(max_length=64, null=True, blank=True, db_index=True)
-    experiment = models.OneToOneField(ExperimentModel, on_delete=models.CASCADE)
+    experiment = models.ForeignKey(
+        ExperimentModel, on_delete=models.CASCADE, related_name="uploads"
+    )
+    # Controle do upload em chunks deste arquivo (fluxo "adicionar arquivos").
+    total_chunks = models.IntegerField(null=True, blank=True)
+    received_chunks = ArrayField(models.IntegerField(), default=list, blank=True)
 
     def get_file_url(self):
         return settings.MEDIA_URL + str(self.file)
@@ -271,16 +275,16 @@ class FileDataModel(models.Model):
         return pd.DataFrame()
 
     def _rebuild_from_zip(self) -> pd.DataFrame | None:
-        """Extract .fcs from the experiment's ZIP and rebuild the Parquet cache."""
+        """Extract .fcs from this sample's own upload ZIP and rebuild cache."""
         from fcs_parser.services.process_experiment_file import extract_fcs_from_zip
         from fcs_parser.services.process_fcs import process_fcs_file
 
-        experiment = self.experiment
-        if not getattr(experiment, "zip_path", None):
+        upload = self.file
+        if upload is None:
             return None
 
         fcs_path = extract_fcs_from_zip(
-            experiment, self.source_path or self.file_name
+            upload, self.source_path or self.file_name
         )
         if fcs_path is None:
             return None

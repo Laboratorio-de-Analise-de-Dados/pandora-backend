@@ -41,26 +41,30 @@ upload inteiro (ZIP ou `.fcs` solto):
   dedup de upload idêntico. `guid`+metadados (`cyt`/`date`/`inst`/`tot`) é
   a camada metodizável de confirmação, o hash decide bytes iguais.
 
-### 2. `FileModel` = referência experimento↔blob compartilhado
+### 2. `FileModel` = um upload pertencente a um experimento (FK, N:1)
 
-Implementação optou por manter `FileModel.experiment` como `OneToOne` (um
-upload por experimento) e compartilhar o blob no nível do **caminho**:
-copiar ou reutilizar cria outra linha de `FileModel` apontando pro mesmo
-`file.name`, sem duplicar bytes e sem quebrar `file_model.experiment` nos
-serviços. A identidade física é o `sha256` — duas linhas com o mesmo hash
-são o mesmo blob. Copiar/mover experimento
-([BE-11](BE-11-copiar-mover-experimento.md)) cria linhas novas de
-`FileDataModel`/`Subsample`/`Gate` sobre o mesmo blob — análise
-independente. Upload com `sha256` já existente reutiliza o blob
-([BE-12](BE-12-dedup-no-upload.md)).
+`FileModel.experiment` é `ForeignKey` (`related_name="uploads"`): um
+experimento acumula vários uploads ao longo do tempo (BE-12). Cada
+`FileDataModel` aponta pro **seu** upload (`fd.file`), então a resolução
+física é por amostra — não existe mais um "ZIP único do experimento"
+(`experiment.zip_path` ficou como referência legada da criação).
+
+`.fcs` solto é aglutinado num ZIP no servidor (`wrap_fcs_as_zip`) — a
+unidade física é sempre ZIP. O único compartilhamento de blob entre
+experimentos é a **cópia explícita**
+([BE-11](BE-11-copiar-mover-experimento.md)): linhas novas apontando pro
+mesmo `file.name`, análise independente. Não há reuso automático
+cross-experiment no upload ([BE-12](BE-12-dedup-no-upload.md)) — dedup é
+escopado ao experimento, o que também simplifica a limpeza.
 
 ### 3. Download = artefato derivado, não o blob guardado
 
 A unidade gerenciada é o `.fcs` (via `content_guid`/`content_sha256`) — o
 mesmo arquivo pode existir em experimentos diferentes com organizações de
-subsample diferentes. O ZIP de download do experimento é **reconstruído na
-hora** com a estrutura de pastas dos subsamples atuais do usuário; o blob
-armazenado segue sendo só o freezer/fonte da verdade dos bytes.
+subsample diferentes. `GET /experiment/<id>/download` **reconstrói o ZIP na
+hora** com a estrutura `subsample.name/arquivo.fcs`, lendo cada amostra do
+upload que a originou (`fd.file` + `source_path`); o blob armazenado segue
+sendo só o freezer/fonte da verdade dos bytes.
 
 ### 4. Política de freeze/delete (futura — não faz parte desta entrega)
 
@@ -84,9 +88,10 @@ recebimento é o portão da deleção.
 
 ## Arquivos tocados
 
-- `fcs_parser/models.py` + migrações `0012`/`0013` — `FileModel.sha256`,
-  `FileDataModel.content_guid`/`content_sha256`,
-  `UniqueConstraint(experiment, content_guid)`, backfills
+- `fcs_parser/models.py` + migrações `0012`/`0013`/`0014` —
+  `FileModel.sha256`, `FileDataModel.content_guid`/`content_sha256`,
+  `UniqueConstraint(experiment, content_guid)`, backfills,
+  `FileModel.experiment` OneToOne→FK + campos de chunk por upload
 - `fcs_parser/services/process_experiment_file.py` — `file_sha256()`,
   `content_guid`/`content_sha256` populados nos três pontos de extração
 - `fcs_parser/services/copy_experiment.py` — clone linha-a-linha sobre o

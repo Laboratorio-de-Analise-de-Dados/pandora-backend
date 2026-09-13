@@ -1,3 +1,5 @@
+import hashlib
+import io
 import os
 import shutil
 import tempfile
@@ -5,7 +7,10 @@ import zipfile
 from io import StringIO
 from unittest.mock import patch
 
+import pandas as pd
+from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.db import IntegrityError
 from django.test import TestCase
@@ -136,7 +141,7 @@ class SubsampleExtractionTestCase(TestCase):
             FileDataModel.objects.create(**kwargs)
 
     def test_extract_uses_the_exact_relative_path(self):
-        tmp_dir = tempfile.mkdtemp()
+        tmp_dir = tempfile.mkdtemp(dir=settings.MEDIA_ROOT)
         self.addCleanup(shutil.rmtree, tmp_dir, True)
         zip_path = os.path.join(tmp_dir, "amostras.zip")
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -144,8 +149,11 @@ class SubsampleExtractionTestCase(TestCase):
             zf.writestr("tempo_2/a1.fcs", "segundo")
         self.experiment.zip_path = zip_path
         self.experiment.save(update_fields=["zip_path"])
+        upload = FileModel.objects.create(
+            file_name="amostras.zip", file=zip_path, experiment=self.experiment
+        )
 
-        extracted = extract_fcs_from_zip(self.experiment, "tempo_2/a1.fcs")
+        extracted = extract_fcs_from_zip(upload, "tempo_2/a1.fcs")
 
         self.assertIsNotNone(extracted)
         with open(extracted) as f:
@@ -716,48 +724,193 @@ class FileHashCheckApiTestCase(TestCase):
         self.assertEqual(res.status_code, 400)
 
 
-class CompleteReuseApiTestCase(TestCase):
-    """BE-12: complete/ com `reuse` aponta o FileModel para o blob existente."""
+class ExperimentFilesApiTestCase(TestCase):
+    """Adicionar arquivos (ZIP ou .fcs) a um experimento existente.
+
+    Fluxo: files/init → files/upload-chunk → files/complete. `.fcs` solto é
+    aglutinado num ZIP; dedup é escopado ao experimento (skip, nunca erro).
+    """
 
     def setUp(self):
         self.user = User.objects.create_user(
             username="dono", email="dono@pandora.test", password="senha-forte-123"
         )
-        self.donor_exp = ExperimentModel.objects.create(
-            title="origem", type="t", created_by=self.user, status="done"
+        self.other = User.objects.create_user(
+            username="outro",
+            email="outro@pandora.test",
+            password="senha-forte-123",
         )
-        self.donor = FileModel.objects.create(
-            file_name="origem.zip",
-            file="origem.zip",
-            sha256="d" * 64,
-            experiment=self.donor_exp,
-        )
-        self.new_exp = ExperimentModel.objects.create(
-            title="novo", type="t", created_by=self.user, status="uploading"
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.user, status="done"
         )
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
-    def test_reuse_points_to_same_blob_without_chunks(self):
+        self.media = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.media, True)
+        override = self.settings(MEDIA_ROOT=self.media)
+        override.enable()
+        self.addCleanup(override.disable)
+
+    def _zip_bytes(self, entries: dict) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for name, data in entries.items():
+                zf.writestr(name, data)
+        return buf.getvalue()
+
+    def _upload(self, file_name: str, payload: bytes) -> int:
+        init = self.client.post(
+            f"/experiment/{self.experiment.id}/files/init",
+            {"fileName": file_name, "totalChunks": 1},
+            format="json",
+        )
+        file_id = init.data["fileId"]
+        self.client.post(
+            "/experiment/files/upload-chunk/",
+            {
+                "fileId": file_id,
+                "chunkIndex": 0,
+                "chunk": SimpleUploadedFile("c0", payload),
+            },
+        )
+        return file_id
+
+    def test_init_creates_pending_upload(self):
         res = self.client.post(
-            "/experiment/complete/",
-            {"fileId": self.new_exp.id, "sha256": "d" * 64, "reuse": True},
+            f"/experiment/{self.experiment.id}/files/init",
+            {"fileName": "novo.zip", "totalChunks": 3},
             format="json",
         )
 
-        # A extração falha sem o arquivo físico em disco no teste, mas o
-        # FileModel compartilhado já deve ter sido criado.
-        new_fm = FileModel.objects.get(experiment=self.new_exp)
-        self.assertEqual(new_fm.file.name, "origem.zip")
-        self.assertEqual(new_fm.sha256, "d" * 64)
+        self.assertEqual(res.status_code, 201)
+        upload = FileModel.objects.get(id=res.data["fileId"])
+        self.assertEqual(upload.experiment, self.experiment)
+        self.assertEqual(upload.total_chunks, 3)
+        self.assertFalse(upload.file)
 
-    def test_reuse_with_unknown_hash_fails(self):
-        res = self.client.post(
-            "/experiment/complete/",
-            {"fileId": self.new_exp.id, "sha256": "e" * 64, "reuse": True},
+    def test_init_requires_edit_permission(self):
+        client = APIClient()
+        client.force_authenticate(self.other)
+        res = client.post(
+            f"/experiment/{self.experiment.id}/files/init",
+            {"fileName": "novo.zip", "totalChunks": 1},
             format="json",
         )
-        self.assertEqual(res.status_code, 400)
-        self.assertFalse(
-            FileModel.objects.filter(experiment=self.new_exp).exists()
+        self.assertEqual(res.status_code, 403)
+
+    @patch("fcs_parser.views.extract_metadata_from_zip")
+    def test_complete_wraps_standalone_fcs_into_zip(self, mock_extract):
+        file_id = self._upload("amostra.fcs", b"fcs-bytes")
+        res = self.client.post(
+            "/experiment/files/complete/",
+            {"fileId": file_id, "fileName": "amostra.fcs"},
+            format="json",
         )
+
+        self.assertEqual(res.status_code, 200)
+        upload = FileModel.objects.get(id=file_id)
+        self.assertTrue(upload.file.name.endswith(".zip"))
+        self.assertTrue(os.path.exists(upload.file.path))
+        with zipfile.ZipFile(upload.file.path) as zf:
+            self.assertEqual(zf.read("amostra.fcs"), b"fcs-bytes")
+        self.assertIsNotNone(upload.sha256)
+        mock_extract.assert_called_once()
+
+    @patch("fcs_parser.services.process_experiment_file.readfcs")
+    def test_duplicate_sample_within_experiment_is_skipped(self, mock_readfcs):
+        mock_readfcs.view.return_value = ({}, None)
+        payload = b"dup-bytes"
+        sha = hashlib.sha256(payload).hexdigest()
+        existing_upload = FileModel.objects.create(
+            file_name="velho.zip", experiment=self.experiment
+        )
+        FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            source_path="a1.fcs",
+            content_sha256=sha,
+            file=existing_upload,
+        )
+
+        file_id = self._upload("novo.zip", self._zip_bytes({"a1.fcs": payload}))
+        res = self.client.post(
+            "/experiment/files/complete/",
+            {"fileId": file_id, "fileName": "novo.zip"},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["added"], 0)
+        self.assertEqual(res.data["skipped"], ["a1.fcs"])
+
+    @patch("fcs_parser.services.process_experiment_file.readfcs")
+    def test_same_sample_allowed_in_another_experiment(self, mock_readfcs):
+        mock_readfcs.view.return_value = ({}, None)
+        mock_readfcs.ReadFCS.return_value.channels = pd.DataFrame(
+            {"PnN": ["FL1"]}
+        )
+        payload = b"same-bytes"
+        sha = hashlib.sha256(payload).hexdigest()
+
+        other_exp = ExperimentModel.objects.create(
+            title="outro", type="t", created_by=self.other, status="done"
+        )
+        FileDataModel.objects.create(
+            headers={},
+            experiment=other_exp,
+            file_name="a1.fcs",
+            source_path="a1.fcs",
+            content_sha256=sha,
+            file=FileModel.objects.create(
+                file_name="x.zip", experiment=other_exp
+            ),
+        )
+
+        file_id = self._upload("novo.zip", self._zip_bytes({"a1.fcs": payload}))
+        res = self.client.post(
+            "/experiment/files/complete/",
+            {"fileId": file_id, "fileName": "novo.zip"},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["added"], 1)
+        self.assertEqual(res.data["skipped"], [])
+
+    def test_download_rebuilds_zip_by_subsample(self):
+        zip_path = os.path.join(self.media, "origem.zip")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("pasta/a1.fcs", b"conteudo-a1")
+            zf.writestr("a2.fcs", b"conteudo-a2")
+        upload = FileModel.objects.create(
+            file_name="origem.zip", file=zip_path, experiment=self.experiment
+        )
+        sub = SubsampleModel.objects.create(
+            experiment=self.experiment, name="tempo_1", source_path="pasta"
+        )
+        FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            source_path="pasta/a1.fcs",
+            subsample=sub,
+            file=upload,
+        )
+        FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a2.fcs",
+            source_path="a2.fcs",
+            file=upload,
+        )
+
+        res = self.client.get(f"/experiment/{self.experiment.id}/download")
+
+        self.assertEqual(res.status_code, 200)
+        content = io.BytesIO(b"".join(res.streaming_content))
+        with zipfile.ZipFile(content) as zf:
+            names = sorted(zf.namelist())
+            self.assertEqual(names, ["a2.fcs", "tempo_1/a1.fcs"])
+            self.assertEqual(zf.read("tempo_1/a1.fcs"), b"conteudo-a1")

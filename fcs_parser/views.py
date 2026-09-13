@@ -1,11 +1,14 @@
 import json
 import logging
 import os
+import tempfile
 import traceback
+import zipfile
 
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from accounts.models import Organization
@@ -53,7 +56,9 @@ from fcs_parser.serializers import (
 )
 from fcs_parser.services.process_experiment_file import (
     assemble_chunks,
+    extract_metadata_from_zip,
     file_sha256,
+    wrap_fcs_as_zip,
 )
 from utils.validators import experiment_file_extension
 
@@ -242,11 +247,6 @@ class ExperimentCompleteView(generics.CreateAPIView):
         ),
     )
     def post(self, request):
-        from fcs_parser.services.process_experiment_file import (
-            extract_metadata_from_fcs,
-            extract_metadata_from_zip,
-        )
-
         file_id = request.data["fileId"]
         raw_file_name = request.data.get("fileName")
         try:
@@ -262,46 +262,36 @@ class ExperimentCompleteView(generics.CreateAPIView):
 
         experiment = ExperimentModel.objects.get(id=file_id)
 
-        # BE-12: com `reuse`, o blob físico já existe — a nova linha de
-        # FileModel aponta para o mesmo caminho, sem receber chunks.
-        sha256 = request.data.get("sha256")
-        reuse = request.data.get("reuse") is True
-        if reuse:
-            donor = FileModel.objects.filter(sha256=sha256).first()
-            if donor is None or not donor.file:
-                return Response(
-                    {"detail": "Nenhum arquivo conhecido com este hash."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            file_instance = FileModel.objects.create(
-                file=donor.file.name,
-                file_name=raw_file_name or donor.file_name,
-                sha256=sha256,
-                experiment=experiment,
+        final_path = assemble_chunks(
+            str(experiment.id), experiment.total_chunks, extension
+        )
+        final_name = f"{file_id}{extension}"
+
+        # `.fcs` solto é aglutinado num ZIP — a unidade física é sempre ZIP.
+        if extension == ".fcs":
+            zip_path = os.path.join(settings.MEDIA_ROOT, f"{file_id}.zip")
+            final_path = wrap_fcs_as_zip(
+                final_path, raw_file_name or final_name, zip_path
             )
-        else:
-            final_path = assemble_chunks(experiment, extension)
-            final_name = f"{file_id}{extension}"
-            try:
-                sha256 = file_sha256(final_path)
-            except OSError:
-                sha256 = None
-            file_instance = FileModel.objects.create(
-                file=final_path,
-                file_name=final_name,
-                sha256=sha256,
-                experiment=experiment,
-            )
+            final_name = f"{file_id}.zip"
+
+        try:
+            sha256 = file_sha256(final_path)
+        except OSError:
+            sha256 = None
+        file_instance = FileModel.objects.create(
+            file=final_path,
+            file_name=raw_file_name or final_name,
+            sha256=sha256,
+            experiment=experiment,
+        )
 
         experiment.file_status = "uploaded"
         experiment.status = "processing"
         experiment.save(update_fields=["file_status", "status"])
 
         try:
-            if extension == ".fcs":
-                extract_metadata_from_fcs(file_instance)
-            else:
-                extract_metadata_from_zip(file_instance)
+            extract_metadata_from_zip(file_instance)
         except Exception as e:
             logger.error(
                 "Erro ao extrair metadados do experimento %s: %s",
@@ -1032,7 +1022,9 @@ class RecomputeFileDataView(APIView):
         file_data, error = get_active_file_data_or_error(file_id)
         if error:
             return error
-        has_zip = bool(getattr(file_data.experiment, "zip_path", None))
+        has_zip = bool(
+            getattr(getattr(file_data.file, "file", None), "name", None)
+        )
         has_fcs = bool(file_data.fcs_path)
         if not has_zip and not has_fcs:
             return Response(
@@ -1205,24 +1197,24 @@ class FileHashCheckView(APIView):
                 {"detail": "sha256 deve ser um hash hexadecimal de 64 caracteres."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # O hash pode ser do blob (ZIP/.fcs solto → FileModel.sha256) ou de
-        # um .fcs individual já extraído (FileDataModel.content_sha256) —
-        # assim um arquivo solto também bate com amostras dentro de ZIPs.
-        blob = (
-            FileModel.objects.filter(sha256=sha256.lower())
-            .order_by("id")
-            .first()
-        )
+        # Dedup escopado por experimento quando `experiment_id` vem no body:
+        # "este arquivo já está NESTE experimento". Sem ele, resposta global
+        # (informativa). O hash pode ser do blob (FileModel.sha256) ou de um
+        # .fcs individual já extraído (FileDataModel.content_sha256).
+        experiment_id = request.data.get("experiment_id")
+        blob_qs = FileModel.objects.filter(sha256=sha256.lower())
+        sample_qs = FileDataModel.objects.filter(content_sha256=sha256.lower())
+        if experiment_id not in (None, ""):
+            blob_qs = blob_qs.filter(experiment_id=experiment_id)
+            sample_qs = sample_qs.filter(experiment_id=experiment_id)
+
+        blob = blob_qs.order_by("id").first()
         if blob is not None:
             return Response(
                 {"exists": True, "file_name": blob.file_name},
                 status=status.HTTP_200_OK,
             )
-        sample = (
-            FileDataModel.objects.filter(content_sha256=sha256.lower())
-            .order_by("id")
-            .first()
-        )
+        sample = sample_qs.order_by("id").first()
         return Response(
             {
                 "exists": sample is not None,
@@ -1230,3 +1222,289 @@ class FileHashCheckView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class ExperimentFileInitView(APIView):
+    """POST /experiment/<experiment_id>/files/init — upload anexado a um
+    experimento existente ("adicionar arquivos").
+
+    Cria o ``FileModel`` reserva (sem ``file`` ainda) e devolve seu id como
+    ``fileId``; os chunks seguem em ``/experiment/files/upload-chunk/``.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=inline_serializer(
+            name="ExperimentFileInitRequest",
+            fields={
+                "fileName": serializers.CharField(),
+                "totalChunks": serializers.IntegerField(),
+            },
+        ),
+        responses=inline_serializer(
+            name="ExperimentFileInitResponse",
+            fields={"fileId": serializers.IntegerField()},
+        ),
+    )
+    def post(self, request, experiment_id):
+        experiment = get_object_or_404(ExperimentModel, id=experiment_id)
+        if not can_edit_experiment(request.user, experiment):
+            return Response(
+                {"detail": "Você não tem permissão para alterar este experimento."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        raw_file_name = request.data.get("fileName")
+        try:
+            extension = experiment_file_extension(raw_file_name)
+        except DjangoValidationError as exc:
+            return Response(
+                {"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        total = request.data.get("totalChunks")
+        try:
+            total = int(total)
+            if total < 1:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "totalChunks inválido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        upload = FileModel.objects.create(
+            experiment=experiment,
+            file_name=raw_file_name,
+            total_chunks=total,
+        )
+        return Response({"fileId": upload.id, "extension": extension}, status=201)
+
+
+class ExperimentFileChunkView(APIView):
+    """POST /experiment/files/upload-chunk/ — chunk do upload de arquivo.
+
+    Mesmo protocolo do upload de experimento, mas o ``fileId`` é o id do
+    ``FileModel`` reserva e os ``.part`` são namespaced por ``f<id>``.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=inline_serializer(
+            name="ExperimentFileChunkRequest",
+            fields={
+                "fileId": serializers.IntegerField(),
+                "chunkIndex": serializers.IntegerField(),
+                "chunk": serializers.FileField(),
+            },
+        ),
+        responses=inline_serializer(
+            name="ChunkStatusResponse",
+            fields={"status": serializers.CharField()},
+        ),
+    )
+    def post(self, request):
+        upload = get_object_or_404(
+            FileModel.objects.select_related("experiment"),
+            id=request.data.get("fileId"),
+        )
+        if not can_edit_experiment(request.user, upload.experiment):
+            return Response(
+                {"detail": "Você não tem permissão para alterar este experimento."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        chunk_index = int(request.data["chunkIndex"])
+        chunk = request.FILES["chunk"]
+
+        chunk_dir = os.path.join(settings.MEDIA_ROOT, "chunks")
+        os.makedirs(chunk_dir, exist_ok=True)
+        chunk_path = os.path.join(
+            chunk_dir, f"f{upload.id}_{chunk_index}.part"
+        )
+        with open(chunk_path, "wb") as f:
+            for c in chunk.chunks():
+                f.write(c)
+
+        if chunk_index not in upload.received_chunks:
+            upload.received_chunks.append(chunk_index)
+            upload.save(update_fields=["received_chunks"])
+
+        return Response({"status": "ok"})
+
+
+class ExperimentFileCompleteView(APIView):
+    """POST /experiment/files/complete/ — monta e extrai o upload anexado.
+
+    `.fcs` solto é aglutinado num ZIP; amostras já presentes no experimento
+    (mesmo ``content_guid``/``content_sha256``) são puladas e reportadas.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=inline_serializer(
+            name="ExperimentFileCompleteRequest",
+            fields={
+                "fileId": serializers.IntegerField(),
+                "fileName": serializers.CharField(required=False),
+            },
+        ),
+        responses=inline_serializer(
+            name="ExperimentFileCompleteResponse",
+            fields={
+                "status": serializers.CharField(),
+                "added": serializers.IntegerField(),
+                "skipped": serializers.ListField(child=serializers.CharField()),
+            },
+        ),
+    )
+    def post(self, request):
+        upload = get_object_or_404(
+            FileModel.objects.select_related("experiment"),
+            id=request.data.get("fileId"),
+        )
+        experiment = upload.experiment
+        if not can_edit_experiment(request.user, experiment):
+            return Response(
+                {"detail": "Você não tem permissão para alterar este experimento."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        raw_file_name = request.data.get("fileName") or upload.file_name
+        try:
+            extension = experiment_file_extension(raw_file_name)
+        except DjangoValidationError as exc:
+            return Response(
+                {"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        upload_key = f"f{upload.id}"
+        try:
+            final_path = assemble_chunks(
+                upload_key, upload.total_chunks, extension
+            )
+        except ValueError as e:
+            return Response(
+                {"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if extension == ".fcs":
+            zip_path = os.path.join(settings.MEDIA_ROOT, f"{upload_key}.zip")
+            final_path = wrap_fcs_as_zip(
+                final_path, raw_file_name or upload_key, zip_path
+            )
+
+        try:
+            upload.sha256 = file_sha256(final_path)
+        except OSError:
+            upload.sha256 = None
+        upload.file = final_path
+        upload.file_name = raw_file_name
+        upload.save(update_fields=["file", "file_name", "sha256"])
+
+        skipped: list = []
+        try:
+            extract_metadata_from_zip(upload, skipped=skipped)
+        except Exception as e:
+            logger.error(
+                "Erro ao extrair metadados do upload %s: %s",
+                upload.id,
+                e,
+                exc_info=True,
+            )
+            return Response(
+                {"status": "error", "detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        added = FileDataModel.objects.filter(file=upload).count()
+        return Response(
+            {"status": "done", "added": added, "skipped": skipped},
+            status=status.HTTP_200_OK,
+        )
+
+
+class ExperimentDownloadView(APIView):
+    """GET /experiment/<experiment_id>/download — ZIP reconstruído por subsample.
+
+    O blob guardado é o freezer; a saída é artefato derivado: cada amostra
+    ativa sai em ``<subsample>/<arquivo>.fcs`` (raiz quando sem subsample),
+    refletindo a organização atual do usuário — independente de em qual
+    upload/ZIP o `.fcs` originalmente veio.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, experiment_id):
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        files = (
+            FileDataModel.objects.filter(experiment=experiment, active=True)
+            .select_related("subsample", "file")
+            .order_by("subsample__name", "file_name")
+        )
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+        tmp.close()
+        used_names: set = set()
+        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as out:
+            for fd in files:
+                data = self._read_fcs_bytes(fd)
+                if data is None:
+                    continue
+                folder = f"{fd.subsample.name}/" if fd.subsample else ""
+                arcname = self._unique_name(folder + fd.file_name, used_names)
+                out.writestr(arcname, data)
+
+        handle = open(tmp.name, "rb")
+        response = FileResponse(
+            handle,
+            as_attachment=True,
+            filename=f"{experiment.title}.zip",
+        )
+
+        def _cleanup():
+            handle.close()
+            os.unlink(tmp.name)
+
+        response._resource_closers.append(_cleanup)
+        return response
+
+    @staticmethod
+    def _read_fcs_bytes(fd: FileDataModel) -> bytes | None:
+        """Lê o `.fcs` da amostra no ZIP do upload dela (ou fcs_path legado)."""
+        upload_file = getattr(getattr(fd.file, "file", None), "path", None)
+        entry = fd.source_path or fd.file_name
+        if upload_file and os.path.exists(upload_file):
+            try:
+                with zipfile.ZipFile(upload_file, "r") as zf:
+                    names = zf.namelist()
+                    match = (
+                        [n for n in names if n == entry]
+                        or [n for n in names if n.endswith(f"/{entry}")]
+                    )
+                    if match:
+                        return zf.read(match[0])
+            except (zipfile.BadZipFile, KeyError, OSError):
+                pass
+        if fd.fcs_path and os.path.exists(fd.fcs_path):
+            with open(fd.fcs_path, "rb") as f:
+                return f.read()
+        return None
+
+    @staticmethod
+    def _unique_name(name: str, used: set) -> str:
+        if name not in used:
+            used.add(name)
+            return name
+        base, ext = os.path.splitext(name)
+        i = 2
+        while f"{base}_{i}{ext}" in used:
+            i += 1
+        candidate = f"{base}_{i}{ext}"
+        used.add(candidate)
+        return candidate
