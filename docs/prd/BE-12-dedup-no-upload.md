@@ -1,7 +1,7 @@
 # BE-12 — Dedup no upload: aviso e reutilização de blob
 
-**Repo:** pandora-backend · **Tipo:** feature · **Base:** `chore/ai-setup`
-**Status:** Proposto. Depende de
+**Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
+**Status:** Implementado na branch `feat/file-identity-copy`. Depende de
 [BE-10](BE-10-identidade-de-conteudo-e-blob-compartilhado.md) (`sha256` no
 `FileModel`). UI no front: FE-16.
 
