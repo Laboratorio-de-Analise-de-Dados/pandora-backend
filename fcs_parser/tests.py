@@ -2,8 +2,11 @@ import os
 import shutil
 import tempfile
 import zipfile
+from io import StringIO
+from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.db import IntegrityError
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -16,9 +19,10 @@ from fcs_parser.models import (
     SubsampleModel,
 )
 from fcs_parser.services.process_experiment_file import (
-    _subsample_for,
+    subsample_for_path,
     extract_fcs_from_zip,
 )
+from fcs_parser.services.repair_source_path import repair_experiment_source_paths
 from utils.validators import experiment_file_extension
 
 
@@ -79,9 +83,9 @@ class SubsampleExtractionTestCase(TestCase):
         )
 
     def test_creates_one_subsample_per_zip_directory(self):
-        primeiro = _subsample_for(self.experiment, "tempo_1/a1.fcs")
-        segundo = _subsample_for(self.experiment, "tempo_2/a1.fcs")
-        mesmo = _subsample_for(self.experiment, "tempo_1/a2.fcs")
+        primeiro = subsample_for_path(self.experiment, "tempo_1/a1.fcs")
+        segundo = subsample_for_path(self.experiment, "tempo_2/a1.fcs")
+        mesmo = subsample_for_path(self.experiment, "tempo_1/a2.fcs")
 
         self.assertNotEqual(primeiro.id, segundo.id)
         self.assertEqual(primeiro.id, mesmo.id)
@@ -89,7 +93,7 @@ class SubsampleExtractionTestCase(TestCase):
         self.assertEqual(SubsampleModel.objects.count(), 2)
 
     def test_file_at_zip_root_has_no_subsample(self):
-        self.assertIsNone(_subsample_for(self.experiment, "a1.fcs"))
+        self.assertIsNone(subsample_for_path(self.experiment, "a1.fcs"))
         self.assertEqual(SubsampleModel.objects.count(), 0)
 
     def test_same_name_in_different_directories_coexists(self):
@@ -102,7 +106,7 @@ class SubsampleExtractionTestCase(TestCase):
                 experiment=self.experiment,
                 file_name="a1.fcs",
                 source_path=path,
-                subsample=_subsample_for(self.experiment, path),
+                subsample=subsample_for_path(self.experiment, path),
                 file=file_model,
             )
 
@@ -287,3 +291,127 @@ class SubsampleApiTestCase(TestCase):
             ).status_code,
             403,
         )
+
+
+class RepairSourcePathTestCase(TestCase):
+    """Backfill pelo ZIP: o caminho perdido é redescoberto na fonte de verdade."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="migr", email="migr@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp-legado", type="tipo", created_by=self.user
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="amostras.zip", experiment=self.experiment
+        )
+
+    def _zip(self, *entries: str) -> str:
+        tmp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp_dir, True)
+        zip_path = os.path.join(tmp_dir, "amostras.zip")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for entry in entries:
+                zf.writestr(entry, entry)
+        self.experiment.zip_path = zip_path
+        self.experiment.save(update_fields=["zip_path"])
+        return zip_path
+
+    def _legacy(self, file_name: str, source_path: str = "") -> FileDataModel:
+        return FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name=file_name,
+            source_path=source_path,
+            file=self.file_model,
+        )
+
+    def test_unique_name_in_zip_is_remapped_keeping_the_row(self):
+        self._zip("tempo_1/a1.fcs", "tempo_1/a2.fcs")
+        legacy = self._legacy("a2.fcs")
+
+        report = repair_experiment_source_paths(self.experiment)
+
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.source_path, "tempo_1/a2.fcs")
+        self.assertEqual(legacy.subsample.name, "tempo_1")
+        self.assertTrue(legacy.active)
+        self.assertEqual(report.remapped, [(legacy.id, "tempo_1/a2.fcs")])
+
+    def test_dry_run_reports_without_writing(self):
+        self._zip("tempo_1/a2.fcs")
+        legacy = self._legacy("a2.fcs")
+
+        report = repair_experiment_source_paths(self.experiment, dry_run=True)
+
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.source_path, "")
+        self.assertEqual(report.remapped, [(legacy.id, "tempo_1/a2.fcs")])
+
+    def test_homonyms_are_ambiguous_without_recreate(self):
+        self._zip("tempo_1/a1.fcs", "tempo_2/a1.fcs")
+        legacy = self._legacy("a1.fcs")
+
+        report = repair_experiment_source_paths(self.experiment)
+
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.source_path, "")
+        self.assertTrue(legacy.active)
+        self.assertEqual(
+            sorted(report.ambiguous), ["tempo_1/a1.fcs", "tempo_2/a1.fcs"]
+        )
+        self.assertEqual(report.recreated, [])
+
+    @patch("fcs_parser.services.repair_source_path.readfcs.view")
+    def test_recreate_inactivates_ambiguous_and_rebuilds_from_zip(self, view):
+        view.return_value = ({"$TOT": "10"}, None)
+        self._zip("tempo_1/a1.fcs", "tempo_2/a1.fcs")
+        legacy = self._legacy("a1.fcs")
+
+        repair_experiment_source_paths(self.experiment, recreate=True)
+
+        legacy.refresh_from_db()
+        self.assertFalse(legacy.active)
+        self.assertIsNotNone(legacy.deactivated_at)
+        recreated = FileDataModel.objects.filter(
+            experiment=self.experiment, active=True
+        ).order_by("source_path")
+        self.assertEqual(
+            [f.source_path for f in recreated], ["tempo_1/a1.fcs", "tempo_2/a1.fcs"]
+        )
+        self.assertEqual(
+            [f.subsample.name for f in recreated], ["tempo_1", "tempo_2"]
+        )
+        self.assertEqual(recreated[0].headers, {"$TOT": "10"})
+
+    def test_rows_already_matching_the_zip_are_left_alone(self):
+        self._zip("tempo_1/a1.fcs", "tempo_2/a1.fcs")
+        ok = self._legacy("a1.fcs", source_path="tempo_1/a1.fcs")
+        legacy = self._legacy("a1.fcs")
+
+        report = repair_experiment_source_paths(self.experiment)
+
+        ok.refresh_from_db()
+        legacy.refresh_from_db()
+        self.assertEqual(ok.source_path, "tempo_1/a1.fcs")
+        self.assertEqual(legacy.source_path, "tempo_2/a1.fcs")
+        self.assertEqual(report.remapped, [(legacy.id, "tempo_2/a1.fcs")])
+
+    def test_experiment_without_zip_is_skipped(self):
+        legacy = self._legacy("a1.fcs")
+
+        report = repair_experiment_source_paths(self.experiment)
+
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.source_path, "")
+        self.assertEqual(report.remapped, [])
+
+    def test_command_runs_over_every_experiment(self):
+        self._zip("tempo_1/a2.fcs")
+        legacy = self._legacy("a2.fcs")
+
+        call_command("repair_source_path", stdout=StringIO())
+
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.source_path, "tempo_1/a2.fcs")

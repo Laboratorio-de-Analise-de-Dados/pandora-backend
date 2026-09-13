@@ -5,8 +5,10 @@ def backfill_source_path(apps, schema_editor):
     """Dados antigos não têm o caminho do ZIP; usa o nome do arquivo.
 
     Amostras homônimas no mesmo experimento (o caso que o `source_path` veio
-    resolver) ficam com `source_path` vazio, porque não é possível descobrir
-    retroativamente de qual pasta cada uma veio — a constraint ignora vazios.
+    resolver) ficam com `source_path` vazio — a constraint ignora vazios. O ZIP
+    continua no disco, então o caminho real é redescoberto fora da migração,
+    pelo comando `manage.py repair_source_path`, que pode precisar recriar as
+    amostras ambíguas.
     """
     FileDataModel = apps.get_model("fcs_parser", "FileDataModel")
     seen: set[tuple[int, str]] = set()

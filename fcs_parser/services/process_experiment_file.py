@@ -54,7 +54,7 @@ def assemble_chunks(experiment: ExperimentModel, extension: str = ".zip") -> str
     return final_path
 
 
-def _subsample_for(
+def subsample_for_path(
     experiment: ExperimentModel, relative_path: str
 ) -> SubsampleModel | None:
     """Subsample derivado do diretório do arquivo dentro do ZIP.
@@ -117,7 +117,7 @@ def extract_metadata_from_zip(file_model: FileModel) -> list[str]:
                     experiment=experiment,
                     file_name=file_name,
                     source_path=relative_path.replace(os.sep, "/"),
-                    subsample=_subsample_for(experiment, relative_path),
+                    subsample=subsample_for_path(experiment, relative_path),
                     file=file_model,
                     parquet_path=None,
                 )
@@ -220,7 +220,7 @@ def process_experiment_zip(file_model: FileModel) -> list[str]:
                     experiment=experiment,
                     file_name=file_name,
                     source_path=relative_path.replace(os.sep, "/"),
-                    subsample=_subsample_for(experiment, relative_path),
+                    subsample=subsample_for_path(experiment, relative_path),
                     file=file_model,
                 )
                 file_data.save_dataframe(pd.DataFrame(result.data))
