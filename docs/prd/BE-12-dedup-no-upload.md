@@ -25,15 +25,28 @@ Body: { "sha256": "<hash do arquivo>" }
 - O front calcula o hash do arquivo localmente (Web Crypto) **antes** de
   iniciar o chunked upload. Se `exists`, pergunta ao usuário: reutilizar ou
   subir mesmo assim.
-- Reuso cria `FileDataModel`s novos apontando pro `FileModel` existente —
-  o experimento nasce sem upload de fato.
+- Reuso cria um `FileModel` novo pro experimento apontando pro **mesmo
+  caminho** do blob existente — o experimento nasce sem upload de fato.
 
-### 2. Fallback no `complete/`
+### 2. Reuso explícito no `complete/`
 
-- Se o check não rodou (cliente antigo, race), o `complete/` calcula o hash
-  do blob final e reutiliza o `FileModel` existente mesmo assim — a
-  confirmação do usuário fica implícita no upload; resposta marca
-  `"reused": true` pro front mostrar o aviso depois.
+- `complete/` aceita `sha256` + `reuse: true`: sem chunks, cria o
+  `FileModel` do novo experimento apontando pro caminho do blob doador.
+- Sem `reuse`, o fluxo monta os chunks e grava o `sha256` do blob
+  resultante — reuso nunca é silencioso: a decisão é sempre do usuário no
+  diálogo do front.
+
+### 3. Dedup por amostra (server-side, pós-extração)
+
+Decisão: **o upload continua sendo o ZIP inteiro** — sem unzip/pre-scan no
+cliente; o servidor gerencia tudo. Por isso a dedup por `.fcs` acontece na
+extração, não antes do upload:
+
+- `FileDataModel.content_sha256` (BE-10) identifica cada amostra; o
+  `check-hash` consulta também essa coluna, então um `.fcs` solto bate com
+  amostra dentro de um ZIP anterior.
+- Pós-extração, comparar `content_sha256` das amostras novas com o restante
+  da base permite informar "N amostras já existiam em outros experimentos".
 
 ### Regras
 
@@ -50,13 +63,13 @@ Body: { "sha256": "<hash do arquivo>" }
 
 ## Critérios de aceite
 
-- [ ] Check-hash responde exists/false corretamente.
-- [ ] Reuso cria experimento funcional sem bytes novos no storage.
-- [ ] Upload sem check prévio ainda deduplica no `complete/`.
-- [ ] Blob reutilizado permanece íntegro e intocado.
+- [x] Check-hash responde exists/false corretamente (blob e amostra).
+- [x] Reuso cria experimento funcional sem bytes novos no storage.
+- [x] Blob reutilizado permanece íntegro e intocado.
+- [ ] Aviso pós-extração de amostras já existentes (`content_sha256`).
 
 ## Fora de escopo
 
-- Dedup de `.fcs` **dentro** do ZIP (o hash é do blob; dedup interno usa
-  `content_guid` — BE-10).
+- Manifesto por `.fcs` no upload (pre-scan no cliente) — **descartado**: o
+  upload segue sendo o ZIP inteiro e o servidor gerencia a extração/dedup.
 - UI — FE-16 no pandora-front.
