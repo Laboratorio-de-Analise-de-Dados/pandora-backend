@@ -1205,15 +1205,28 @@ class FileHashCheckView(APIView):
                 {"detail": "sha256 deve ser um hash hexadecimal de 64 caracteres."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        match = (
+        # O hash pode ser do blob (ZIP/.fcs solto → FileModel.sha256) ou de
+        # um .fcs individual já extraído (FileDataModel.content_sha256) —
+        # assim um arquivo solto também bate com amostras dentro de ZIPs.
+        blob = (
             FileModel.objects.filter(sha256=sha256.lower())
+            .order_by("id")
+            .first()
+        )
+        if blob is not None:
+            return Response(
+                {"exists": True, "file_name": blob.file_name},
+                status=status.HTTP_200_OK,
+            )
+        sample = (
+            FileDataModel.objects.filter(content_sha256=sha256.lower())
             .order_by("id")
             .first()
         )
         return Response(
             {
-                "exists": match is not None,
-                "file_name": match.file_name if match else None,
+                "exists": sample is not None,
+                "file_name": sample.file_name if sample else None,
             },
             status=status.HTTP_200_OK,
         )

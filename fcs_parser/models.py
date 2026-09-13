@@ -165,6 +165,11 @@ class FileDataModel(models.Model):
     content_guid = models.CharField(
         max_length=256, null=True, blank=True, db_index=True
     )
+    # SHA-256 do .fcs individual — dedup por amostra, não pelo blob (ZIP)
+    # inteiro. Permite detectar o mesmo arquivo em uploads/ZIPs diferentes.
+    content_sha256 = models.CharField(
+        max_length=64, null=True, blank=True, db_index=True
+    )
     subsample = models.ForeignKey(
         "SubsampleModel",
         null=True,

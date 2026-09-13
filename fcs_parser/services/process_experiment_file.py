@@ -136,6 +136,7 @@ def extract_metadata_from_zip(file_model: FileModel) -> list[str]:
                     file_name=file_name,
                     source_path=relative_path.replace(os.sep, "/"),
                     content_guid=_content_guid(headers),
+                    content_sha256=file_sha256(complete_path),
                     subsample=subsample_for_path(experiment, relative_path),
                     file=file_model,
                     parquet_path=None,
@@ -181,6 +182,7 @@ def extract_metadata_from_fcs(file_model: FileModel) -> list[str]:
         file_name=file_model.file_name,
         source_path=file_model.file_name or "",
         content_guid=_content_guid(headers),
+        content_sha256=file_sha256(fcs_path),
         file=file_model,
         fcs_path=fcs_path,
         parquet_path=None,
@@ -241,6 +243,7 @@ def process_experiment_zip(file_model: FileModel) -> list[str]:
                     file_name=file_name,
                     source_path=relative_path.replace(os.sep, "/"),
                     content_guid=_content_guid(result.headers),
+                    content_sha256=file_sha256(complete_path),
                     subsample=subsample_for_path(experiment, relative_path),
                     file=file_model,
                 )

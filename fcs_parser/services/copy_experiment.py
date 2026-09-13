@@ -92,6 +92,7 @@ def copy_experiment(
             file_name=fd.file_name,
             source_path=fd.source_path,
             content_guid=fd.content_guid,
+            content_sha256=fd.content_sha256,
             subsample=subsample_map.get(fd.subsample_id),
             headers=fd.headers,
             data_set=None,
