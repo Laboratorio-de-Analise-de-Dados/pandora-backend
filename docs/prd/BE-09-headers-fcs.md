@@ -50,6 +50,18 @@ GET /experiment/file/<file_id>/headers
 - [ ] Resposta validada contra arquivo real com `date`/`cyt`/`tot`
       (verificação manual no front, FE-11).
 
+### Achado: `guid` como sinal de identidade
+
+Medido na base de dev (320 `FileDataModel` com headers): **todo** arquivo tem
+`guid` e **zero** duplicados dentro do mesmo experimento — os 64 duplicados
+são todos entre experimentos diferentes (re-upload do mesmo `.fcs`). Ou seja:
+o `guid` identifica o *conteúdo* do arquivo de forma única dentro de um
+experimento, melhor que `source_path` para detectar "mesmo arquivo renomeado/
+movido no ZIP". Mas é um keyword do software de aquisição — arquivos que não
+o gravam (ou derivados/exportados que o regeram) precisam do fallback. Fica
+como candidato a complementar `source_path` na identidade do arquivo
+(ADR-0006), no fluxo de reupload da dívida registrada.
+
 ## Fora de escopo
 
 - Edição de metadados, upload com header sobrescrito, listagem agregada de

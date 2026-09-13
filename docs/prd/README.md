@@ -23,6 +23,8 @@ listagem de organizações (#75), gestão de roles/remoção de membros (#76),
   ver BE-01 e [ADR-0004](../adr/0004-zip-como-fonte-de-verdade-parquet-como-cache.md).
 - Fluxo de reupload do mesmo arquivo (reativar × sobrescrever × criar nova), com
   identificação por hash — ver BE-01. Com o `source_path` do BE-07, "mesmo
-  caminho = mesmo arquivo" já é a base.
+  caminho = mesmo arquivo" já é a base. O `guid` do header FCS é um sinal
+  complementar medido: único dentro de experimento na base atual (duplicatas
+  só em re-upload entre experimentos) — ver BE-09.
 - Migrar validações inline das views antigas para serializers —
   [ADR-0009](../adr/0009-validacao-em-serializers.md).
