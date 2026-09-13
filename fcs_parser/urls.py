@@ -7,6 +7,7 @@ from .views import (
     ExperimentInitView,
     ExperimentListView,
     FileDensityView,
+    FileHeadersView,
     FileStatsView,
     FileSubsampleView,
     GetExperimentFiles,
@@ -30,6 +31,7 @@ urlpatterns = [
     path("file/<int:file_id>/density", FileDensityView.as_view()),
     path("file/<int:file_id>/recompute", RecomputeFileDataView.as_view()),
     path("file/<int:file_id>/stats", FileStatsView.as_view()),
+    path("file/<int:file_id>/headers", FileHeadersView.as_view()),
     path("file/<int:file_id>/disable", DisableFileDataView.as_view()),
     path("file/<int:file_id>/enable", EnableFileDataView.as_view()),
     path(
