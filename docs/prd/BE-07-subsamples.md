@@ -2,7 +2,7 @@
 
 **Repo:** pandora-backend · **Item do doc:** — (levantado em 12/09) · **Tipo:** feature · **Base:** `main`
 **Branch sugerida:** `feat/subsamples`
-**Status:** parte 1 (identidade + CRUD) no PR #78. Parte 2 (subsample como escopo de propagação) **pendente**.
+**Status:** partes 1 (identidade + CRUD) e 2 (subsample como escopo de propagação) no PR #78.
 **ADRs:** [0006](../adr/0006-identidade-de-amostra-e-subsample.md), [0002](../adr/0002-escopo-explicito-de-propagacao.md), [0005](../adr/0005-api-nunca-deleta.md)
 
 ## Problema
@@ -53,14 +53,16 @@ PATCH  /experiment/file/<file_id>/subsample           { "subsample": 12 | null }
   experimento em `PATCH .../subsample` → 400.
 - Nome duplicado → 400 (`IntegrityError` traduzido), não 500.
 
-### Parte 2 — subsample como escopo (pendente)
+### Parte 2 — subsample como escopo
 
 - `scope` passa a aceitar `"subsample"` nos endpoints que já têm
   `"file" | "experiment"`: exclusão em lote, nome/cor e geometria.
 - `"subsample"` = amostras ativas do mesmo subsample da amostra alvo; amostra
   sem subsample cai em `"file"`.
-- `dry_run` continua valendo: a confirmação da UI lista as amostras do subsample
-  que seriam sobrescritas.
+- `PATCH /analytics/gate/<id>` aceita `dry_run`: nada é gravado e a resposta
+  devolve `applied_scope`, `conflicts` e `affected` (gate, amostra,
+  `source_path` e campos que mudariam), para a confirmação da UI listar as
+  amostras que seriam sobrescritas.
 - A família de `copied_from` continua sendo o conjunto de candidatos
   ([ADR-0003](../adr/0003-linhagem-de-gates-por-copied-from.md)); o escopo só
   restringe esse conjunto — nunca cria vínculo novo.
@@ -82,7 +84,8 @@ PATCH  /experiment/file/<file_id>/subsample           { "subsample": 12 | null }
   `fcs_parser/migrations/0010_*`, `0011_backfill_source_path.py`,
   `fcs_parser/services/repair_source_path.py`,
   `fcs_parser/management/commands/repair_source_path.py`.
-- Parte 2: `analytics/gate_scope.py`, `analytics/views.py`.
+- Parte 2: `analytics/gate_scope.py`, `analytics/serializers.py`,
+  `analytics/views.py`.
 
 ## Critérios de aceite
 
@@ -97,9 +100,12 @@ PATCH  /experiment/file/<file_id>/subsample           { "subsample": 12 | null }
 - [x] `repair_source_path` remapeia nome único no ZIP sem inativar nada, marca
       homônimos como ambíguos e, com `--recreate`, inativa as linhas antigas e
       recria uma amostra por entrada do ZIP; `--dry-run` não grava nada.
-- [ ] `scope="subsample"` propaga só nas amostras do subsample; amostra sem
-      subsample se comporta como `scope="file"`.
-- [ ] `dry_run` com `scope="subsample"` lista exatamente as amostras afetadas.
+- [x] `scope="subsample"` propaga só nas amostras do subsample; amostra sem
+      subsample se comporta como `scope="file"` (`applied_scope` no retorno).
+- [x] Geometria com `scope="subsample"` mantém a cópia atachada à família;
+      `scope="file"` continua desanexando.
+- [x] `dry_run` com `scope="subsample"` lista exatamente as amostras afetadas
+      e não grava nada.
 
 ## Fora de escopo
 
