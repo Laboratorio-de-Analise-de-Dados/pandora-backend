@@ -100,11 +100,64 @@ class FileModel(models.Model):
         return f"File {self.id} – {self.file_name}"
 
 
+class SubsampleModel(models.Model):
+    """Agrupamento de amostras dentro de um experimento.
+
+    A engine cria um subsample por diretório encontrado dentro do ZIP
+    (``tempo_1/``, ``tempo_2/`` ...), mas o vínculo amostra ↔ subsample é
+    editável na UI: o cliente pode renomear o subsample e mover amostras
+    entre eles sem que a extração reescreva a escolha dele.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    experiment = models.ForeignKey(
+        ExperimentModel, on_delete=models.CASCADE, related_name="subsamples"
+    )
+    name = models.CharField(max_length=256)
+    # Diretório relativo dentro do ZIP que originou o subsample.
+    # Vazio quando o subsample foi criado pelo usuário na UI.
+    source_path = models.CharField(max_length=512, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_subsamples",
+    )
+    # Nada é deletado: o subsample é inativado e suas amostras voltam para
+    # "sem subsample".
+    active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        db_table = "subsamples"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["experiment", "name"],
+                name="unique_subsample_name_per_experiment",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"Subsample {self.id} – {self.name}"
+
+
 class FileDataModel(models.Model):
     """Model for Data on each file"""
 
     id = models.BigAutoField(primary_key=True)
     file_name = models.CharField(max_length=256, null=True)
+    # Caminho relativo dentro do ZIP (ex.: "tempo_1/a1.fcs"). É a identidade
+    # real da amostra: dois arquivos podem ter o mesmo `file_name` em pastas
+    # diferentes.
+    source_path = models.CharField(max_length=512, blank=True, default="")
+    subsample = models.ForeignKey(
+        "SubsampleModel",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="files",
+    )
     experiment = models.ForeignKey(ExperimentModel, on_delete=models.CASCADE)
     headers = models.JSONField()
     # Legacy: data_set JSON in the DB. New rows use Parquet on disk.
@@ -134,6 +187,13 @@ class FileDataModel(models.Model):
 
     class Meta:
         db_table = "file_data"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["experiment", "source_path"],
+                condition=~models.Q(source_path=""),
+                name="unique_source_path_per_experiment",
+            )
+        ]
 
     def __str__(self) -> str:
         return f"FileData {self.id} – {self.file_name}"
@@ -194,7 +254,9 @@ class FileDataModel(models.Model):
         if not getattr(experiment, "zip_path", None):
             return None
 
-        fcs_path = extract_fcs_from_zip(experiment, self.file_name)
+        fcs_path = extract_fcs_from_zip(
+            experiment, self.source_path or self.file_name
+        )
         if fcs_path is None:
             return None
 

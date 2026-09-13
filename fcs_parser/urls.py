@@ -8,11 +8,14 @@ from .views import (
     ExperimentListView,
     FileDensityView,
     FileStatsView,
+    FileSubsampleView,
     GetExperimentFiles,
     ListFileParams,
     ProcessFileDataView,
     RecomputeFileDataView,
     RetrieveDeleteExperimentView,
+    SubsampleDetailView,
+    SubsampleListCreateView,
     UploadChunkView,
 )
 
@@ -29,6 +32,21 @@ urlpatterns = [
     path("file/<int:file_id>/stats", FileStatsView.as_view()),
     path("file/<int:file_id>/disable", DisableFileDataView.as_view()),
     path("file/<int:file_id>/enable", EnableFileDataView.as_view()),
+    path(
+        "file/<int:file_id>/subsample",
+        FileSubsampleView.as_view(),
+        name="file_subsample",
+    ),
+    path(
+        "<int:experiment_id>/subsamples/",
+        SubsampleListCreateView.as_view(),
+        name="subsample_list_create",
+    ),
+    path(
+        "<int:experiment_id>/subsamples/<int:pk>/",
+        SubsampleDetailView.as_view(),
+        name="subsample_detail",
+    ),
     path("<str:experiment_id>/", RetrieveDeleteExperimentView.as_view()),
     path("file/<int:file_id>/process", ProcessFileDataView.as_view()),
     path("", ExperimentListView.as_view())

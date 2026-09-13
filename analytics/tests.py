@@ -3,11 +3,16 @@ from rest_framework.test import APIClient
 
 from accounts.models import User
 from analytics.models import DashboardModel, GateModel
-from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
+from fcs_parser.models import (
+    ExperimentModel,
+    FileDataModel,
+    FileModel,
+    SubsampleModel,
+)
 
 
-class GateScopeTestCase(TestCase):
-    """BE-03/BE-04: exclusão em lote e propagação de nome/cor por escopo."""
+class GateFixtureMixin:
+    """Experimento com três amostras e uma família de cópias de `P1`."""
 
     def setUp(self):
         self.user = User.objects.create_user(
@@ -62,6 +67,13 @@ class GateScopeTestCase(TestCase):
 
     def _delete_batch(self, **payload):
         return self.client.post("/analytics/gate/delete-batch", payload, format="json")
+
+    def _patch_gate(self, gate, **payload):
+        return self.client.patch(f"/analytics/gate/{gate.id}", payload, format="json")
+
+
+class GateScopeTestCase(GateFixtureMixin, TestCase):
+    """BE-03/BE-04: exclusão em lote e propagação de nome/cor por escopo."""
 
     def test_scope_file_deletes_only_current_sample(self):
         res = self._delete_batch(source_gate_ids=[self.source.id])
@@ -125,9 +137,6 @@ class GateScopeTestCase(TestCase):
 
         self.assertEqual(res.status_code, 403)
         self.assertTrue(GateModel.objects.filter(id=self.source.id).exists())
-
-    def _patch_gate(self, gate, **payload):
-        return self.client.patch(f"/analytics/gate/{gate.id}", payload, format="json")
 
     def test_patch_file_scope_does_not_propagate(self):
         res = self._patch_gate(self.source, name="CD4+", color="#ff0000")
@@ -335,3 +344,103 @@ class GateScopeTestCase(TestCase):
         self.assertEqual(res.status_code, 403)
         self.copy_b.refresh_from_db()
         self.assertEqual(self.copy_b.name, "P1")
+
+
+class GateSubsampleScopeTestCase(GateFixtureMixin, TestCase):
+    """BE-07 parte 2: `scope="subsample"` restringe o lote ao subsample."""
+
+    def setUp(self):
+        super().setUp()
+        self.tempo_1 = SubsampleModel.objects.create(
+            experiment=self.experiment, name="tempo_1", source_path="tempo_1"
+        )
+        self.tempo_2 = SubsampleModel.objects.create(
+            experiment=self.experiment, name="tempo_2", source_path="tempo_2"
+        )
+        # a e b no mesmo subsample; c em outro.
+        for file_data, subsample in (
+            (self.file_a, self.tempo_1),
+            (self.file_b, self.tempo_1),
+            (self.file_c, self.tempo_2),
+        ):
+            file_data.subsample = subsample
+            file_data.save(update_fields=["subsample"])
+
+    def test_patch_subsample_scope_propagates_only_inside_subsample(self):
+        res = self._patch_gate(self.source, name="CD4+", scope="subsample")
+
+        self.assertEqual(res.status_code, 200)
+        self.copy_b.refresh_from_db()
+        self.copy_c.refresh_from_db()
+        self.assertEqual(self.copy_b.name, "CD4+")
+        self.assertEqual(self.copy_c.name, "P1")
+        self.assertEqual(res.data["propagated_gate_ids"], [self.copy_b.id])
+        self.assertEqual(res.data["applied_scope"], "subsample")
+
+    def test_patch_subsample_scope_falls_back_to_file_without_subsample(self):
+        self.file_a.subsample = None
+        self.file_a.save(update_fields=["subsample"])
+
+        res = self._patch_gate(self.source, name="CD4+", scope="subsample")
+
+        self.assertEqual(res.status_code, 200)
+        self.copy_b.refresh_from_db()
+        self.assertEqual(self.copy_b.name, "P1")
+        self.assertEqual(res.data["propagated_gate_ids"], [])
+        self.assertEqual(res.data["applied_scope"], "file")
+
+    def test_patch_subsample_scope_keeps_copy_attached_on_geometry(self):
+        coords = {
+            "type": "rectangle",
+            "x_axis": "FSC-A",
+            "y_axis": "SSC-A",
+            "startX": 0,
+            "endX": 1,
+            "startY": 0,
+            "endY": 1,
+        }
+
+        res = self._patch_gate(self.copy_b, gate_coordinates=coords, scope="subsample")
+
+        self.assertEqual(res.status_code, 200)
+        self.copy_b.refresh_from_db()
+        self.copy_c.refresh_from_db()
+        self.source.refresh_from_db()
+        self.assertEqual(self.copy_b.copied_from_id, self.source.id)
+        self.assertEqual(self.source.gate_coordinates, coords)
+        self.assertNotEqual(self.copy_c.gate_coordinates, coords)
+
+    def test_dry_run_lists_affected_samples_without_writing(self):
+        res = self._patch_gate(
+            self.source, name="CD4+", scope="subsample", dry_run=True
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["dry_run"])
+        self.assertEqual(
+            [item["file_data_id"] for item in res.data["affected"]], [self.file_b.id]
+        )
+        self.source.refresh_from_db()
+        self.copy_b.refresh_from_db()
+        self.assertEqual(self.source.name, "P1")
+        self.assertEqual(self.copy_b.name, "P1")
+
+    def test_delete_batch_subsample_scope_keeps_other_subsamples(self):
+        res = self._delete_batch(source_gate_ids=[self.source.id], scope="subsample")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(GateModel.objects.filter(id=self.copy_b.id).exists())
+        self.assertTrue(GateModel.objects.filter(id=self.copy_c.id).exists())
+        self.assertTrue(GateModel.objects.filter(id=self.source.id).exists())
+
+    def test_delete_batch_subsample_scope_without_subsample_hits_only_source(self):
+        self.file_a.subsample = None
+        self.file_a.save(update_fields=["subsample"])
+
+        res = self._delete_batch(
+            source_gate_ids=[self.source.id], scope="subsample", include_source=True
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(GateModel.objects.filter(id=self.source.id).exists())
+        self.assertTrue(GateModel.objects.filter(id=self.copy_b.id).exists())

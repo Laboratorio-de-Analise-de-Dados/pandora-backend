@@ -4,13 +4,30 @@ Um gate aplicado em várias amostras (`ApplyGateView`) gera cópias ligadas pela
 FK `copied_from`. Operar "em todas as amostras do experimento" significa agir
 sobre essa família de cópias — nunca sobre gates de outros experimentos, e
 nunca sobre amostras desabilitadas.
+
+`subsample` é o mesmo conjunto restrito às amostras do subsample da amostra
+alvo; ele nunca amplia a família de cópias, apenas a recorta.
 """
 
 from analytics.models import GateModel
+from fcs_parser.models import FileDataModel
 
 SCOPE_FILE = "file"
 SCOPE_EXPERIMENT = "experiment"
-SCOPE_CHOICES = [SCOPE_FILE, SCOPE_EXPERIMENT]
+SCOPE_SUBSAMPLE = "subsample"
+SCOPE_CHOICES = [SCOPE_FILE, SCOPE_EXPERIMENT, SCOPE_SUBSAMPLE]
+PROPAGATING_SCOPES = frozenset({SCOPE_EXPERIMENT, SCOPE_SUBSAMPLE})
+
+
+def effective_scope(scope: str, file_data: FileDataModel) -> str:
+    """Resolve `subsample` para `file` quando a amostra não está agrupada.
+
+    Sem subsample não existe conjunto a propagar, e tratar isso como escopo de
+    experimento seria ampliar o pedido do usuário.
+    """
+    if scope == SCOPE_SUBSAMPLE and file_data.subsample_id is None:
+        return SCOPE_FILE
+    return scope
 
 
 def copy_family_ids(gate: GateModel) -> set[int]:
@@ -41,13 +58,20 @@ def gates_in_experiment_scope(
     gate: GateModel,
     target_file_data_ids: list[int] | None = None,
     include_source: bool = False,
+    scope: str = SCOPE_EXPERIMENT,
 ):
-    """Cópias do gate nas outras amostras (ativas) do mesmo experimento."""
+    """Cópias do gate nas outras amostras (ativas) do mesmo experimento.
+
+    Com `scope="subsample"` o conjunto fica restrito às amostras do subsample da
+    amostra de origem.
+    """
     queryset = GateModel.objects.filter(
         id__in=copy_family_ids(gate),
         file_data__experiment_id=gate.file_data.experiment_id,
         file_data__active=True,
     )
+    if scope == SCOPE_SUBSAMPLE:
+        queryset = queryset.filter(file_data__subsample_id=gate.file_data.subsample_id)
     if not include_source:
         queryset = queryset.exclude(file_data_id=gate.file_data_id)
     if target_file_data_ids:

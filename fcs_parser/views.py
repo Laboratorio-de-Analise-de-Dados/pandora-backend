@@ -15,6 +15,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import generics, serializers
 from rest_framework.views import APIView
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from utils.density import (
     DEFAULT_COFACTOR,
@@ -29,13 +30,19 @@ from utils.density import (
     set_cached_density,
     subsample_scatter,
 )
-from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
+from fcs_parser.models import (
+    ExperimentModel,
+    FileDataModel,
+    FileModel,
+    SubsampleModel,
+)
 from fcs_parser.permissions import can_edit_experiment, experiments_visible_to
 from fcs_parser.serializers import (
     ExperimentSerializer,
     ListExperimentSerializer,
     ListFileDataSerializer,
     ParamListDataSerializer,
+    SubsampleSerializer,
     UpdateExperimentSerializer,
 )
 from fcs_parser.services.process_experiment_file import assemble_chunks
@@ -424,6 +431,142 @@ class EnableFileDataView(APIView):
                 "deactivated_at": file_data.deactivated_at,
             },
             status=status.HTTP_200_OK,
+        )
+
+
+class SubsampleListCreateView(generics.ListCreateAPIView):
+    """GET/POST /experiment/<experiment_id>/subsamples/
+
+    A engine cria os subsamples a partir dos diretórios do ZIP; este endpoint
+    existe para o cliente listar e criar agrupamentos próprios na UI.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = SubsampleSerializer
+
+    def get_experiment(self):
+        return get_object_or_404(
+            ExperimentModel, id=self.kwargs["experiment_id"]
+        )
+
+    def get_queryset(self):
+        queryset = SubsampleModel.objects.filter(
+            experiment_id=self.kwargs["experiment_id"]
+        ).prefetch_related("files")
+        if self.request.query_params.get("include_inactive") != "true":
+            queryset = queryset.filter(active=True)
+        return queryset.order_by("name")
+
+    def create(self, request, *args, **kwargs):
+        experiment = self.get_experiment()
+        if not can_edit_experiment(request.user, experiment):
+            return Response(
+                {"detail": "Você não tem permissão para alterar este experimento."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            serializer.save(experiment=experiment, created_by=request.user)
+        except IntegrityError:
+            return Response(
+                {"name": "Já existe um subsample com esse nome neste experimento."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class SubsampleDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """PATCH renomeia o subsample; DELETE apenas o inativa (nada é deletado).
+
+    Ao inativar, as amostras do subsample voltam para "sem subsample" — os
+    dados e os gates seguem intactos.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = SubsampleSerializer
+
+    def get_queryset(self):
+        return SubsampleModel.objects.filter(
+            experiment_id=self.kwargs["experiment_id"]
+        ).select_related("experiment")
+
+    def check_can_edit(self, subsample):
+        if not can_edit_experiment(self.request.user, subsample.experiment):
+            raise PermissionDenied(
+                "Você não tem permissão para alterar este experimento."
+            )
+
+    def perform_update(self, serializer):
+        self.check_can_edit(serializer.instance)
+        try:
+            serializer.save()
+        except IntegrityError:
+            raise serializers.ValidationError(
+                {"name": "Já existe um subsample com esse nome neste experimento."}
+            )
+
+    def perform_destroy(self, instance):
+        self.check_can_edit(instance)
+        if instance.active:
+            instance.active = False
+            instance.save(update_fields=["active"])
+        instance.files.update(subsample=None)
+
+
+class FileSubsampleView(APIView):
+    """PATCH /experiment/file/<file_id>/subsample — move a amostra de subsample.
+
+    A engine sugere o vínculo pelo diretório do ZIP, mas quem decide é o
+    cliente: `{"subsample": <id>}` move e `{"subsample": null}` desagrupa.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=inline_serializer(
+            name="FileSubsampleRequest",
+            fields={
+                "subsample": serializers.IntegerField(allow_null=True),
+            },
+        ),
+        responses=ListFileDataSerializer,
+    )
+    def patch(self, request, file_id):
+        file_data = get_object_or_404(
+            FileDataModel.objects.select_related("experiment"), id=file_id
+        )
+        if not can_edit_experiment(request.user, file_data.experiment):
+            return Response(
+                {"detail": "Você não tem permissão para alterar este experimento."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if "subsample" not in request.data:
+            return Response(
+                {"subsample": "Campo obrigatório (use null para desagrupar)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        subsample_id = request.data.get("subsample")
+        subsample = None
+        if subsample_id is not None:
+            subsample = SubsampleModel.objects.filter(
+                id=subsample_id,
+                experiment_id=file_data.experiment_id,
+                active=True,
+            ).first()
+            if subsample is None:
+                return Response(
+                    {"subsample": "Subsample inválido para este experimento."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        file_data.subsample = subsample
+        file_data.save(update_fields=["subsample"])
+
+        return Response(
+            ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
         )
 
 

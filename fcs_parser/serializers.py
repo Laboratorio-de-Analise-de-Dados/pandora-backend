@@ -2,7 +2,7 @@ from rest_framework import serializers
 from accounts.serializers import OrganizationListSerializer
 from analytics.serializers import ListGateSerializer
 from utils.validators import validate_zip_file
-from .models import ExperimentModel, FileDataModel
+from .models import ExperimentModel, FileDataModel, SubsampleModel
 
 
 class ExperimentSerializer(serializers.ModelSerializer):
@@ -30,14 +30,47 @@ class ExperimentSerializer(serializers.ModelSerializer):
         return super().validate(data)
 
 
+class SubsampleSerializer(serializers.ModelSerializer):
+    files_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SubsampleModel
+        fields = [
+            "id",
+            "name",
+            "source_path",
+            "active",
+            "created_at",
+            "files_count",
+        ]
+        read_only_fields = ["id", "source_path", "active", "created_at"]
+
+    def get_files_count(self, obj) -> int:
+        return obj.files.filter(active=True).count()
+
+    def validate_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError("Nome do subsample é obrigatório.")
+        return name
+
+
 class ListFileDataSerializer(serializers.ModelSerializer):
 
     gates = ListGateSerializer(many=True, read_only=True)
 
     class Meta:
         model = FileDataModel
-        fields = ["id", "file_name", "gates", "active", "deactivated_at"]
-        read_only_fields = ["id", "active", "deactivated_at"]
+        fields = [
+            "id",
+            "file_name",
+            "source_path",
+            "subsample",
+            "gates",
+            "active",
+            "deactivated_at",
+        ]
+        read_only_fields = ["id", "source_path", "active", "deactivated_at"]
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):

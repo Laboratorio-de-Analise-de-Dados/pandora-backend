@@ -16,7 +16,12 @@ import pandas as pd
 import readfcs
 from django.conf import settings
 
-from fcs_parser.models import ExperimentModel, FileDataModel, FileModel
+from fcs_parser.models import (
+    ExperimentModel,
+    FileDataModel,
+    FileModel,
+    SubsampleModel,
+)
 from fcs_parser.services.process_fcs import FCSResult, process_fcs_file
 
 logger = logging.getLogger(__name__)
@@ -49,6 +54,27 @@ def assemble_chunks(experiment: ExperimentModel, extension: str = ".zip") -> str
     return final_path
 
 
+def subsample_for_path(
+    experiment: ExperimentModel, relative_path: str
+) -> SubsampleModel | None:
+    """Subsample derivado do diretório do arquivo dentro do ZIP.
+
+    Arquivos na raiz do ZIP não ganham subsample (``None``) — o cliente pode
+    criar um e mover as amostras na UI. Diretórios aninhados viram um nome
+    único com ``/`` (ex.: ``tempo_1/controles``).
+    """
+    directory = os.path.dirname(relative_path).replace(os.sep, "/").strip("/")
+    if not directory:
+        return None
+
+    subsample, _ = SubsampleModel.objects.get_or_create(
+        experiment=experiment,
+        source_path=directory,
+        defaults={"name": directory},
+    )
+    return subsample
+
+
 def extract_metadata_from_zip(file_model: FileModel) -> list[str]:
     """Extract only metadata (headers + channel names) from each .fcs in the ZIP.
 
@@ -77,6 +103,7 @@ def extract_metadata_from_zip(file_model: FileModel) -> list[str]:
                     continue
 
                 complete_path = os.path.join(root, file_name)
+                relative_path = os.path.relpath(complete_path, directory_path)
                 headers, _ = readfcs.view(complete_path)
                 channels_df = readfcs.ReadFCS(complete_path).channels
                 channel_names = channels_df["PnN"].tolist()
@@ -89,6 +116,8 @@ def extract_metadata_from_zip(file_model: FileModel) -> list[str]:
                     data_set=None,
                     experiment=experiment,
                     file_name=file_name,
+                    source_path=relative_path.replace(os.sep, "/"),
+                    subsample=subsample_for_path(experiment, relative_path),
                     file=file_model,
                     parquet_path=None,
                 )
@@ -131,6 +160,7 @@ def extract_metadata_from_fcs(file_model: FileModel) -> list[str]:
         data_set=None,
         experiment=experiment,
         file_name=file_model.file_name,
+        source_path=file_model.file_name or "",
         file=file_model,
         fcs_path=fcs_path,
         parquet_path=None,
@@ -178,6 +208,7 @@ def process_experiment_zip(file_model: FileModel) -> list[str]:
                     continue
 
                 complete_path = os.path.join(root, file_name)
+                relative_path = os.path.relpath(complete_path, directory_path)
                 result: FCSResult = process_fcs_file(complete_path)
 
                 if not values:
@@ -188,6 +219,8 @@ def process_experiment_zip(file_model: FileModel) -> list[str]:
                     data_set=None,
                     experiment=experiment,
                     file_name=file_name,
+                    source_path=relative_path.replace(os.sep, "/"),
+                    subsample=subsample_for_path(experiment, relative_path),
                     file=file_model,
                 )
                 file_data.save_dataframe(pd.DataFrame(result.data))
@@ -215,6 +248,10 @@ def process_experiment_zip(file_model: FileModel) -> list[str]:
 def extract_fcs_from_zip(experiment: ExperimentModel, file_name: str) -> str | None:
     """Extract a single .fcs from the experiment's ZIP (on-demand).
 
+    ``file_name`` pode ser o caminho relativo dentro do ZIP
+    (``tempo_1/a1.fcs``) — preferível, porque nomes repetidos em pastas
+    diferentes são amostras distintas — ou só o nome do arquivo (legado).
+
     Returns the path to the extracted file inside a temp directory,
     or ``None`` if the ZIP or entry is not found.
     The caller is responsible for cleaning up the file after use.
@@ -228,8 +265,11 @@ def extract_fcs_from_zip(experiment: ExperimentModel, file_name: str) -> str | N
 
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
-            # Find the entry matching file_name (may be nested in subdirs).
-            matching = [n for n in zf.namelist() if n.endswith(file_name)]
+            names = zf.namelist()
+            # Caminho relativo casa exato; nome solto cai no sufixo (legado).
+            matching = [n for n in names if n == file_name] or [
+                n for n in names if n.endswith(f"/{file_name}")
+            ]
             if not matching:
                 return None
             zf.extract(matching[0], extract_dir)
