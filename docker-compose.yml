@@ -3,7 +3,7 @@
 # docker-compose.prod.yml com secrets/vars do CI.
 services:
   db:
-    image: postgres:16
+    image: postgres:18
     container_name: pandora_db
     environment:
       POSTGRES_DB: "${POSTGRES_DB:-pandora_db}"
@@ -12,7 +12,9 @@ services:
     ports:
       - 5432:5432
     volumes:
-      - db_data:/var/lib/postgresql/data
+      # postgres:18+ usa layout versionado (data/18/docker); o volume monta
+      # no diretório pai — não mudar para .../data ou o cluster não é achado
+      - db_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]
       interval: 10s
@@ -30,6 +32,7 @@ services:
     env_file:
       - .env
     environment:
+      DJANGO_SETTINGS_MODULE: pandora.settings
       SECRET_KEY: "${SECRET_KEY:-dev-insecure-secret-key}"
       DATABASE_NAME: "${POSTGRES_DB:-pandora_db}"
       DATABASE_USER: "${POSTGRES_USER:-postgres}"

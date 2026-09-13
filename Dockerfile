@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Definir settings do Django
-ENV DJANGO_SETTINGS_MODULE=citosharp.settings
+ENV DJANGO_SETTINGS_MODULE=pandora.settings
 
 # Argumento para passar SECRET_KEY no build
 ARG SECRET_KEY
@@ -31,4 +31,4 @@ RUN python manage.py collectstatic --noinput
 EXPOSE 8000
 
 # Comando padrão
-CMD ["gunicorn", "citosharp.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120"]
+CMD ["gunicorn", "pandora.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120"]

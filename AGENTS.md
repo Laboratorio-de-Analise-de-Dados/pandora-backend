@@ -41,7 +41,7 @@ accounts/     Auth JWT, usuários, organizações, RBAC (Membership/Role), convi
 fcs_parser/   Upload chunked, parsing FCS, FileData, Parquet, subsamples
 analytics/    Gates, estatísticas, density/heatmap, escopo de propagação
 utils/        Pacote compartilhado na raiz (density, validators, mixins)
-citosharp/    Projeto Django (settings, urls raiz, wsgi/asgi)
+pandora/    Projeto Django (settings, urls raiz, wsgi/asgi)
 ```
 
 - Lógica de negócio → `fcs_parser/services/` e `analytics/` (nunca na view).

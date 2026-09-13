@@ -1,4 +1,4 @@
-# Pandora Backend (citosharp)
+# Pandora Backend
 
 Backend da plataforma **Pandora** para análise de dados de **citometria de fluxo**.
 Permite autenticação via JWT, gestão de organizações/usuários, upload e
@@ -453,7 +453,7 @@ python manage.py spectacular --file schema.yml
 │   ├── density.py       #   density engine (heatmap, scatter, histograma)
 │   ├── mixins.py        #   SerializerByMethodMixin
 │   └── validators.py    #   validação de ZIP/extensão
-├── citosharp/           # configuração do projeto Django (settings, urls)
+├── pandora/           # configuração do projeto Django (settings, urls)
 ├── docs/                # documentação adicional (ver server_config.md)
 ├── docker-compose.yml / docker-compose.prod.yml
 └── requirements.txt
