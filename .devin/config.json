@@ -1,0 +1,44 @@
+{
+	"permissions": {
+		"allow": [
+			"Read(**)",
+			"Exec(TEST=1 python manage.py test*)",
+			"Exec(python manage.py check*)",
+			"Exec(python manage.py test*)",
+			"Exec(black*)",
+			"Exec(pip*)",
+			"Exec(git status*)",
+			"Exec(git diff*)",
+			"Exec(git log*)",
+			"Exec(git show*)",
+			"Exec(git branch*)",
+			"Exec(git add*)",
+			"Exec(git commit*)"
+		],
+		"ask": [
+			"Exec(git push*)",
+			"Exec(git checkout*)",
+			"Exec(git switch*)",
+			"Exec(python manage.py makemigrations*)",
+			"Exec(python manage.py migrate*)",
+			"Exec(python manage.py shell*)",
+			"Exec(python manage.py repair_source_path*)",
+			"Exec(docker*)",
+			"Exec(celery*)",
+			"Write(**/.env*)",
+			"Read(**/.env*)"
+		],
+		"deny": [
+			"Exec(sudo*)",
+			"Exec(rm -rf*)",
+			"Exec(git push --force*)",
+			"Exec(git push -f*)",
+			"Exec(git config*)",
+			"Exec(*dropdb*)",
+			"Exec(*DROP TABLE*)",
+			"Exec(**/manage.py flush*)",
+			"Write(**/*.pem)",
+			"Write(**/*_rsa*)"
+		]
+	}
+}
