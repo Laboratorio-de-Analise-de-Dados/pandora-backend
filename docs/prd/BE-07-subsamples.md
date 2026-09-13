@@ -30,6 +30,12 @@ Consequências:
 - Reextração do FCS casa caminho exato e só cai no sufixo para dados legados.
 - Migration de backfill: `source_path = file_name` quando o nome é único no
   experimento; homônimos antigos ficam vazios.
+- `manage.py repair_source_path [--experiment N] [--recreate] [--dry-run]`
+  redescobre o caminho abrindo o ZIP: nome único no ZIP é remapeado preservando
+  a linha (gates e Parquet intactos); nome repetido é ambíguo e só com
+  `--recreate` as linhas antigas são inativadas e as amostras recriadas a partir
+  do ZIP, assumindo a perda das análises delas
+  ([ADR-0006](../adr/0006-identidade-de-amostra-e-subsample.md)).
 
 #### Contrato
 
@@ -73,7 +79,9 @@ PATCH  /experiment/file/<file_id>/subsample           { "subsample": 12 | null }
 
 - `fcs_parser/models.py`, `fcs_parser/serializers.py`, `fcs_parser/views.py`,
   `fcs_parser/urls.py`, `fcs_parser/services/process_experiment_file.py`,
-  `fcs_parser/migrations/0010_*`, `0011_backfill_source_path.py`.
+  `fcs_parser/migrations/0010_*`, `0011_backfill_source_path.py`,
+  `fcs_parser/services/repair_source_path.py`,
+  `fcs_parser/management/commands/repair_source_path.py`.
 - Parte 2: `analytics/gate_scope.py`, `analytics/views.py`.
 
 ## Critérios de aceite
@@ -86,6 +94,9 @@ PATCH  /experiment/file/<file_id>/subsample           { "subsample": 12 | null }
 - [x] Criar/renomear/inativar subsample e mover amostra (inclusive `null`) pela
       API, com autorização por experimento.
 - [x] Backfill não quebra experimentos antigos.
+- [x] `repair_source_path` remapeia nome único no ZIP sem inativar nada, marca
+      homônimos como ambíguos e, com `--recreate`, inativa as linhas antigas e
+      recria uma amostra por entrada do ZIP; `--dry-run` não grava nada.
 - [ ] `scope="subsample"` propaga só nas amostras do subsample; amostra sem
       subsample se comporta como `scope="file"`.
 - [ ] `dry_run` com `scope="subsample"` lista exatamente as amostras afetadas.

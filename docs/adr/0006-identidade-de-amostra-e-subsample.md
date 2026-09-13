@@ -31,9 +31,19 @@ Duas coisas separadas:
    manualmente e mover amostras são operações da UI, e a extração não reescreve
    a escolha do cliente.
 
-Backfill (`0011`): dados antigos recebem `source_path = file_name` quando o nome
-é único no experimento; homônimos antigos ficam com `source_path=""` — a pasta
-de origem não é recuperável retroativamente, e a constraint ignora vazios.
+Backfill em duas etapas, porque o ZIP ainda está no disco e é a fonte de
+verdade (ADR-0004):
+
+1. Migration `0011`, barata e automática: `source_path = file_name` quando o
+   nome é único no experimento; homônimos ficam com `source_path=""` (a
+   constraint ignora vazios).
+2. `manage.py repair_source_path`, laborioso e manual: abre o ZIP e redescobre
+   o caminho real. Nome que aparece uma vez no ZIP é remapeado **preservando a
+   linha** (gates e Parquet intactos). Nome repetido é ambíguo — não há como
+   saber qual linha é qual pasta —, e só com `--recreate` as linhas ambíguas
+   são **inativadas** e uma amostra nova é criada por entrada do ZIP. Os gates
+   das antigas ficam presos às amostras inativas: perda aceita no v0, por isso
+   o default é `--dry-run`-friendly e a recriação é opt-in.
 
 ## Alternativas consideradas
 
@@ -67,7 +77,8 @@ diretório).
 - Reextração determinística e mesmo basename permitido em pastas diferentes.
 - Subsample passa a ser o escopo natural de "aplicar em todas" — implementação
   pendente, ver `prd/BE-07-subsamples.md`.
-- Homônimos legados ficam sem identidade forte até o usuário reenviar o ZIP.
+- Homônimos legados só ganham identidade forte depois de rodar
+  `repair_source_path`; com `--recreate`, ao custo das análises feitas neles.
 - Uma amostra pertence a **um** subsample (FK). Se um dia uma amostra precisar
   estar em dois grupos (ex.: "tempo_1" e "controles"), isso vira M:N e este ADR
   é substituído.
