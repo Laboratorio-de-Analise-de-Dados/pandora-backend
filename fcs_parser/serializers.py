@@ -55,6 +55,7 @@ class ExperimentInitSerializer(serializers.Serializer):
                 title=data["title"],
                 created_by=user,
                 organization__isnull=True,
+                active=True,
             ).exists():
                 raise serializers.ValidationError(
                     {
@@ -77,7 +78,7 @@ class ExperimentInitSerializer(serializers.Serializer):
                 "Você não tem permissão para criar experimentos neste " "laboratório."
             )
         if ExperimentModel.objects.filter(
-            title=data["title"], created_by=user, organization_id=org_id
+            title=data["title"], created_by=user, organization_id=org_id, active=True
         ).exists():
             raise serializers.ValidationError(
                 {"detail": "Título já criado para esse laboratório."}

@@ -64,13 +64,13 @@ class ExperimentModel(models.Model):
             models.UniqueConstraint(
                 fields=["title", "created_by", "organization"],
                 name="unique_title_per_user_and_org",
-                condition=models.Q(organization__isnull=False),
+                condition=models.Q(organization__isnull=False, active=True),
             ),
             # Evita que o MESMO usuário crie experimentos pessoais com títulos iguais
             models.UniqueConstraint(
                 fields=["title", "created_by"],
                 name="unique_title_per_user_personal",
-                condition=models.Q(organization__isnull=True),
+                condition=models.Q(organization__isnull=True, active=True),
             ),
         ]
 
@@ -283,9 +283,7 @@ class FileDataModel(models.Model):
         if upload is None:
             return None
 
-        fcs_path = extract_fcs_from_zip(
-            upload, self.source_path or self.file_name
-        )
+        fcs_path = extract_fcs_from_zip(upload, self.source_path or self.file_name)
         if fcs_path is None:
             return None
 

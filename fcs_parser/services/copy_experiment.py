@@ -22,7 +22,7 @@ from fcs_parser.models import (
 
 def _unique_title(title: str, user, organization_id: int | None) -> str:
     """Resolve colisão de título no destino acrescentando sufixo numérico."""
-    qs = ExperimentModel.objects.filter(created_by=user)
+    qs = ExperimentModel.objects.filter(created_by=user, active=True)
     if organization_id is None:
         qs = qs.filter(organization__isnull=True)
     else:
@@ -135,9 +135,7 @@ def _copy_analysis(source_fd: FileDataModel, new_fd: FileDataModel) -> None:
                 color=gate.color,
                 created_by=gate.created_by,
             )
-            GateModel.objects.filter(pk=new_gate.pk).update(
-                created_at=gate.created_at
-            )
+            GateModel.objects.filter(pk=new_gate.pk).update(created_at=gate.created_at)
             try:
                 result = gate.analysis_result
             except AnalysisResult.DoesNotExist:

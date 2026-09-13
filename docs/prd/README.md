@@ -15,7 +15,9 @@
 | [BE-11](BE-11-copiar-mover-experimento.md) | Copiar/mover experimento entre contextos | Implementado em `feat/file-identity-copy` |
 | [BE-12](BE-12-dedup-no-upload.md) | Dedup no upload com aviso/reuso de blob | Implementado em `feat/file-identity-copy` |
 | [BE-13](BE-13-escopo-permissao-e-soft-delete.md) | Escopo de permissão em todo lookup + soft delete de experimento | Implementado em `feat/scoped-lookups` |
-| [BE-14](BE-14-reativar-experimento.md) | Reativar experimento (caminho de volta do soft-delete) | Implementado — aguarda commit junto ao BE-13 |
+| [BE-14](BE-14-reativar-experimento.md) | Reativar experimento (caminho de volta do soft-delete) | Implementado em `feat/scoped-lookups` |
+| [BE-15](BE-15-rename-citosharp-pandora.md) | Renomear pacote `citosharp` → `pandora` | Implementado em `feat/scoped-lookups` |
+| [BE-16](BE-16-titulo-unico-apenas-ativos.md) | Título único apenas entre ativos | Implementado em `feat/scoped-lookups` |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na

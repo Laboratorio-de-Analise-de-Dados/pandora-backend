@@ -696,6 +696,27 @@ class ExperimentMoveApiTestCase(TestCase):
         res = self._patch(self.owner, organization_id=999)
         self.assertEqual(res.status_code, 400)
 
+    def test_move_permite_mesmo_titulo_de_experimento_inativo(self):
+        # BE-16: título único só vale entre ativos — inativo não bloqueia.
+        ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, active=False
+        )
+
+        res = self._patch(self.owner, organization_id=None)
+
+        self.assertEqual(res.status_code, 200)
+        self.experiment.refresh_from_db()
+        self.assertIsNone(self.experiment.organization_id)
+
+    def test_move_rejeita_mesmo_titulo_de_experimento_ativo(self):
+        ExperimentModel.objects.create(title="exp", type="t", created_by=self.owner)
+
+        res = self._patch(self.owner, organization_id=None)
+
+        self.assertEqual(res.status_code, 400)
+        self.experiment.refresh_from_db()
+        self.assertEqual(self.experiment.organization_id, self.org.id)
+
 
 class FileHashCheckApiTestCase(TestCase):
     """BE-12: check-hash informa duplicata; nunca bloqueia o upload."""
@@ -1173,3 +1194,18 @@ class ExperimentRestoreTestCase(TestCase):
         res = self.client.post(f"/experiment/{self.experiment.id}/restore")
 
         self.assertEqual(res.status_code, 404)
+
+    def test_restore_com_titulo_ativo_duplicado_retorna_409(self):
+        # BE-16: reativar sobre título já usado por ativo é conflito, não 500.
+        ExperimentModel.objects.create(
+            title="exp",
+            type="tipo",
+            created_by=self.owner,
+            organization=self.org,
+        )
+
+        res = self.client.post(f"/experiment/{self.experiment.id}/restore")
+
+        self.assertEqual(res.status_code, 409)
+        self.experiment.refresh_from_db()
+        self.assertFalse(self.experiment.active)

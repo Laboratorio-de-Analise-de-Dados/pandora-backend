@@ -45,3 +45,5 @@ valor à pasta.
 | [0011](adr/0011-api-de-arquivo-magra.md) | API de arquivo magra: headers crus, lote orquestrado no cliente | Aceito |
 | [0012](adr/0012-identidade-de-conteudo-por-guid-e-sha256.md) | Identidade de conteúdo: `guid` por amostra, `sha256` por blob | Proposto |
 | [0013](adr/0013-blob-compartilhado-entre-experimentos.md) | Blob físico compartilhado; experimento↔blob via `FileDataModel` | Proposto |
+| [0014](adr/0014-todo-lookup-via-queryset-escopada.md) | Todo lookup por id passa por queryset escopado | Aceito |
+| [0015](adr/0015-unicidade-de-titulo-entre-ativos.md) | Unicidade de título vale apenas entre experimentos ativos | Aceito |

@@ -344,6 +344,20 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
             organization_id, error = self._resolve_move(request, experiment)
             if error:
                 return error
+            clash = ExperimentModel.objects.filter(
+                title=experiment.title,
+                created_by_id=experiment.created_by_id,
+                organization_id=organization_id,
+                active=True,
+            ).exclude(id=experiment.id)
+            if clash.exists():
+                return Response(
+                    {
+                        "detail": "Já existe um experimento ativo com este "
+                        "título no destino."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         elif not self.can_write(experiment):
             return Response(
                 {"detail": "Você não tem permissão para editar este experimento."},
@@ -401,8 +415,33 @@ class ExperimentRestoreView(APIView):
                 "Reativar exige ser o dono ou admin na origem do experimento."
             )
         if not experiment.active:
+            # Título é único só entre ativos (ADR-0015): reativar pode colidir
+            # com um ativo que reocupou o título — conflito, não 500.
+            clash = ExperimentModel.objects.filter(
+                title=experiment.title,
+                created_by_id=experiment.created_by_id,
+                organization_id=experiment.organization_id,
+                active=True,
+            ).exists()
+            if clash:
+                return Response(
+                    {
+                        "detail": "Já existe um experimento ativo com este título "
+                        "neste contexto."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             experiment.active = True
-            experiment.save(update_fields=["active"])
+            try:
+                experiment.save(update_fields=["active"])
+            except IntegrityError:
+                return Response(
+                    {
+                        "detail": "Já existe um experimento ativo com este título "
+                        "neste contexto."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
         return Response(
             ListExperimentSerializer(experiment).data, status=status.HTTP_200_OK
         )
