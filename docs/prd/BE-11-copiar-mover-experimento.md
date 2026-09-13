@@ -1,7 +1,7 @@
 # BE-11 — Copiar e mover experimento entre contextos (pessoal ↔ organização)
 
-**Repo:** pandora-backend · **Tipo:** feature · **Base:** `chore/ai-setup`
-**Status:** Proposto. Depende de
+**Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
+**Status:** Implementado na branch `feat/file-identity-copy`. Depende de
 [BE-10](BE-10-identidade-de-conteudo-e-blob-compartilhado.md) (blob
 compartilhado). UI no front: FE-15.
 

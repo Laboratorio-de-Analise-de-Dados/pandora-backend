@@ -56,7 +56,10 @@ def cleanup_cold_parquet(max_idle_days: int = 7) -> int:
         .select_related("experiment")
     )
     for file_data in cold:
-        if not getattr(file_data.experiment, "zip_path", None):
+        # Só limpa o cache se houver blob pra reconstruir (o FileModel do
+        # upload daquela amostra — não um zip_path único do experimento).
+        upload_file = getattr(getattr(file_data.file, "file", None), "name", None)
+        if not upload_file and not file_data.fcs_path:
             continue
         path = file_data.parquet_path
         if path and os.path.exists(path):

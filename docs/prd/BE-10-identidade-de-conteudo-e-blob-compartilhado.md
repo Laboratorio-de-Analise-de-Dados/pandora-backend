@@ -1,7 +1,8 @@
 # BE-10 — Identidade de conteúdo (`content_guid`, `sha256`) e blob compartilhado
 
-**Repo:** pandora-backend · **Tipo:** feature/refactor · **Base:** `chore/ai-setup`
-**Status:** Proposto — direção discutida, escopo a fechar antes de codar.
+**Repo:** pandora-backend · **Tipo:** feature/refactor · **Base:** `main`
+**Status:** Implementado na branch `feat/file-identity-copy` — freeze/delete
+segue fora de escopo.
 Depende do [BE-09](BE-09-headers-fcs.md) (headers expostos), conversa com
 [BE-08](BE-08-historico-rollback.md) (histórico/rollback) e destrava
 [BE-11](BE-11-copiar-mover-experimento.md) e [BE-12](BE-12-dedup-no-upload.md).
@@ -21,32 +22,51 @@ observadas:
 
 ## Escopo
 
-### 1. Identidade em duas colunas novas (cada uma no nível certo)
+### 1. Identidade em três colunas (cada uma no nível certo)
 
-O `guid` é do `.fcs` individual; o hash é do blob upado (ZIP ou `.fcs` solto):
+O `guid` e o hash de conteúdo são do `.fcs` individual; o hash do blob é do
+upload inteiro (ZIP ou `.fcs` solto):
 
 - `FileDataModel.content_guid` — keyword `guid` do header FCS, promovido a
-  coluna no parse. Identidade de conteúdo **da amostra**, âncora de
-  referências de análise (gates propagados, histórico/rollback do BE-08).
+  coluna no parse. Identidade lógica **da amostra**, âncora de referências
+  de análise (gates propagados, histórico/rollback do BE-08).
   `UniqueConstraint(experiment, content_guid)` — medido: zero duplicados
   internos na base atual; quem não grava `guid` fica `null` e cai no
   `source_path` (que vira só dica de agrupamento pro subsample inicial, não
   mais identidade — ajustar ADR-0006 em ADR novo).
-- `FileModel.sha256` — hash do blob no upload. Chave definitiva da dedup de
-  storage: `guid`+metadados (`cyt`/`date`/`inst`/`tot`) é a camada
-  metodizável de confirmação, o hash decide bytes iguais.
+- `FileDataModel.content_sha256` — hash do `.fcs` individual, calculado na
+  extração. É a unidade real da dedup: detecta a mesma amostra em ZIPs ou
+  uploads diferentes (o hash do ZIP quase nunca colide).
+- `FileModel.sha256` — hash do blob no upload. Integridade do freezer e
+  dedup de upload idêntico. `guid`+metadados (`cyt`/`date`/`inst`/`tot`) é
+  a camada metodizável de confirmação, o hash decide bytes iguais.
 
-### 2. `FileModel` vira o blob compartilhado (quase-`StoredFile`)
+### 2. `FileModel` = um upload pertencente a um experimento (FK, N:1)
 
-Hoje `FileModel.experiment` é `OneToOne` — blob filho único. O desenho é
-tirar essa posse: `FileModel` vira "arquivo guardado" puro (path, sha256,
-tamanho) e quem liga experimento↔blob é o `FileDataModel` (já tem as duas
-FKs). Copiar/mover experimento ([BE-11](BE-11-copiar-mover-experimento.md)) =
-linhas novas de `FileDataModel`/`Subsample`/`Gate` apontando pro **mesmo**
-`FileModel` — nenhum byte duplicado, análise independente. Upload com
-`sha256` já existente reutiliza o blob ([BE-12](BE-12-dedup-no-upload.md)).
+`FileModel.experiment` é `ForeignKey` (`related_name="uploads"`): um
+experimento acumula vários uploads ao longo do tempo (BE-12). Cada
+`FileDataModel` aponta pro **seu** upload (`fd.file`), então a resolução
+física é por amostra — não existe mais um "ZIP único do experimento"
+(`experiment.zip_path` ficou como referência legada da criação).
 
-### 3. Política de freeze/delete (futura — não faz parte desta entrega)
+`.fcs` solto é aglutinado num ZIP no servidor (`wrap_fcs_as_zip`) — a
+unidade física é sempre ZIP. O único compartilhamento de blob entre
+experimentos é a **cópia explícita**
+([BE-11](BE-11-copiar-mover-experimento.md)): linhas novas apontando pro
+mesmo `file.name`, análise independente. Não há reuso automático
+cross-experiment no upload ([BE-12](BE-12-dedup-no-upload.md)) — dedup é
+escopado ao experimento, o que também simplifica a limpeza.
+
+### 3. Download = artefato derivado, não o blob guardado
+
+A unidade gerenciada é o `.fcs` (via `content_guid`/`content_sha256`) — o
+mesmo arquivo pode existir em experimentos diferentes com organizações de
+subsample diferentes. `GET /experiment/<id>/download` **reconstrói o ZIP na
+hora** com a estrutura `subsample.name/arquivo.fcs`, lendo cada amostra do
+upload que a originou (`fd.file` + `source_path`); o blob armazenado segue
+sendo só o freezer/fonte da verdade dos bytes.
+
+### 4. Política de freeze/delete (futura — não faz parte desta entrega)
 
 Por ora **experimento desativado não apaga nada**: os arquivos ficam. A
 política futura joga a responsabilidade no usuário, com garantia de entrega
@@ -66,24 +86,34 @@ antes de qualquer deleção:
 Nunca matar experimento alheio sem o e-mail entregue — a confirmação de
 recebimento é o portão da deleção.
 
-## Arquivos a tocar (quando implementar)
+## Arquivos tocados
 
-- `fcs_parser/models.py` — `FileModel.experiment` sai de `OneToOne`
-  (ou a FK migra pro uso via `FileDataModel`); colunas `sha256` e
-  `content_guid`; `UniqueConstraint(experiment, content_guid)`
-- `fcs_parser/services/process_fcs.py` — extrai `guid` e `sha256` no parse
-- `fcs_parser/views.py` + `urls.py` — `ExperimentCopyView`; `init/` avisando
-  hash já existente
-- `fcs_parser/services/` — rotina de retenção (management command ou Celery)
-- `docs/adr/` — ADR novo marcando a mudança de identidade (mexe com ADR-0006)
+- `fcs_parser/models.py` + migrações `0012`/`0013`/`0014` —
+  `FileModel.sha256`, `FileDataModel.content_guid`/`content_sha256`,
+  `UniqueConstraint(experiment, content_guid)`, backfills,
+  `FileModel.experiment` OneToOne→FK + campos de chunk por upload
+- `fcs_parser/services/process_experiment_file.py` — `file_sha256()`,
+  `content_guid`/`content_sha256` populados nos três pontos de extração
+- `fcs_parser/services/copy_experiment.py` — clone linha-a-linha sobre o
+  mesmo blob
+- `fcs_parser/views.py` + `urls.py` — `ExperimentCopyView`,
+  `FileHashCheckView`, `complete/` com `reuse`, move via
+  `PATCH organization_id`
+- Pendente: endpoint de download reconstruindo ZIP por subsample; rotina de
+  retenção (futura)
 
 ## Critérios de aceite
 
-- [ ] Copiar experimento cria análise independente sem re-upload; os bytes do
+- [x] Copiar experimento cria análise independente sem re-upload; os bytes do
       storage não crescem.
-- [ ] Mesmo `guid` duas vezes no mesmo experimento é detectado no upload.
-- [ ] Arquivo sem `guid` continua funcionando (fallback `source_path`).
-- [ ] Rotina de dedup nunca remove arquivo referenciado por experimento ativo.
+- [x] Mesmo `guid` duas vezes no mesmo experimento é rejeitado pela
+      constraint.
+- [x] Arquivo sem `guid` continua funcionando (coluna `null`, sem
+      constraint).
+- [ ] Download do experimento reconstruído com a organização de subsamples
+      atual (endpoint a implementar).
+- [ ] Rotina de dedup/limpeza nunca remove arquivo referenciado por
+      experimento ativo (futura).
 
 ## Fora de escopo
 

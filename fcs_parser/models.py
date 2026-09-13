@@ -83,7 +83,13 @@ class ExperimentModel(models.Model):
 
 
 class FileModel(models.Model):
-    """Model for Experiment Files"""
+    """Um upload de arquivo pertencente a um experimento.
+
+    Um experimento pode receber vários uploads ao longo do tempo (FK) —
+    cada FileModel é um blob (sempre ZIP; `.fcs` solto é aglutinado num
+    ZIP no complete). Copiar um experimento cria outra linha apontando pro
+    mesmo ``file`` sem duplicar bytes; ``sha256`` é a identidade do blob.
+    """
 
     class Meta:
         db_table = "experiment_files"
@@ -91,7 +97,14 @@ class FileModel(models.Model):
     id = models.BigAutoField(primary_key=True)
     file_name = models.CharField(max_length=256, null=True)
     file = models.FileField(upload_to="", null=True)
-    experiment = models.OneToOneField(ExperimentModel, on_delete=models.CASCADE)
+    # SHA-256 do blob físico; nulo em uploads antigos (backfill incremental).
+    sha256 = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    experiment = models.ForeignKey(
+        ExperimentModel, on_delete=models.CASCADE, related_name="uploads"
+    )
+    # Controle do upload em chunks deste arquivo (fluxo "adicionar arquivos").
+    total_chunks = models.IntegerField(null=True, blank=True)
+    received_chunks = ArrayField(models.IntegerField(), default=list, blank=True)
 
     def get_file_url(self):
         return settings.MEDIA_URL + str(self.file)
@@ -151,6 +164,16 @@ class FileDataModel(models.Model):
     # real da amostra: dois arquivos podem ter o mesmo `file_name` em pastas
     # diferentes.
     source_path = models.CharField(max_length=512, blank=True, default="")
+    # Identidade lógica do .fcs (keyword `guid` do header). Âncora de
+    # cópia/rollback; `source_path` fica como dica de agrupamento inicial.
+    content_guid = models.CharField(
+        max_length=256, null=True, blank=True, db_index=True
+    )
+    # SHA-256 do .fcs individual — dedup por amostra, não pelo blob (ZIP)
+    # inteiro. Permite detectar o mesmo arquivo em uploads/ZIPs diferentes.
+    content_sha256 = models.CharField(
+        max_length=64, null=True, blank=True, db_index=True
+    )
     subsample = models.ForeignKey(
         "SubsampleModel",
         null=True,
@@ -192,7 +215,13 @@ class FileDataModel(models.Model):
                 fields=["experiment", "source_path"],
                 condition=~models.Q(source_path=""),
                 name="unique_source_path_per_experiment",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["experiment", "content_guid"],
+                condition=~models.Q(content_guid__isnull=True)
+                & ~models.Q(content_guid=""),
+                name="unique_content_guid_per_experiment",
+            ),
         ]
 
     def __str__(self) -> str:
@@ -246,16 +275,16 @@ class FileDataModel(models.Model):
         return pd.DataFrame()
 
     def _rebuild_from_zip(self) -> pd.DataFrame | None:
-        """Extract .fcs from the experiment's ZIP and rebuild the Parquet cache."""
+        """Extract .fcs from this sample's own upload ZIP and rebuild cache."""
         from fcs_parser.services.process_experiment_file import extract_fcs_from_zip
         from fcs_parser.services.process_fcs import process_fcs_file
 
-        experiment = self.experiment
-        if not getattr(experiment, "zip_path", None):
+        upload = self.file
+        if upload is None:
             return None
 
         fcs_path = extract_fcs_from_zip(
-            experiment, self.source_path or self.file_name
+            upload, self.source_path or self.file_name
         )
         if fcs_path is None:
             return None
