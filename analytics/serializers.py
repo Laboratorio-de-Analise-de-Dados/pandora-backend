@@ -3,7 +3,7 @@ from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from analytics.gate_author import author_display_name
-from analytics.gate_scope import SCOPE_CHOICES, SCOPE_EXPERIMENT, SCOPE_FILE
+from analytics.gate_scope import PROPAGATING_SCOPES, SCOPE_CHOICES, SCOPE_FILE
 from analytics.models import AnalysisResult, DashboardModel, GateModel
 from fcs_parser.models import FileDataModel
 
@@ -89,8 +89,9 @@ class GateBatchDeleteSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {
                     "target_file_data_ids": (
-                        'Só é aceito com scope="experiment"; no escopo do arquivo a '
-                        "exclusão atinge apenas os gates informados."
+                        'Só é aceito com scope="experiment" ou "subsample"; no '
+                        "escopo do arquivo a exclusão atinge apenas os gates "
+                        "informados."
                     )
                 }
             )
@@ -101,7 +102,11 @@ class GateUpdateSerializer(serializers.Serializer):
     """Payload de PATCH /analytics/gate/<gate_id>.
 
     `scope="experiment"` propaga nome, cor e geometria para as cópias do gate
-    nas demais amostras do experimento. `plot_config` nunca é propagado.
+    nas demais amostras do experimento; `scope="subsample"` restringe isso às
+    amostras do subsample da amostra alvo. `plot_config` nunca é propagado.
+
+    Com `dry_run=True` nada é gravado e a resposta lista as amostras que
+    seriam alteradas, para a UI confirmar antes.
     """
 
     name = serializers.CharField(max_length=50, required=False)
@@ -109,15 +114,16 @@ class GateUpdateSerializer(serializers.Serializer):
     gate_coordinates = serializers.JSONField(required=False)
     plot_config = serializers.JSONField(required=False)
     scope = serializers.ChoiceField(choices=SCOPE_CHOICES, default=SCOPE_FILE)
+    dry_run = serializers.BooleanField(default=False)
 
     def validate(self, data):
-        if data["scope"] == SCOPE_EXPERIMENT and not (
+        if data["scope"] in PROPAGATING_SCOPES and not (
             "name" in data or "color" in data or "gate_coordinates" in data
         ):
             raise serializers.ValidationError(
                 {
                     "scope": (
-                        'scope="experiment" exige "name", "color" e/ou '
+                        f'scope="{data["scope"]}" exige "name", "color" e/ou '
                         '"gate_coordinates".'
                     )
                 }

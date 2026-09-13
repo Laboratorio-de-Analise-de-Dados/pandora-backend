@@ -12,7 +12,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView, Response, status
 from fcs_parser.permissions import can_edit_experiment
 from analytics.gate_scope import (
+    PROPAGATING_SCOPES,
     SCOPE_EXPERIMENT,
+    effective_scope,
     gates_in_experiment_scope,
 )
 from analytics.models import DashboardModel, GateModel
@@ -39,18 +41,31 @@ from utils.density import (
 logger = logging.getLogger(__name__)
 
 
-def _propagate_gate_changes(gate, new_name, new_color, color_changed, new_coords=None):
+def _propagate_gate_changes(
+    gate,
+    new_name,
+    new_color,
+    color_changed,
+    new_coords=None,
+    scope=SCOPE_EXPERIMENT,
+    dry_run=False,
+):
     """Aplica nome/cor/geometria do *gate* nas cópias dele nas outras amostras.
 
-    Devolve (ids_propagados, conflitos). Uma cópia entra em `conflitos` quando o
-    novo nome já existe no mesmo nível da amostra de destino — as constraints
-    `unique_gate_name_per_parent`/`unique_gate_name_root_level` impedem a
-    renomeação, e as demais amostras seguem sendo atualizadas.
+    Devolve (ids_propagados, conflitos, afetadas). Uma cópia entra em
+    `conflitos` quando o novo nome já existe no mesmo nível da amostra de
+    destino — as constraints `unique_gate_name_per_parent`/
+    `unique_gate_name_root_level` impedem a renomeação, e as demais amostras
+    seguem sendo atualizadas. Com `dry_run` nada é gravado: o retorno é o que
+    *seria* alterado, para a UI confirmar antes.
     """
     propagated = []
     conflicts = []
+    affected = []
 
-    for copy in gates_in_experiment_scope(gate).select_related("file_data"):
+    for copy in gates_in_experiment_scope(gate, scope=scope).select_related(
+        "file_data"
+    ):
         fields = []
         if new_name is not None and copy.name != new_name:
             clash = (
@@ -86,10 +101,20 @@ def _propagate_gate_changes(gate, new_name, new_color, color_changed, new_coords
             fields.append("gate_coordinates")
 
         if fields:
-            copy.save(update_fields=fields)
+            if not dry_run:
+                copy.save(update_fields=fields)
             propagated.append(copy.id)
+            affected.append(
+                {
+                    "gate_id": copy.id,
+                    "file_data_id": copy.file_data_id,
+                    "file_name": copy.file_data.file_name,
+                    "source_path": copy.file_data.source_path,
+                    "fields": fields,
+                }
+            )
 
-    return propagated, conflicts
+    return propagated, conflicts, affected
 
 
 class CreateGateView(generics.CreateAPIView):
@@ -133,6 +158,7 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         payload = GateUpdateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
+        scope = effective_scope(data["scope"], gate.file_data)
 
         update_fields = []
         new_name = data.get("name")
@@ -148,7 +174,7 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
             # não acompanha mais as operações em escopo de experimento. No
             # escopo do experimento a mudança vale para a família inteira e o
             # vínculo é mantido.
-            if gate.copied_from_id and data["scope"] != SCOPE_EXPERIMENT:
+            if gate.copied_from_id and scope not in PROPAGATING_SCOPES:
                 gate.copied_from = None
                 update_fields.append("copied_from")
         new_color = data.get("color")
@@ -160,13 +186,36 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
             gate.plot_config = new_plot_config
             update_fields.append("plot_config")
 
-        if data["scope"] == SCOPE_EXPERIMENT and not (
+        if scope in PROPAGATING_SCOPES and not (
             request.user.is_authenticated
             and can_edit_experiment(request.user, gate.file_data.experiment)
         ):
             return Response(
                 {"detail": "Você não tem permissão para alterar este experimento."},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if data["dry_run"]:
+            affected = []
+            conflicts = []
+            if scope in PROPAGATING_SCOPES:
+                _, conflicts, affected = _propagate_gate_changes(
+                    gate,
+                    new_name=new_name,
+                    new_color=new_color,
+                    color_changed="color" in data,
+                    new_coords=new_coords,
+                    scope=scope,
+                    dry_run=True,
+                )
+            return Response(
+                {
+                    "dry_run": True,
+                    "applied_scope": scope,
+                    "affected": affected,
+                    "conflicts": conflicts,
+                },
+                status=status.HTTP_200_OK,
             )
 
         propagated_ids = []
@@ -186,13 +235,14 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
                         status=status.HTTP_409_CONFLICT,
                     )
 
-            if data["scope"] == SCOPE_EXPERIMENT:
-                propagated_ids, conflicts = _propagate_gate_changes(
+            if scope in PROPAGATING_SCOPES:
+                propagated_ids, conflicts, _ = _propagate_gate_changes(
                     gate,
                     new_name=new_name,
                     new_color=new_color,
                     color_changed="color" in data,
                     new_coords=new_coords,
+                    scope=scope,
                 )
 
         # Só recalcula métricas/invalida densidade quando a geometria muda.
@@ -213,6 +263,7 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
                 **serializer.data,
                 "propagated_gate_ids": propagated_ids,
                 "conflicts": conflicts,
+                "applied_scope": scope,
             },
             status=status.HTTP_200_OK,
         )
@@ -510,9 +561,10 @@ class DeleteGateBatchView(APIView):
     """POST /analytics/gate/delete-batch — exclui gates com escopo explícito.
 
     Operação inversa do `ApplyGateView`: remove o gate só na amostra atual
-    (`scope="file"`, default) ou também as cópias dele nas demais amostras do
-    mesmo experimento (`scope="experiment"`). Nunca atinge outros experimentos
-    nem amostras desabilitadas.
+    (`scope="file"`, default), as cópias dele nas demais amostras do mesmo
+    experimento (`scope="experiment"`) ou apenas as do mesmo subsample
+    (`scope="subsample"`). Nunca atinge outros experimentos nem amostras
+    desabilitadas.
     """
 
     permission_classes = [IsAuthenticated]
@@ -556,11 +608,13 @@ class DeleteGateBatchView(APIView):
 
         targets = {}
         for gate in source_gates:
-            if data["scope"] == SCOPE_EXPERIMENT:
+            scope = effective_scope(data["scope"], gate.file_data)
+            if scope in PROPAGATING_SCOPES:
                 scoped = gates_in_experiment_scope(
                     gate,
                     target_file_data_ids=data["target_file_data_ids"],
                     include_source=data["include_source"],
+                    scope=scope,
                 )
                 for copy in scoped:
                     targets[copy.id] = copy
