@@ -985,3 +985,37 @@ class RecomputeFileDataView(APIView):
             {"status": "completed", "file_data_id": file_data.id},
             status=status.HTTP_200_OK,
         )
+
+
+class FileHeadersView(APIView):
+    """GET /experiment/file/<file_id>/headers — metadados do header FCS.
+
+    Devolve o dict `headers` persistido no parse (keywords do FCS 3.x
+    normalizadas: `$date`, `$cyt`, `$btim`, `$etim`, `$op`, `tot`...).
+    Amostras inativas continuam legíveis — os dados não são apagados.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name="FileHeadersResponse",
+                fields={
+                    "file_data_id": serializers.IntegerField(),
+                    "file_name": serializers.CharField(),
+                    "headers": serializers.DictField(),
+                },
+            ),
+        },
+    )
+    def get(self, request, file_id):
+        file_data = get_object_or_404(FileDataModel, id=file_id)
+        return Response(
+            {
+                "file_data_id": file_data.id,
+                "file_name": file_data.file_name,
+                "headers": file_data.headers or {},
+            },
+            status=status.HTTP_200_OK,
+        )
