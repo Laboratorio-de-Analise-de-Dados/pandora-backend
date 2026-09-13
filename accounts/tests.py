@@ -102,7 +102,7 @@ class InviteAcceptTests(APITestCase):
         membership.refresh_from_db()
         self.assertEqual(membership.role.name, Role.ORG_ADMIN)
 
-    def test_org_admin_removes_member(self):
+    def test_org_admin_removes_member_by_inactivating(self):
         self.accept()
         membership = Membership.objects.get(user=self.guest)
 
@@ -110,7 +110,23 @@ class InviteAcceptTests(APITestCase):
         response = self.client.delete(self.membership_detail_url(membership))
 
         self.assertEqual(response.status_code, 204)
-        self.assertFalse(Membership.objects.filter(id=membership.id).exists())
+        membership.refresh_from_db()
+        self.assertEqual(membership.status, "inactive")
+
+    def test_removed_member_disappears_from_organization_list(self):
+        self.accept()
+        membership = Membership.objects.get(user=self.guest)
+
+        self.client.force_authenticate(user=self.owner)
+        self.client.delete(self.membership_detail_url(membership))
+        response = self.client.get(reverse("organization_list_create"))
+
+        emails = [
+            member["user"]["email"]
+            for org in response.data
+            for member in org["members"]
+        ]
+        self.assertNotIn(self.guest.email, emails)
 
     def test_member_cannot_manage_memberships(self):
         self.accept()

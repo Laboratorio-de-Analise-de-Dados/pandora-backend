@@ -165,6 +165,13 @@ class MembershipListCreateView(generics.ListCreateAPIView):
         serializer.save(organization_id=org_id)
 
 
+@extend_schema(
+    description=(
+        "Vínculo de um usuário com a organização. "
+        "Política da API: nada é deletado fisicamente — o `DELETE` inativa "
+        "o membership (`status='inactive'`), preservando o histórico."
+    )
+)
 class MembershipRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated, IsOrgAdmin]
     serializer_class = MembershipSerializer
@@ -186,8 +193,11 @@ class MembershipRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView)
         serializer.save()
 
     def perform_destroy(self, instance):
+        """Nunca deleta: apenas inativa o vínculo, preservando o histórico."""
         _assert_not_last_org_admin(instance)
-        instance.delete()
+        if instance.status != "inactive":
+            instance.status = "inactive"
+            instance.save(update_fields=["status"])
 
     def get_serializer_class(self):
         if self.request.method in ["PUT", "PATCH"]:
