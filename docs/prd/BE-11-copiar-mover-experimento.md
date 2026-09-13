@@ -29,9 +29,14 @@ Body: { "title"?, "organization_id": <id> | null }   # null = pessoal
 - Novas linhas de `FileDataModel`/`Subsample`/`Gate` (estado inicial copiado)
   apontando pro mesmo `FileModel` — zero bytes duplicados.
 - A cópia é independente: editar gates/subsamples de uma não toca a outra.
-- Permissão: membro da org destino (ou pessoal = próprio usuário); leitura na
-  origem basta para copiar? — **fechar na revisão** (copiar pra fora da org
-  vaza dados se o usuário só é viewer).
+- **Permissão (zero trust — fechado):** copiar exige `can_edit_experiment`
+  na origem. O que se protege é a *estratégia de análise* (gates, subsamples,
+  estado) — um viewer não pode jogar pra fora da org a análise pronta de
+  outra pessoa. E precisa ser membro da org destino.
+- **Explicitamente permitido:** subir manualmente o mesmo `.fcs` no espaço
+  pessoal não é bloqueado — o usuário faz upload do arquivo dele quando
+  quiser; o dedup do BE-12 só reutiliza o blob por baixo (conveniência de
+  storage, não portão de permissão).
 
 ### 2. Mover — o experimento troca de contexto, sem cópia
 
@@ -42,8 +47,8 @@ Body: { "organization_id": <id> | null }
 
 - Reusa o endpoint de edição (BE-02) — move sem duplicar nada: mesmas
   linhas, mesmo `FileModel`, mesma análise.
-- Regra: só dono/admin da origem **e** membro da org destino; mover pra org
-  muda quem vê/edita (rever `can_edit_experiment`).
+- Regra (zero trust): só dono/admin na origem **e** membro da org destino;
+  mover pra org muda quem vê/edita (rever `can_edit_experiment`).
 
 ### Regras comuns
 
@@ -64,6 +69,8 @@ Body: { "organization_id": <id> | null }
       não cresce.
 - [ ] Mover muda `organization` sem duplicar linhas nem bytes.
 - [ ] Sem permissão na origem/destino → 403; título duplicado no destino → 400.
+- [ ] Viewer da org não copia nem para o pessoal (403); membro com edição,
+      sim — e só para org da qual faz parte.
 - [ ] Cópia preserva subsamples, gates e seus `content_guid`s.
 
 ## Fora de escopo
