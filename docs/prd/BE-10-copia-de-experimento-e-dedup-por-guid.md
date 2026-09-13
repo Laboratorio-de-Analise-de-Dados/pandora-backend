@@ -52,18 +52,25 @@ Body: { "title"?, "organization_id": <id> | null }   # null = pessoal
 201 { "experiment_id": <novo_id> }
 ```
 
-### 3. Rotina de retenção/limpeza (storage)
+### 3. Política de freeze/delete (futura — não faz parte desta entrega)
 
-Manter o original como fonte de verdade (ADR-0004) e pagar parse sob demanda
-é o desenho atual — a rotina fecha o ciclo:
+Por ora **experimento desativado não apaga nada**: os arquivos ficam. A
+política futura joga a responsabilidade no usuário, com garantia de entrega
+antes de qualquer deleção:
 
-- Parquet é cache com TTL — `FileDataModel.last_accessed` já existe; frio
-  demais → apaga (regenera do blob quando requisitado).
-- Blob (`FileModel`) sem nenhum `FileDataModel` referenciando → órfão,
-  remove (única deleção física permitida — fora da regra do ADR-0005, que é
-  sobre dados de análise, não storage).
-- `.fcs` extraído solto no disco (resto de parse) → limpa; só o blob e o
-  cache Parquet persistem.
+- Gatilho: experimento cujo **último responsável foi desativado** (ou marcado
+  pelo dono) e sem acesso por N dias (ex.: 7 — `last_accessed` mede isso).
+- Rotina envia por e-mail os dados de citometria ao responsável (ZIP ou links
+  assinados) — "seus dados, sua guarda".
+- Só depois de **garantir que o usuário recebeu** (confirmação de entrega ou
+  download) e a janela passar sem acesso → exclui experimento e arquivos.
+- Blob compartilhado por outra cópia/experimento nunca entra na limpeza —
+  deleção física só de `FileModel` órfão.
+- Parquet frio pode expirar por TTL antes disso sem risco (é cache
+  regenerável do blob — ADR-0004).
+
+Nunca matar experimento alheio sem o e-mail entregue — a confirmação de
+recebimento é o portão da deleção.
 
 ## Arquivos a tocar (quando implementar)
 
