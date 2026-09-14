@@ -1209,3 +1209,35 @@ class ExperimentRestoreTestCase(TestCase):
         self.assertEqual(res.status_code, 409)
         self.experiment.refresh_from_db()
         self.assertFalse(self.experiment.active)
+
+
+class ExperimentListCreatedByNameTestCase(TestCase):
+    """BE-17: a listagem expõe o username do criador para o card do front."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="ana.souza",
+            email="ana@pandora.test",
+            password="senha-forte-123",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_listagem_devolve_username_do_criador(self):
+        ExperimentModel.objects.create(title="exp", type="tipo", created_by=self.user)
+
+        res = self.client.get("/experiment/")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data[0]["created_by_name"], "ana.souza")
+
+    def test_experimento_sem_criador_devolve_none(self):
+        # Super admin enxerga experimentos sem criador (ex.: legados/SET_NULL).
+        self.user.is_superuser = True
+        self.user.save(update_fields=["is_superuser"])
+        ExperimentModel.objects.create(title="exp", type="tipo")
+
+        res = self.client.get("/experiment/")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.data[0]["created_by_name"])

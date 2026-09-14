@@ -224,6 +224,9 @@ class UpdateExperimentSerializer(serializers.ModelSerializer):
 class ListExperimentSerializer(serializers.ModelSerializer):
     values = serializers.ListField(child=serializers.CharField())
     organization = OrganizationListSerializer(read_only=True)
+    created_by_name = serializers.CharField(
+        source="created_by.username", read_only=True, default=None
+    )
 
     class Meta:
         model = ExperimentModel
