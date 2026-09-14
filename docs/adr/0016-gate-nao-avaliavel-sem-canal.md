@@ -1,6 +1,6 @@
 # ADR-0016 — Canal ausente torna o gate não-avaliável e corta a linhagem na amostra
 
-- **Status:** Proposto
+- **Status:** Aceito
 - **Data:** 2026-09-14
 - **Contexto do código:** `utils/density.py` (`apply_gate_filter`),
   `analytics/tasks.py` (`recalculate_gate_analysis`), `GateDensityView` /
