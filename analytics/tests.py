@@ -3,6 +3,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import User
 from analytics.models import DashboardModel, GateModel
+from analytics.tasks import recalculate_gate_analysis
 from fcs_parser.models import (
     ExperimentModel,
     FileDataModel,
@@ -534,3 +535,164 @@ class GatePermissionTestCase(GateFixtureMixin, TestCase):
         self.assertEqual(res.status_code, 200)
         self.source.refresh_from_db()
         self.assertEqual(self.source.name, "P1-renomeado")
+
+
+class GateMissingChannelTestCase(GateFixtureMixin, TestCase):
+    """BE-18/ADR-0016: gate que referencia canal ausente na amostra fica
+    não-avaliável — a linhagem abaixo corta junto, sem stat fictícia."""
+
+    def setUp(self):
+        super().setUp()
+        # file_a tem painel completo; file_b foi adquirido sem FITC-A/APC-A.
+        self._set_events(
+            self.file_a,
+            [
+                {"FSC-A": 1.0, "SSC-A": 2.0, "FITC-A": 3.0, "APC-A": 4.0},
+                {"FSC-A": 5.0, "SSC-A": 6.0, "FITC-A": 7.0, "APC-A": 8.0},
+            ],
+        )
+        self._set_events(
+            self.file_b,
+            [
+                {"FSC-A": 1.0, "SSC-A": 2.0},
+                {"FSC-A": 5.0, "SSC-A": 6.0},
+            ],
+        )
+
+    def _set_events(self, file_data, records):
+        file_data.data_set = records
+        file_data.save(update_fields=["data_set"])
+
+    def _gate_on_axes(self, file_data, name, x="FITC-A", y="APC-A", **kwargs):
+        gate = self._gate(file_data, name, **kwargs)
+        gate.dashboard.dashboard_config = {"x_axis_label": x, "y_axis_label": y}
+        gate.dashboard.save(update_fields=["dashboard_config"])
+        gate.gate_coordinates = {
+            "type": "rectangle",
+            "startX": 0,
+            "endX": 10,
+            "startY": 0,
+            "endY": 10,
+        }
+        gate.save(update_fields=["gate_coordinates"])
+        return gate
+
+    def test_density_400_nomeia_canal_ausente_do_gate(self):
+        gate = self._gate_on_axes(self.file_b, "FITC+")
+
+        res = self.client.get(f"/analytics/gate/{gate.id}/density?x=FSC-A&y=SSC-A")
+
+        self.assertEqual(res.status_code, 400)
+        body = res.json()
+        self.assertIn("FITC-A", body["detail"])
+        self.assertEqual(sorted(body["missing_channels"]), ["APC-A", "FITC-A"])
+        self.assertEqual(body["gate_id"], gate.id)
+
+    def test_density_400_quando_eixo_pedido_nao_existe_na_amostra(self):
+        gate = self._gate_on_axes(self.file_b, "P", x="FSC-A", y="SSC-A")
+
+        res = self.client.get(f"/analytics/gate/{gate.id}/density?x=FITC-A&y=APC-A")
+
+        self.assertEqual(res.status_code, 400)
+        body = res.json()
+        self.assertIn("FITC-A", body["detail"])
+        self.assertEqual(sorted(body["missing_channels"]), ["APC-A", "FITC-A"])
+
+    def test_density_200_vazio_quando_gate_valido_filtra_tudo(self):
+        gate = self._gate_on_axes(self.file_b, "Vazio", x="FSC-A", y="SSC-A")
+        gate.gate_coordinates = {
+            "type": "rectangle",
+            "startX": 1000,
+            "endX": 2000,
+            "startY": 1000,
+            "endY": 2000,
+        }
+        gate.save(update_fields=["gate_coordinates"])
+
+        res = self.client.get(f"/analytics/gate/{gate.id}/density?x=FSC-A&y=SSC-A")
+
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["total_events"], 0)
+        self.assertEqual(body["histogram"], [])
+
+    def test_list_400_nomeia_canal_ausente_do_gate(self):
+        gate = self._gate_on_axes(self.file_b, "FITC+")
+
+        res = self.client.get(f"/analytics/gate/{gate.id}/list")
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("FITC-A", res.json()["detail"])
+
+    def test_recalculo_marca_gate_e_corta_a_linhagem(self):
+        gate = self._gate_on_axes(self.file_b, "FITC+")
+        child = self._gate_on_axes(
+            self.file_b, "Sub", x="FSC-A", y="SSC-A", parent=gate
+        )
+
+        recalculate_gate_analysis(gate.id)
+
+        gate.refresh_from_db()
+        result = gate.analysis_result.analysis_result
+        self.assertFalse(result["applicable"])
+        self.assertEqual(result["reason"], "missing_channels")
+        self.assertEqual(sorted(result["missing_channels"]), ["APC-A", "FITC-A"])
+        self.assertEqual(result["blocked_by_gate"]["id"], gate.id)
+        self.assertNotIn("summary_metrics", result)
+
+        # O filho é avaliável sozinho, mas herda o corte do ancestral.
+        child.refresh_from_db()
+        child_result = child.analysis_result.analysis_result
+        self.assertFalse(child_result["applicable"])
+        self.assertEqual(child_result["blocked_by_gate"]["id"], gate.id)
+
+    def test_recalculo_normal_quando_canais_existem(self):
+        gate = self._gate_on_axes(self.file_a, "FITC+")
+
+        recalculate_gate_analysis(gate.id)
+
+        gate.refresh_from_db()
+        result = gate.analysis_result.analysis_result
+        self.assertNotEqual(result.get("applicable"), False)
+        self.assertIn("summary_metrics", result)
+
+    def test_apply_dry_run_avisa_amostra_sem_canal(self):
+        source = self._gate_on_axes(self.file_a, "FITC+")
+
+        res = self.client.post(
+            "/analytics/gate/apply",
+            {
+                "source_gate_ids": [source.id],
+                "target_file_data_ids": [self.file_b.id],
+                "dry_run": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        non_evaluable = res.json()["non_evaluable"]
+        self.assertEqual(len(non_evaluable), 1)
+        self.assertEqual(non_evaluable[0]["file_data_id"], self.file_b.id)
+        self.assertEqual(non_evaluable[0]["missing_channels"], ["APC-A", "FITC-A"])
+        self.assertIn(source.id, non_evaluable[0]["gate_ids"])
+        self.assertFalse(
+            GateModel.objects.filter(file_data=self.file_b, copied_from=source).exists()
+        )
+
+    def test_apply_cria_copia_marcada_nao_avaliavel(self):
+        source = self._gate_on_axes(self.file_a, "FITC+")
+
+        res = self.client.post(
+            "/analytics/gate/apply",
+            {
+                "source_gate_ids": [source.id],
+                "target_file_data_ids": [self.file_b.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(res.json()["non_evaluable"]), 1)
+
+        copy = GateModel.objects.get(file_data=self.file_b, copied_from=source)
+        self.assertFalse(copy.analysis_result.analysis_result["applicable"])

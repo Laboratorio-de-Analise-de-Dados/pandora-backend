@@ -1,3 +1,6 @@
+import os
+import re
+
 import numpy as np
 import pandas as pd
 from django.conf import settings
@@ -23,8 +26,18 @@ def invalidate_density(file_data_id):
 
 
 def density_cache_key(
-    scope, file_data_id, obj_id, x, y, mode, bins, sample, x_scale, y_scale,
-    cofactor, cutoff=0
+    scope,
+    file_data_id,
+    obj_id,
+    x,
+    y,
+    mode,
+    bins,
+    sample,
+    x_scale,
+    y_scale,
+    cofactor,
+    cutoff=0,
 ) -> str:
     return (
         f"density:{scope}:{obj_id}:v{_version(file_data_id)}:{x}:{y}:{mode}:{bins}"
@@ -145,21 +158,28 @@ def compute_density(
     hist_range = None
     if x_range or y_range:
         xr = (
-            [apply_scale(np.array([x_range[0]]), x_scale, cofactor)[0],
-             apply_scale(np.array([x_range[1]]), x_scale, cofactor)[0]]
+            [
+                apply_scale(np.array([x_range[0]]), x_scale, cofactor)[0],
+                apply_scale(np.array([x_range[1]]), x_scale, cofactor)[0],
+            ]
             if x_range
             else [float(np.min(xv)), float(np.max(xv))]
         )
         yr = (
-            [apply_scale(np.array([y_range[0]]), y_scale, cofactor)[0],
-             apply_scale(np.array([y_range[1]]), y_scale, cofactor)[0]]
+            [
+                apply_scale(np.array([y_range[0]]), y_scale, cofactor)[0],
+                apply_scale(np.array([y_range[1]]), y_scale, cofactor)[0],
+            ]
             if y_range
             else [float(np.min(yv)), float(np.max(yv))]
         )
         hist_range = [xr, yr]
 
     histogram, x_edges, y_edges = np.histogram2d(
-        xv, yv, bins=bins, range=hist_range,
+        xv,
+        yv,
+        bins=bins,
+        range=hist_range,
     )
 
     counts = histogram.T.astype(int)
@@ -167,8 +187,7 @@ def compute_density(
     threshold = max(int(cutoff), 0)
     masked = np.where(counts > threshold, counts, None)
     histogram_json = [
-        [None if v is None else int(v) for v in row]
-        for row in masked.tolist()
+        [None if v is None else int(v) for v in row] for row in masked.tolist()
     ]
 
     return {
@@ -249,6 +268,75 @@ def _points_in_polygon(xs, ys, vertices) -> np.ndarray:
     return inside
 
 
+def gate_axis_channels(gate) -> tuple[str | None, str | None]:
+    """Canais (crus, como gravados) que o gate referencia nos eixos X e Y.
+
+    Mesma resolução de `apply_gate_filter`: interval/quadrant leem
+    `gate_coordinates.x_axis`/`y_axis` com fallback nos labels do dashboard;
+    os demais tipos usam só os labels do dashboard (default fsc_a/ssc_a).
+    Gate de intervalo não tem eixo Y — retorna `(x, None)`.
+    """
+    coords = gate.gate_coordinates or {}
+
+    x_label = "FSC-A"
+    y_label = "SSC-A"
+    dash = getattr(gate, "dashboard", None)
+    if dash is not None and dash.dashboard_config:
+        config = dash.dashboard_config
+        x_label = config.get("x_axis_label") or x_label
+        y_label = config.get("y_axis_label") or y_label
+
+    gate_type = coords.get("type")
+    if gate_type in ("interval", "quadrant"):
+        x_col = coords.get("x_axis") or x_label
+        y_col = coords.get("y_axis") or y_label
+        return (x_col, None) if gate_type == "interval" else (x_col, y_col)
+    return x_label, y_label
+
+
+def missing_gate_channels(gate, columns) -> list[str]:
+    """Canais que o gate referencia e que não existem nas colunas do dataset.
+
+    Lista vazia = gate avaliável. Os nomes voltam crus (para exibição); a
+    comparação com as colunas é normalizada.
+    """
+    cols = {normalize_column_name(c) for c in columns}
+    missing = []
+    for channel in gate_axis_channels(gate):
+        if channel and normalize_column_name(channel) not in cols:
+            missing.append(channel)
+    return missing
+
+
+def file_data_channels(file_data) -> set[str]:
+    """Canais (normalizados) disponíveis na amostra, sem carregar os eventos.
+
+    Ordem: schema do Parquet (só o footer) → keywords $PnN do header FCS →
+    `get_dataframe()` como último recurso (rebuild custoso a partir do ZIP).
+    """
+    if file_data.parquet_path and os.path.exists(file_data.parquet_path):
+        try:
+            import pyarrow.parquet as pq
+
+            names = pq.read_schema(file_data.parquet_path).names
+            return {normalize_column_name(c) for c in names}
+        except Exception:
+            pass
+
+    headers = file_data.headers or {}
+    if isinstance(headers, dict):
+        channels = {
+            normalize_column_name(str(v))
+            for k, v in headers.items()
+            if isinstance(k, str) and re.fullmatch(r"\$?p\d+n", k) and v
+        }
+        if channels:
+            return channels
+
+    dataset = file_data.get_dataframe()
+    return {normalize_column_name(c) for c in dataset.columns}
+
+
 def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
     """Apply a single gate's filter (rectangle, polygon, interval or quadrant) to a DataFrame.
 
@@ -260,7 +348,11 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
     x_label = "fsc_a"
     y_label = "ssc_a"
 
-    if hasattr(gate, "dashboard") and gate.dashboard and gate.dashboard.dashboard_config:
+    if (
+        hasattr(gate, "dashboard")
+        and gate.dashboard
+        and gate.dashboard.dashboard_config
+    ):
         config = gate.dashboard.dashboard_config
         x_label = normalize_column_name(config.get("x_axis_label", x_label))
         y_label = normalize_column_name(config.get("y_axis_label", y_label))
@@ -275,9 +367,7 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
         start_x = gate_coords.get("startX")
         end_x = gate_coords.get("endX")
         if start_x is not None and end_x is not None:
-            return dataset[
-                (dataset[x_col] >= start_x) & (dataset[x_col] <= end_x)
-            ]
+            return dataset[(dataset[x_col] >= start_x) & (dataset[x_col] <= end_x)]
         return dataset
 
     # Gate de quadrante: filtra um dos 4 quadrantes a partir do centro da cruz.
@@ -322,10 +412,47 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
 
     if all(v is not None for v in (start_x, end_x, start_y, end_y)):
         return dataset[
-            (dataset[x_label] >= start_x) & (dataset[x_label] <= end_x)
-            & (dataset[y_label] >= start_y) & (dataset[y_label] <= end_y)
+            (dataset[x_label] >= start_x)
+            & (dataset[x_label] <= end_x)
+            & (dataset[y_label] >= start_y)
+            & (dataset[y_label] <= end_y)
         ]
     return dataset
+
+
+def empty_density_result(
+    mode: str,
+    x_scale: str,
+    y_scale: str,
+    cofactor: float = DEFAULT_COFACTOR,
+    cutoff: int = 0,
+) -> dict:
+    """Payload vazio do modo, com o mesmo shape do resultado normal.
+
+    Usado quando o gate é avaliável mas filtrou todos os eventos (ou as
+    colunas pedidas só têm NaN): zero eventos é resposta, não erro — o front
+    mostra o plot vazio em vez de "Erro ao carregar dados".
+    """
+    if mode == "scatter":
+        return {
+            "x": [],
+            "y": [],
+            "sampled_events": 0,
+            "x_scale": x_scale,
+            "y_scale": y_scale,
+            "cofactor": cofactor,
+        }
+    if mode == "histogram":
+        return {"counts": [], "edges": [], "x_scale": x_scale, "cofactor": cofactor}
+    return {
+        "histogram": [],
+        "x_edges": [],
+        "y_edges": [],
+        "x_scale": x_scale,
+        "y_scale": y_scale,
+        "cofactor": cofactor,
+        "cutoff": max(int(cutoff), 0),
+    }
 
 
 def subsample_scatter(

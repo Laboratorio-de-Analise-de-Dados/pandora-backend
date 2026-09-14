@@ -35,7 +35,11 @@ from utils.density import (
     compute_histogram,
     default_scale,
     density_cache_key,
+    empty_density_result,
+    file_data_channels,
     get_cached_density,
+    missing_gate_channels,
+    normalize_column_name,
     normalize_columns,
     parse_range,
     set_cached_density,
@@ -313,8 +317,24 @@ class GetGateDataView(generics.ListAPIView):
         dataset = file_data_instance.get_dataframe()
 
         dataset = normalize_columns(dataset)
+        columns = set(dataset.columns)
 
         for gate_in_path in gate_path:
+            # Canal ausente invalida o gate e a linhagem abaixo dele (ADR-0016).
+            missing = missing_gate_channels(gate_in_path, columns)
+            if missing:
+                return Response(
+                    {
+                        "detail": (
+                            f"O gate '{gate_in_path.name}' referencia o(s) "
+                            f"canal(is) {', '.join(missing)}, ausente(s) nesta "
+                            "amostra."
+                        ),
+                        "missing_channels": missing,
+                        "gate_id": gate_in_path.id,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             dataset = self._apply_gate_filter(dataset, gate_in_path)
             if dataset.empty:
                 break
@@ -473,11 +493,42 @@ class GateDensityView(APIView):
 
         file_data = gate_path[0].file_data
         dataset = normalize_columns(file_data.get_dataframe())
+        columns = set(dataset.columns)
 
         for g in gate_path:
+            # Canal ausente invalida o gate e a linhagem abaixo dele (ADR-0016):
+            # é erro explicável, não falha genérica — o front mostra qual canal
+            # falta em vez de "Erro ao carregar dados".
+            missing = missing_gate_channels(g, columns)
+            if missing:
+                return Response(
+                    {
+                        "detail": (
+                            f"O gate '{g.name}' referencia o(s) canal(is) "
+                            f"{', '.join(missing)}, ausente(s) nesta amostra."
+                        ),
+                        "missing_channels": missing,
+                        "gate_id": g.id,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             dataset = apply_gate_filter(dataset, g)
             if dataset.empty:
                 break
+
+        requested = [x_param] if mode == "histogram" else [x_param, y_param]
+        missing_axes = [p for p in requested if normalize_column_name(p) not in columns]
+        if missing_axes:
+            return Response(
+                {
+                    "detail": (
+                        f"Canal(is) não encontrado(s) nesta amostra: "
+                        f"{', '.join(missing_axes)}."
+                    ),
+                    "missing_channels": missing_axes,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         base = {
             "mode": mode,
@@ -517,10 +568,9 @@ class GateDensityView(APIView):
             )
 
         if result is None:
-            return Response(
-                {"detail": f"Columns '{x_param}' or '{y_param}' not found in dataset."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            # Colunas existem mas não há evento válido: gate legítimo que
+            # filtrou tudo — resposta vazia do modo, não erro.
+            result = empty_density_result(mode, x_scale, y_scale, cofactor, cutoff)
 
         payload = {**base, **result}
         set_cached_density(cache_key, payload)
@@ -744,6 +794,7 @@ class ApplyGateView(APIView):
                 "skipped": serializers.IntegerField(),
                 "replaced": serializers.IntegerField(),
                 "conflicts": serializers.ListField(child=serializers.DictField()),
+                "non_evaluable": serializers.ListField(child=serializers.DictField()),
                 "details": serializers.ListField(child=serializers.DictField()),
             },
         ),
@@ -837,6 +888,30 @@ class ApplyGateView(APIView):
         from analytics.tasks import recalculate_gate_analysis
         from utils.density import invalidate_density
 
+        # Amostras onde algum gate aplicado não pode ser avaliado porque o
+        # canal não existe no arquivo (ADR-0016): a cópia é criada mesmo
+        # assim, mas a UI avisa que a linhagem ficará marcada como
+        # não-avaliável lá — presente no dry_run e na aplicação real.
+        non_evaluable = []
+        for target_fd_id in target_ids:
+            cols = file_data_channels(target_files[target_fd_id])
+            missing_map = {}
+            for gate in ordered_gates:
+                missing = missing_gate_channels(gate, cols)
+                if missing:
+                    missing_map[gate.id] = missing
+            if missing_map:
+                non_evaluable.append(
+                    {
+                        "file_data_id": target_fd_id,
+                        "file_name": target_files[target_fd_id].file_name,
+                        "missing_channels": sorted(
+                            {c for ms in missing_map.values() for c in ms}
+                        ),
+                        "gate_ids": sorted(missing_map),
+                    }
+                )
+
         if dry_run:
             return Response(
                 {
@@ -844,6 +919,7 @@ class ApplyGateView(APIView):
                     "skipped": 0,
                     "replaced": 0,
                     "conflicts": _apply_conflicts(ordered_gates, target_ids),
+                    "non_evaluable": non_evaluable,
                     "details": [],
                 },
                 status=status.HTTP_200_OK,
@@ -971,6 +1047,7 @@ class ApplyGateView(APIView):
                 "skipped": total_skipped,
                 "replaced": total_replaced,
                 "conflicts": conflicts,
+                "non_evaluable": non_evaluable,
                 "details": details,
             },
             status=status.HTTP_201_CREATED,

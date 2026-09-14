@@ -132,7 +132,11 @@ def recalculate_gate_analysis(gate_id: int):
       root gates).
     - **% of Total (Grandparent)**: count / total de eventos do arquivo.
     """
-    from utils.density import apply_gate_filter, normalize_columns
+    from utils.density import (
+        apply_gate_filter,
+        missing_gate_channels,
+        normalize_columns,
+    )
 
     logger.info("Iniciando recálculo para gate ID %s...", gate_id)
     try:
@@ -158,24 +162,42 @@ def recalculate_gate_analysis(gate_id: int):
             gate_path.insert(0, current)
 
         parent_gated_data_df = None
+        blocked_by = None
+        missing_channels = []
         for g in gate_path:
             if g.id == gate.id:
                 parent_gated_data_df = dataset.copy()
+            # Canal ausente torna o gate não-avaliável nesta amostra e corta
+            # a linhagem abaixo dele (ADR-0016): sem stat fictícia, o gate
+            # fica marcado e os filhos herdam o mesmo marcador na recursão.
+            missing = missing_gate_channels(g, dataset.columns)
+            if missing:
+                blocked_by = g
+                missing_channels = missing
+                break
             dataset = apply_gate_filter(dataset, g)
             if dataset.empty:
                 break
 
-        gated_data_df = dataset
+        if blocked_by is not None:
+            new_analysis_results = {
+                "applicable": False,
+                "reason": "missing_channels",
+                "missing_channels": missing_channels,
+                "blocked_by_gate": {"id": blocked_by.id, "name": blocked_by.name},
+            }
+        else:
+            gated_data_df = dataset
 
-        if parent_gated_data_df is None:
-            parent_gated_data_df = normalize_columns(fcs_data_df)
+            if parent_gated_data_df is None:
+                parent_gated_data_df = normalize_columns(fcs_data_df)
 
-        new_analysis_results = calculate_cytometry_metrics(
-            gated_data_df,
-            total_events_in_file,
-            parent_gated_data_df,
-            all_channel_names,
-        )
+            new_analysis_results = calculate_cytometry_metrics(
+                gated_data_df,
+                total_events_in_file,
+                parent_gated_data_df,
+                all_channel_names,
+            )
 
         AnalysisResult.objects.update_or_create(
             gate=gate,
