@@ -1,7 +1,7 @@
 # BE-17 — `created_by_name` na listagem de experimentos
 
 **Repo:** pandora-backend · **Tipo:** feature (micro) · **Base:** `main`
-**Status:** não implementado — documentado para o agente do back.
+**Status:** implementado em `feat/created-by-name-list`.
 Front que consome: `feat/card-owner-org` (rodapé do card de experimento).
 
 ## Problema

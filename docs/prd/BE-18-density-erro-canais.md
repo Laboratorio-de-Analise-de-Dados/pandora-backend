@@ -2,7 +2,7 @@
 
 **Repo:** pandora-backend · **Item do doc:** teste 14/09/2026, item 2 · **Tipo:** fix · **Base:** `main`
 **Branch sugerida:** `fix/gate-density-missing-channel`
-**Status:** não iniciado.
+**Status:** implementado em `fix/gate-density-missing-channel`.
 
 ## Problema
 

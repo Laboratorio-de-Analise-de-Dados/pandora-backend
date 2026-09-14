@@ -18,8 +18,8 @@
 | [BE-14](BE-14-reativar-experimento.md) | Reativar experimento (caminho de volta do soft-delete) | Implementado em `feat/scoped-lookups` |
 | [BE-15](BE-15-rename-citosharp-pandora.md) | Renomear pacote `citosharp` → `pandora` | Implementado em `feat/scoped-lookups` |
 | [BE-16](BE-16-titulo-unico-apenas-ativos.md) | Título único apenas entre ativos | Implementado em `feat/scoped-lookups` |
-| [BE-17](BE-17-creator-name-na-listagem.md) | `created_by_name` na listagem de experimentos | Não iniciado (front pronto em `feat/card-owner-org`) |
-| [BE-18](BE-18-density-erro-canais.md) | "Erro ao carregar dados" em gate/arquivo sem o canal pedido | Não iniciado |
+| [BE-17](BE-17-creator-name-na-listagem.md) | `created_by_name` na listagem de experimentos | Implementado em `feat/created-by-name-list`                   |
+| [BE-18](BE-18-density-erro-canais.md) | "Erro ao carregar dados" em gate/arquivo sem o canal pedido | Implementado em `fix/gate-density-missing-channel` |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na
