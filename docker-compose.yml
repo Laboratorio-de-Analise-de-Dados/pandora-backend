@@ -3,7 +3,7 @@
 # docker-compose.prod.yml com secrets/vars do CI.
 services:
   db:
-    image: postgres:18
+    image: postgres:16
     container_name: pandora_db
     environment:
       POSTGRES_DB: "${POSTGRES_DB:-pandora_db}"
@@ -12,9 +12,7 @@ services:
     ports:
       - 5432:5432
     volumes:
-      # postgres:18+ usa layout versionado (data/18/docker); o volume monta
-      # no diretório pai — não mudar para .../data ou o cluster não é achado
-      - db_data:/var/lib/postgresql
+      - db_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]
       interval: 10s
@@ -43,9 +41,10 @@ services:
       FRONTEND_URL: "${FRONTEND_URL:-http://localhost:3000}"
       EMAIL_HOST_USER: "${EMAIL_HOST_USER:-}"
       EMAIL_HOST_PASSWORD: "${EMAIL_HOST_PASSWORD:-}"
-    # migrate na subida é conveniência de dev; model novo pede migration
-    # gerada + commitada: docker compose exec web python manage.py makemigrations
-    command: bash -c 'while !</dev/tcp/db/5432; do sleep 1; done; python manage.py migrate && python manage.py runserver 0.0.0.0:8000'
+    # migrate na subida é conveniência de dev. Migration NÃO é gerada na
+    # subida: o check abaixo só avisa; o gate duro está no Dockerfile
+    # (build falha). Gerar: docker compose exec web python manage.py makemigrations
+    command: 'bash -c "while !</dev/tcp/db/5432; do sleep 1; done; python manage.py migrate && (python manage.py makemigrations --check --dry-run || echo ATENCAO: model mudou sem migration. Rode: docker compose exec web python manage.py makemigrations) && python manage.py runserver 0.0.0.0:8000"'
     volumes:
       - .:/app
       - uploads_data:/app/uploads # pasta de uploads compartilhada

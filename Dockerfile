@@ -24,6 +24,9 @@ ENV SECRET_KEY=$SECRET_KEY
 # Criar pasta de estáticos
 RUN mkdir -p /app/staticfiles
 
+# Gate: model mudou sem migration -> falha o build (sem imagem, sem deploy)
+RUN python manage.py makemigrations --check --dry-run
+
 # Coletar arquivos estáticos (precisa do SECRET_KEY)
 RUN python manage.py collectstatic --noinput
 

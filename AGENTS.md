@@ -31,8 +31,10 @@ python manage.py check              # sanity check do Django
 - **CI não roda testes** — o workflow (`.github/workflows/ci.yml`) só builda e
   publica a imagem Docker; deploy exige aprovação manual no environment
   `production`. Teste local é responsabilidade sua.
-- O compose roda `makemigrations`/`migrate` na subida por conveniência — mas
-  migration nova de model **deve** ser gerada e commitada junto.
+- O compose aplica `migrate` na subida; `makemigrations` é manual:
+  `docker compose exec web python manage.py makemigrations` (o dev não
+  precisa de Django na máquina). O Dockerfile roda
+  `makemigrations --check` — build falha se model mudou sem migration.
 
 ## Arquitetura (3 apps + utils)
 

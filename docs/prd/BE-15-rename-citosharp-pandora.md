@@ -23,6 +23,14 @@ comportamento, modelo ou endpoint:
 - `docker-compose.prod.yml` — comando do gunicorn
 - `AGENTS.md` e `README.md` — estrutura de diretórios
 
+- `docker-compose.yml` (dev) — `DJANGO_SETTINGS_MODULE=pandora.settings`
+  explícito (imagem velha carregava o env antigo); `postgres:16` pinado,
+  mesma versão de prod (o volume dev precisou ser recriado: foi feito
+  `pg_dump` + restore dos dados de dev).
+- `docker-compose.prod.yml` — removido `makemigrations` do boot de prod;
+  `Dockerfile` ganha `makemigrations --check --dry-run` como gate de
+  build (model sem migration = sem imagem = sem deploy).
+
 ## Fora de escopo
 
 - Nome do container/imagem Docker (`pandora_web`, `pandora_db` já dizem
