@@ -1,31 +1,69 @@
 from django.urls import path
 
 from .views import (
+    DisableFileDataView,
+    EnableFileDataView,
     ExperimentCompleteView,
+    ExperimentCopyView,
+    ExperimentDownloadView,
+    ExperimentFileChunkView,
+    ExperimentFileCompleteView,
+    ExperimentFileInitView,
     ExperimentInitView,
     ExperimentListView,
+    ExperimentRestoreView,
     FileDensityView,
+    FileHashCheckView,
+    FileHeadersView,
     FileStatsView,
+    FileSubsampleView,
     GetExperimentFiles,
     ListFileParams,
     ProcessFileDataView,
     RecomputeFileDataView,
     RetrieveDeleteExperimentView,
+    SubsampleDetailView,
+    SubsampleListCreateView,
     UploadChunkView,
 )
 
-app_name = "fcs_parse"
+app_name = "fcs_parser"
 
 urlpatterns = [
     path("init/", ExperimentInitView.as_view()),
     path("upload-chunk/", UploadChunkView.as_view()),
     path("complete/", ExperimentCompleteView.as_view()),
+    path("check-hash/", FileHashCheckView.as_view()),
+    path("files/upload-chunk/", ExperimentFileChunkView.as_view()),
+    path("files/complete/", ExperimentFileCompleteView.as_view()),
+    path("<int:experiment_id>/files/init", ExperimentFileInitView.as_view()),
+    path("<int:experiment_id>/download", ExperimentDownloadView.as_view()),
+    path("<int:experiment_id>/copy", ExperimentCopyView.as_view()),
+    path("<int:experiment_id>/restore", ExperimentRestoreView.as_view()),
     path("list/data/<str:experiment_id>/", GetExperimentFiles.as_view()),
     path("file/<str:file_id>/list", ListFileParams.as_view()),
     path("file/<int:file_id>/density", FileDensityView.as_view()),
     path("file/<int:file_id>/recompute", RecomputeFileDataView.as_view()),
     path("file/<int:file_id>/stats", FileStatsView.as_view()),
+    path("file/<int:file_id>/headers", FileHeadersView.as_view()),
+    path("file/<int:file_id>/disable", DisableFileDataView.as_view()),
+    path("file/<int:file_id>/enable", EnableFileDataView.as_view()),
+    path(
+        "file/<int:file_id>/subsample",
+        FileSubsampleView.as_view(),
+        name="file_subsample",
+    ),
+    path(
+        "<int:experiment_id>/subsamples/",
+        SubsampleListCreateView.as_view(),
+        name="subsample_list_create",
+    ),
+    path(
+        "<int:experiment_id>/subsamples/<int:pk>/",
+        SubsampleDetailView.as_view(),
+        name="subsample_detail",
+    ),
     path("<str:experiment_id>/", RetrieveDeleteExperimentView.as_view()),
     path("file/<int:file_id>/process", ProcessFileDataView.as_view()),
-    path("", ExperimentListView.as_view())
+    path("", ExperimentListView.as_view()),
 ]

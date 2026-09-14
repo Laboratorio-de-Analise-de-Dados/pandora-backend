@@ -2,8 +2,11 @@ import base64
 import hashlib
 import secrets
 import urllib.parse
+from datetime import timedelta
 import requests
 from django.conf import settings
+from django.db.models import Prefetch
+from django.utils import timezone
 from django.contrib.auth.tokens import default_token_generator
 from django.shortcuts import get_object_or_404, redirect
 from drf_spectacular.utils import extend_schema, inline_serializer
@@ -11,7 +14,6 @@ from rest_framework import generics, serializers
 from accounts.permissions.has_permission import IsOrgAdmin, IsSuperAdmin
 from accounts.serializers import (
     OrganizationDetailSerializer,
-    OrganizationListSerializer,
     UserCreateSerializer,
     UserDetailSerializer,
     UserListSerializer,
@@ -46,18 +48,24 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 
 class OrganizationListCreateView(SerializerByMethodMixin, generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = OrganizationListSerializer
+    serializer_class = OrganizationDetailSerializer
     serializer_map = {
         "POST": OrganizationDetailSerializer,
     }
 
     def get_queryset(self):
         user = self.request.user
+        members = Prefetch(
+            "memberships",
+            queryset=Membership.objects.filter(status="active").select_related(
+                "user", "role", "organization"
+            ),
+        )
         if user.is_super_admin:
-            return Organization.objects.all()
+            return Organization.objects.prefetch_related(members)
         return Organization.objects.filter(
             memberships__user=user, memberships__status="active"
-        ).distinct()
+        ).prefetch_related(members).distinct()
 
     def perform_create(self, serializer):
         org = serializer.save()
@@ -74,7 +82,14 @@ class OrganizationRetrieveUpdateDestroyView(
     SerializerByMethodMixin, generics.RetrieveUpdateDestroyAPIView
 ):
     permission_classes = [IsAuthenticated]
-    queryset = Organization.objects.all()
+    queryset = Organization.objects.prefetch_related(
+        Prefetch(
+            "memberships",
+            queryset=Membership.objects.filter(status="active").select_related(
+                "user", "role", "organization"
+            ),
+        )
+    )
     serializer_class = OrganizationDetailSerializer
     serializer_map = {
         "GET": OrganizationDetailSerializer,
@@ -113,6 +128,24 @@ class UserRetrieveUpdateDestroyView(
         return super().get_object()
 
 
+def _assert_not_last_org_admin(membership):
+    """Impede que a organização fique sem nenhum admin ativo."""
+    if (
+        membership.role.name == Role.ORG_ADMIN
+        and membership.status == "active"
+        and not Membership.objects.filter(
+            organization_id=membership.organization_id,
+            role__name=Role.ORG_ADMIN,
+            status="active",
+        )
+        .exclude(id=membership.id)
+        .exists()
+    ):
+        raise serializers.ValidationError(
+            {"role": "A organização precisa de pelo menos um admin ativo."}
+        )
+
+
 class MembershipListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated, IsOrgAdmin]
 
@@ -132,10 +165,39 @@ class MembershipListCreateView(generics.ListCreateAPIView):
         serializer.save(organization_id=org_id)
 
 
+@extend_schema(
+    description=(
+        "Vínculo de um usuário com a organização. "
+        "Política da API: nada é deletado fisicamente — o `DELETE` inativa "
+        "o membership (`status='inactive'`), preservando o histórico."
+    )
+)
 class MembershipRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated, IsOrgAdmin]
-    queryset = Membership.objects.all().select_related("user", "role", "organization")
     serializer_class = MembershipSerializer
+
+    def get_queryset(self):
+        return Membership.objects.filter(
+            organization_id=self.kwargs["organization_id"]
+        ).select_related("user", "role", "organization")
+
+    def perform_update(self, serializer):
+        membership = serializer.instance
+        new_role = serializer.validated_data.get("role", membership.role)
+        new_status = serializer.validated_data.get("status", membership.status)
+        leaves_admin = (
+            new_role.name != Role.ORG_ADMIN or new_status != "active"
+        )
+        if leaves_admin:
+            _assert_not_last_org_admin(membership)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        """Nunca deleta: apenas inativa o vínculo, preservando o histórico."""
+        _assert_not_last_org_admin(instance)
+        if instance.status != "inactive":
+            instance.status = "inactive"
+            instance.save(update_fields=["status"])
 
     def get_serializer_class(self):
         if self.request.method in ["PUT", "PATCH"]:
@@ -230,6 +292,53 @@ class MyPendingInvitesView(generics.ListAPIView):
         return Invite.objects.filter(
             email__iexact=self.request.user.email, status="pending"
         ).select_related("organization", "role")
+
+
+class MyOrganizationPendingInvitesView(generics.ListAPIView):
+    """Convites pendentes enviados para organizações que o usuário administra."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = InviteSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_super_admin:
+            return Invite.objects.filter(status="pending").select_related(
+                "organization", "role"
+            )
+        admin_org_ids = Membership.objects.filter(
+            user=user,
+            role__name=Role.ORG_ADMIN,
+            status="active",
+        ).values_list("organization_id", flat=True)
+        return Invite.objects.filter(
+            organization_id__in=admin_org_ids, status="pending"
+        ).select_related("organization", "role")
+
+
+class InviteResendView(generics.GenericAPIView):
+    """Reenvia um convite pendente, renovando a validade."""
+
+    permission_classes = [IsAuthenticated, IsOrgAdmin]
+    serializer_class = InviteSerializer
+    queryset = Invite.objects.all()
+
+    def post(self, request, *args, **kwargs):
+        org_id = self.kwargs["organization_id"]
+        invite = get_object_or_404(
+            Invite,
+            pk=self.kwargs["pk"],
+            organization_id=org_id,
+            status="pending",
+        )
+        invite.expires_at = timezone.now() + timedelta(hours=24)
+        invite.save(update_fields=["expires_at"])
+        email_sent = send_invite_email(invite)
+        serializer = self.get_serializer(invite, context={"request": request})
+        return Response(
+            {**serializer.data, "email_sent": email_sent},
+            status=status.HTTP_200_OK,
+        )
 
 
 class RoleListCreateView(generics.ListCreateAPIView):

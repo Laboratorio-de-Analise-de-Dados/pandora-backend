@@ -60,9 +60,7 @@ class OrganizationDetailSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "org_type", "external_id", "members"]
 
     def get_members(self, obj):
-        memberships = obj.memberships.filter(status="active").select_related(
-            "user", "role"
-        )
+        memberships = [m for m in obj.memberships.all() if m.status == "active"]
         return MembershipSerializer(memberships, many=True).data
 
 
@@ -233,9 +231,24 @@ class UserDetailSerializer(serializers.ModelSerializer):
 
 
 class MembershipCreateSerializer(serializers.ModelSerializer):
+    role = serializers.CharField()
+
     class Meta:
         model = Membership
         fields = ["user", "role", "status"]
+
+    def validate_role(self, value):
+        """Aceita o nome da role (`member`, `org_admin`) ou o id."""
+        roles = get_or_create_default_roles()
+        if value in roles:
+            return roles[value]
+
+        if str(value).isdigit():
+            role = Role.objects.filter(id=int(value)).first()
+            if role:
+                return role
+
+        raise serializers.ValidationError("Role inválida.")
 
 
 class InviteSerializer(serializers.ModelSerializer):

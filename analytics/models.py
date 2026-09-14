@@ -1,5 +1,7 @@
+from django.conf import settings
 from django.db import models
 
+from analytics.gate_author import author_display_name
 from fcs_parser.models import ExperimentModel, FileDataModel
 
 
@@ -44,6 +46,13 @@ class GateModel(models.Model):
         related_name="copies",
     )
     color = models.CharField(max_length=7, null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="gates_created",
+    )
 
     def __str__(self) -> str:
         return f"Gate {self.id} – {self.name}"
@@ -64,6 +73,11 @@ class GateModel(models.Model):
                 "plot_config",
                 "copied_from_id",
                 "color",
+                "created_at",
+                "created_by_id",
+                "created_by__first_name",
+                "created_by__last_name",
+                "created_by__username",
             )
         )
 
@@ -78,7 +92,18 @@ class GateModel(models.Model):
         # Cria um mapa de gates, preparando cada um para receber filhos
         gate_map = {}
         for gate in gates:
-            entry = {**gate, "children": []}
+            author_name = author_display_name(
+                gate.pop("created_by__first_name"),
+                gate.pop("created_by__last_name"),
+                gate.pop("created_by__username"),
+            )
+            entry = {
+                **gate,
+                "children": [],
+                "created_by": gate.pop("created_by_id"),
+                "created_by_name": author_name,
+            }
+            entry.pop("created_by_id", None)
             ar = analysis_map.get(gate["id"])
             if ar:
                 entry["analysis_result"] = {"analysis_result": ar}

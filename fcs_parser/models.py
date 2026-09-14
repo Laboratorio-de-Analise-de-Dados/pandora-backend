@@ -64,13 +64,13 @@ class ExperimentModel(models.Model):
             models.UniqueConstraint(
                 fields=["title", "created_by", "organization"],
                 name="unique_title_per_user_and_org",
-                condition=models.Q(organization__isnull=False),
+                condition=models.Q(organization__isnull=False, active=True),
             ),
             # Evita que o MESMO usuário crie experimentos pessoais com títulos iguais
             models.UniqueConstraint(
                 fields=["title", "created_by"],
                 name="unique_title_per_user_personal",
-                condition=models.Q(organization__isnull=True),
+                condition=models.Q(organization__isnull=True, active=True),
             ),
         ]
 
@@ -83,7 +83,13 @@ class ExperimentModel(models.Model):
 
 
 class FileModel(models.Model):
-    """Model for Experiment Files"""
+    """Um upload de arquivo pertencente a um experimento.
+
+    Um experimento pode receber vários uploads ao longo do tempo (FK) —
+    cada FileModel é um blob (sempre ZIP; `.fcs` solto é aglutinado num
+    ZIP no complete). Copiar um experimento cria outra linha apontando pro
+    mesmo ``file`` sem duplicar bytes; ``sha256`` é a identidade do blob.
+    """
 
     class Meta:
         db_table = "experiment_files"
@@ -91,7 +97,14 @@ class FileModel(models.Model):
     id = models.BigAutoField(primary_key=True)
     file_name = models.CharField(max_length=256, null=True)
     file = models.FileField(upload_to="", null=True)
-    experiment = models.OneToOneField(ExperimentModel, on_delete=models.CASCADE)
+    # SHA-256 do blob físico; nulo em uploads antigos (backfill incremental).
+    sha256 = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    experiment = models.ForeignKey(
+        ExperimentModel, on_delete=models.CASCADE, related_name="uploads"
+    )
+    # Controle do upload em chunks deste arquivo (fluxo "adicionar arquivos").
+    total_chunks = models.IntegerField(null=True, blank=True)
+    received_chunks = ArrayField(models.IntegerField(), default=list, blank=True)
 
     def get_file_url(self):
         return settings.MEDIA_URL + str(self.file)
@@ -100,11 +113,74 @@ class FileModel(models.Model):
         return f"File {self.id} – {self.file_name}"
 
 
+class SubsampleModel(models.Model):
+    """Agrupamento de amostras dentro de um experimento.
+
+    A engine cria um subsample por diretório encontrado dentro do ZIP
+    (``tempo_1/``, ``tempo_2/`` ...), mas o vínculo amostra ↔ subsample é
+    editável na UI: o cliente pode renomear o subsample e mover amostras
+    entre eles sem que a extração reescreva a escolha dele.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    experiment = models.ForeignKey(
+        ExperimentModel, on_delete=models.CASCADE, related_name="subsamples"
+    )
+    name = models.CharField(max_length=256)
+    # Diretório relativo dentro do ZIP que originou o subsample.
+    # Vazio quando o subsample foi criado pelo usuário na UI.
+    source_path = models.CharField(max_length=512, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_subsamples",
+    )
+    # Nada é deletado: o subsample é inativado e suas amostras voltam para
+    # "sem subsample".
+    active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        db_table = "subsamples"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["experiment", "name"],
+                name="unique_subsample_name_per_experiment",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"Subsample {self.id} – {self.name}"
+
+
 class FileDataModel(models.Model):
     """Model for Data on each file"""
 
     id = models.BigAutoField(primary_key=True)
     file_name = models.CharField(max_length=256, null=True)
+    # Caminho relativo dentro do ZIP (ex.: "tempo_1/a1.fcs"). É a identidade
+    # real da amostra: dois arquivos podem ter o mesmo `file_name` em pastas
+    # diferentes.
+    source_path = models.CharField(max_length=512, blank=True, default="")
+    # Identidade lógica do .fcs (keyword `guid` do header). Âncora de
+    # cópia/rollback; `source_path` fica como dica de agrupamento inicial.
+    content_guid = models.CharField(
+        max_length=256, null=True, blank=True, db_index=True
+    )
+    # SHA-256 do .fcs individual — dedup por amostra, não pelo blob (ZIP)
+    # inteiro. Permite detectar o mesmo arquivo em uploads/ZIPs diferentes.
+    content_sha256 = models.CharField(
+        max_length=64, null=True, blank=True, db_index=True
+    )
+    subsample = models.ForeignKey(
+        "SubsampleModel",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="files",
+    )
     experiment = models.ForeignKey(ExperimentModel, on_delete=models.CASCADE)
     headers = models.JSONField()
     # Legacy: data_set JSON in the DB. New rows use Parquet on disk.
@@ -118,9 +194,35 @@ class FileDataModel(models.Model):
     file = models.ForeignKey(
         FileModel, on_delete=models.CASCADE, related_name="extracted_data"
     )
+    # Freezer: amostra desabilitada sai das listagens e das análises, mas os
+    # dados (Parquet/ZIP) e os gates continuam intactos e podem ser reativados.
+    # A limpeza física de arquivos inativos e frios depende de uma rotina de
+    # retenção ainda não implementada — sem ela o disco cresce indefinidamente.
+    active = models.BooleanField(default=True, db_index=True)
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    deactivated_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deactivated_files",
+    )
 
     class Meta:
         db_table = "file_data"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["experiment", "source_path"],
+                condition=~models.Q(source_path=""),
+                name="unique_source_path_per_experiment",
+            ),
+            models.UniqueConstraint(
+                fields=["experiment", "content_guid"],
+                condition=~models.Q(content_guid__isnull=True)
+                & ~models.Q(content_guid=""),
+                name="unique_content_guid_per_experiment",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"FileData {self.id} – {self.file_name}"
@@ -173,15 +275,15 @@ class FileDataModel(models.Model):
         return pd.DataFrame()
 
     def _rebuild_from_zip(self) -> pd.DataFrame | None:
-        """Extract .fcs from the experiment's ZIP and rebuild the Parquet cache."""
+        """Extract .fcs from this sample's own upload ZIP and rebuild cache."""
         from fcs_parser.services.process_experiment_file import extract_fcs_from_zip
         from fcs_parser.services.process_fcs import process_fcs_file
 
-        experiment = self.experiment
-        if not getattr(experiment, "zip_path", None):
+        upload = self.file
+        if upload is None:
             return None
 
-        fcs_path = extract_fcs_from_zip(experiment, self.file_name)
+        fcs_path = extract_fcs_from_zip(upload, self.source_path or self.file_name)
         if fcs_path is None:
             return None
 

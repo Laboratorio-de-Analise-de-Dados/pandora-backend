@@ -8,7 +8,9 @@ from .views import (
     InviteDeclineView,
     InviteListCreateView,
     InvitePublicDetailView,
+    InviteResendView,
     InviteRetrieveUpdateDestroyView,
+    MyOrganizationPendingInvitesView,
     MyPendingInvitesView,
     MembershipListCreateView,
     MembershipRetrieveUpdateDestroyView,
@@ -67,9 +69,19 @@ urlpatterns = [
         name="my_pending_invites",
     ),
     path(
+        "users/me/invites/sent/",
+        MyOrganizationPendingInvitesView.as_view(),
+        name="my_organization_pending_invites",
+    ),
+    path(
         "invites/<str:token>/",
         InvitePublicDetailView.as_view(),
         name="invite_public_detail",
+    ),
+    path(
+        "organizations/<int:organization_id>/invites/<int:pk>/resend/",
+        InviteResendView.as_view(),
+        name="invite_resend",
     ),
     path(
         "invites/accept/<str:token>/", InviteAcceptView.as_view(), name="invite_accept"

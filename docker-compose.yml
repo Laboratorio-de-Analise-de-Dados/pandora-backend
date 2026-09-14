@@ -1,15 +1,18 @@
+# Compose de DESENVOLVIMENTO local — não usar em produção.
+# Os defaults abaixo existem só para o setup rodar zero-config; produção usa
+# docker-compose.prod.yml com secrets/vars do CI.
 services:
   db:
-    image: postgres:latest
+    image: postgres:16
     container_name: pandora_db
     environment:
-      POSTGRES_DB: pandora_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: secret_pass
+      POSTGRES_DB: "${POSTGRES_DB:-pandora_db}"
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-secret_pass}"
     ports:
       - 5432:5432
     volumes:
-      - db_data:/var/lib/postgresql
+      - db_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]
       interval: 10s
@@ -22,22 +25,26 @@ services:
     build:
       context: .
       args:
-        SECRET_KEY: v0v8JHJuM8OzY2
+        SECRET_KEY: "${SECRET_KEY:-dev-insecure-secret-key}"
     container_name: pandora_web
     env_file:
       - .env
     environment:
-      SECRET_KEY: v0v8JHJuM8OzY2
-      DATABASE_NAME: pandora_db
-      DATABASE_USER: postgres
-      DATABASE_PASSWORD: secret_pass
+      DJANGO_SETTINGS_MODULE: pandora.settings
+      SECRET_KEY: "${SECRET_KEY:-dev-insecure-secret-key}"
+      DATABASE_NAME: "${POSTGRES_DB:-pandora_db}"
+      DATABASE_USER: "${POSTGRES_USER:-postgres}"
+      DATABASE_PASSWORD: "${POSTGRES_PASSWORD:-secret_pass}"
       DATABASE_HOST: pandora_db
       DATABASE_PORT: 5432
       MEDIA_ROOT: "/app/uploads" # mesma pasta que o volume
       FRONTEND_URL: "${FRONTEND_URL:-http://localhost:3000}"
       EMAIL_HOST_USER: "${EMAIL_HOST_USER:-}"
       EMAIL_HOST_PASSWORD: "${EMAIL_HOST_PASSWORD:-}"
-    command: bash -c 'while !</dev/tcp/db/5432; do sleep 1; done; python manage.py makemigrations &&  python manage.py migrate && python manage.py runserver 0.0.0.0:8000'
+    # migrate na subida é conveniência de dev. Migration NÃO é gerada na
+    # subida: o check abaixo só avisa; o gate duro está no Dockerfile
+    # (build falha). Gerar: docker compose exec web python manage.py makemigrations
+    command: 'bash -c "while !</dev/tcp/db/5432; do sleep 1; done; python manage.py migrate && (python manage.py makemigrations --check --dry-run || echo ATENCAO: model mudou sem migration. Rode: docker compose exec web python manage.py makemigrations) && python manage.py runserver 0.0.0.0:8000"'
     volumes:
       - .:/app
       - uploads_data:/app/uploads # pasta de uploads compartilhada
