@@ -1241,3 +1241,147 @@ class ExperimentListCreatedByNameTestCase(TestCase):
 
         self.assertEqual(res.status_code, 200)
         self.assertIsNone(res.data[0]["created_by_name"])
+
+
+class ExperimentListMetaTestCase(TestCase):
+    """BE-21: my_role, progress e preview_available na listagem."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.org = Organization.objects.create(name="Lab X", org_type="lab")
+        self.member_role = Role.objects.create(name="member")
+
+        self.personal = ExperimentModel.objects.create(
+            title="pessoal", type="t", created_by=self.owner, status="done"
+        )
+        self.org_exp = ExperimentModel.objects.create(
+            title="org",
+            type="t",
+            organization=self.org,
+            status="uploading",
+            total_chunks=4,
+            received_chunks=[1, 2],
+        )
+        Membership.objects.create(
+            user=self.owner,
+            organization=self.org,
+            role=self.member_role,
+            status="active",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def test_my_role_owner_no_pessoal_e_membership_na_org(self):
+        res = self.client.get("/experiment/")
+
+        self.assertEqual(res.status_code, 200)
+        by_id = {e["id"]: e for e in res.data}
+        self.assertEqual(by_id[self.personal.id]["my_role"], "owner")
+        self.assertEqual(by_id[self.org_exp.id]["my_role"], "member")
+
+    def test_progress_reflete_chunks_do_upload(self):
+        res = self.client.get("/experiment/")
+
+        by_id = {e["id"]: e for e in res.data}
+        self.assertEqual(by_id[self.org_exp.id]["progress"], 50)
+        # Fora de `uploading` (ou sem total) o progresso não se aplica.
+        self.assertIsNone(by_id[self.personal.id]["progress"])
+
+    def test_preview_available_com_amostra_ativa(self):
+        file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="b" * 64,
+            experiment=self.personal,
+        )
+        FileDataModel.objects.create(
+            headers={},
+            experiment=self.personal,
+            file_name="a1.fcs",
+            file=file_model,
+        )
+
+        res = self.client.get("/experiment/")
+
+        by_id = {e["id"]: e for e in res.data}
+        self.assertTrue(by_id[self.personal.id]["preview_available"])
+        self.assertFalse(by_id[self.org_exp.id]["preview_available"])
+
+
+class ExperimentPreviewTestCase(TestCase):
+    """BE-21: GET /experiment/<id>/preview — histograma 2D de baixa resolução."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp",
+            type="t",
+            created_by=self.owner,
+            status="done",
+            values=["FSC-A", "SSC-A"],
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="c" * 64,
+            experiment=self.experiment,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _file_data(self, **kwargs):
+        return FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+            **kwargs,
+        )
+
+    def test_preview_devolve_histograma_2d(self):
+        self._file_data(
+            data_set={
+                "FSC-A": [1, 2, 3, 4, 5] * 20,
+                "SSC-A": [5, 4, 3, 2, 1] * 20,
+            }
+        )
+
+        res = self.client.get(f"/experiment/{self.experiment.id}/preview")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data["histogram"]), 48)
+        self.assertEqual(res.data["x_label"], "FSC-A")
+        self.assertEqual(
+            res.data["file_data_id"], self.experiment.filedatamodel_set.get().id
+        )
+
+    def test_preview_204_enquanto_nao_processado(self):
+        self.experiment.status = "processing"
+        self.experiment.save(update_fields=["status"])
+        self._file_data(data_set={"FSC-A": [1], "SSC-A": [2]})
+
+        res = self.client.get(f"/experiment/{self.experiment.id}/preview")
+
+        self.assertEqual(res.status_code, 204)
+
+    def test_preview_404_sem_amostra_ativa(self):
+        self._file_data(active=False, data_set={"FSC-A": [1], "SSC-A": [2]})
+
+        res = self.client.get(f"/experiment/{self.experiment.id}/preview")
+
+        self.assertEqual(res.status_code, 404)
+
+    def test_preview_escopado_ao_usuario(self):
+        self._file_data(data_set={"FSC-A": [1], "SSC-A": [2]})
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.get(f"/experiment/{self.experiment.id}/preview")
+
+        self.assertEqual(res.status_code, 404)

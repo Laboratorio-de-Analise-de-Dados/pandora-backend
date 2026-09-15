@@ -227,10 +227,27 @@ class ListExperimentSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(
         source="created_by.username", read_only=True, default=None
     )
+    # BE-21: metadados visuais da listagem. `my_role`/`preview_available`
+    # chegam anotados no queryset (sem N+1); `progress` é derivado dos
+    # campos de upload do próprio modelo.
+    my_role = serializers.SerializerMethodField()
+    progress = serializers.SerializerMethodField()
+    preview_available = serializers.SerializerMethodField()
 
     class Meta:
         model = ExperimentModel
         fields = "__all__"
+
+    def get_my_role(self, obj):
+        return getattr(obj, "my_role", None)
+
+    def get_progress(self, obj):
+        if obj.status == "uploading" and obj.total_chunks:
+            return round(len(obj.received_chunks or []) / obj.total_chunks * 100)
+        return None
+
+    def get_preview_available(self, obj):
+        return getattr(obj, "preview_available", False)
 
 
 class CreateFileModelSerializer(serializers.ModelSerializer):

@@ -8,10 +8,19 @@ import zipfile
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.db.models import (
+    Case,
+    CharField,
+    Exists,
+    OuterRef,
+    Subquery,
+    Value,
+    When,
+)
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from accounts.models import Organization
+from accounts.models import Membership, Organization
 from analytics.history import record_revision
 from analytics.models import AnalysisRevision, GateModel
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
@@ -257,6 +266,31 @@ class ExperimentCompleteView(generics.CreateAPIView):
         return Response({"status": "done"})
 
 
+def _annotate_list_meta(qs, user):
+    """BE-21: anota `my_role` e `preview_available` sem N+1.
+
+    `my_role`: "owner" em experimento pessoal do próprio usuário; em
+    experimento de organização, o `role.name` da Membership ativa (o papel
+    efetivo sobre o experimento é o papel na org — ADR-0003). Nulo quando
+    nenhum dos dois se aplica (ex.: super admin vendo experimento alheio).
+    """
+    role_sq = Membership.objects.filter(
+        user=user,
+        organization_id=OuterRef("organization_id"),
+        status="active",
+    ).values("role__name")[:1]
+    return qs.annotate(
+        my_role=Case(
+            When(organization__isnull=True, created_by=user, then=Value("owner")),
+            default=Subquery(role_sq, output_field=CharField()),
+            output_field=CharField(),
+        ),
+        preview_available=Exists(
+            FileDataModel.objects.filter(experiment_id=OuterRef("pk"), active=True)
+        ),
+    )
+
+
 class ExperimentListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = ListExperimentSerializer
@@ -276,8 +310,11 @@ class ExperimentListView(generics.ListAPIView):
 
     def get_queryset(self):
         include_inactive = self.request.query_params.get("include_inactive") == "true"
-        return experiments_visible_to(
-            self.request.user, include_inactive=include_inactive
+        return _annotate_list_meta(
+            experiments_visible_to(
+                self.request.user, include_inactive=include_inactive
+            ),
+            self.request.user,
         )
 
 
@@ -289,7 +326,9 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
     http_method_names = ["get", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
-        return experiments_visible_to(self.request.user)
+        return _annotate_list_meta(
+            experiments_visible_to(self.request.user), self.request.user
+        )
 
     def get_serializer_class(self):
         if self.request.method == "PATCH":
@@ -378,7 +417,12 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        experiment.refresh_from_db()
+        # Reanota sem re-escopar: mover para contexto pessoal pode tirar o
+        # experimento do experiments_visible_to do próprio editor (admin de
+        # org movendo para fora da org).
+        experiment = _annotate_list_meta(
+            ExperimentModel.objects.filter(pk=experiment.pk), request.user
+        ).get()
         return Response(
             ListExperimentSerializer(experiment).data, status=status.HTTP_200_OK
         )
@@ -405,6 +449,103 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
                 affected_ids=[instance.id],
                 summary=f'desativou o experimento "{instance.title}"',
             )
+
+
+# Resolução do thumbnail do card de experimento (BE-21) — baixa o suficiente
+# para uma resposta JSON pequena e cacheável.
+PREVIEW_BINS = 48
+
+
+class ExperimentPreviewView(APIView):
+    """GET /experiment/<id>/preview — histograma 2D de baixa resolução.
+
+    Miniatura do plot (FSC-A × SSC-A, ou os dois primeiros canais de
+    `experiment.values`) da primeira amostra ativa. O front renderiza num
+    <canvas> com a colorscale do tema; payload segue o formato de
+    `compute_density`. 204 enquanto o experimento não tem dado pronto;
+    404 quando não há amostra ativa.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name="ExperimentPreviewResponse",
+                fields={
+                    "file_data_id": serializers.IntegerField(),
+                    "histogram": serializers.ListField(),
+                    "x_edges": serializers.ListField(),
+                    "y_edges": serializers.ListField(),
+                    "x_label": serializers.CharField(),
+                    "y_label": serializers.CharField(),
+                },
+            ),
+            204: None,
+            404: None,
+        }
+    )
+    def get(self, request, experiment_id):
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        if experiment.status != "done":
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        file_data = (
+            FileDataModel.objects.filter(experiment=experiment, active=True)
+            .order_by("id")
+            .first()
+        )
+        if file_data is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        channels = [v for v in (experiment.values or []) if v]
+        if len(channels) >= 2:
+            x_param, y_param = channels[0], channels[1]
+        else:
+            x_param, y_param = "FSC-A", "SSC-A"
+
+        x_scale = default_scale(x_param)
+        y_scale = default_scale(y_param)
+        cache_key = density_cache_key(
+            "preview",
+            file_data.id,
+            experiment.id,
+            x_param,
+            y_param,
+            "heatmap",
+            PREVIEW_BINS,
+            0,
+            x_scale,
+            y_scale,
+            DEFAULT_COFACTOR,
+            0,
+        )
+        cached = get_cached_density(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        dataset = normalize_columns(file_data.get_dataframe())
+        result = compute_density(
+            dataset,
+            x_param,
+            y_param,
+            PREVIEW_BINS,
+            x_scale,
+            y_scale,
+        )
+        if result is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        payload = {
+            "file_data_id": file_data.id,
+            "x_label": x_param,
+            "y_label": y_param,
+            **result,
+        }
+        set_cached_density(cache_key, payload)
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class ExperimentRestoreView(APIView):
