@@ -1,11 +1,17 @@
 # ADR-0017 — Checkpoints de análise como marcos nomeados sobre o log append-only
 
-- **Status:** Proposto
+- **Status:** Aceito
 - **Data:** 2026-09-14
-- **Contexto do código:** `analytics/models.py` (`AnalysisRevision`),
-  `analytics/history.py` (registro + `plan_revert`/`_apply_plan`),
-  endpoints `GET /analytics/experiment/<id>/history/` e
-  `POST /analytics/experiment/<id>/history/<rev>/revert/` (BE-08);
+- **Contexto do código:** `analytics/models.py` (`AnalysisRevision`,
+  `AnalysisCheckpoint`), `analytics/history.py` (registro,
+  `plan_revert`/`_apply_plan`, `group_into_sessions`,
+  `plan_restore`/`apply_restore`, `state_at_revision`), endpoints
+  `GET/POST /analytics/experiment/<id>/checkpoints/`,
+  `PATCH/DELETE /analytics/checkpoints/<id>/`,
+  `POST /analytics/experiment/<id>/history/<rev>/restore/`,
+  `POST /analytics/checkpoints/<id>/restore/`,
+  `GET /analytics/history/<rev>/state/` e
+  `GET /analytics/experiment/<id>/history/?grouped=1` (BE-20, implementado);
   ver `prd/BE-20-checkpoints-de-analise.md`
 
 ## Contexto

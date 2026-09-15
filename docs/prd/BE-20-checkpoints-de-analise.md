@@ -2,7 +2,7 @@
 
 **Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
 **Branch sugerida:** `feat/analysis-checkpoints`
-**Status:** não iniciado — depende de [ADR-0017](../adr/0017-checkpoints-de-analise.md) (Proposto).
+**Status:** implementado em `fix/gate-density-missing-channel` (aguardando revisão).
 **ADRs relacionados:** [0008](../adr/0008-historico-append-only-de-analise.md) (log append-only), [0016](../adr/0016-gate-nao-avaliavel-sem-canal.md), [0017](../adr/0017-checkpoints-de-analise.md). Ponte futura: [BE-19](BE-19-workspaces-templates-analise.md).
 
 ## Problema
@@ -28,18 +28,20 @@ AnalysisCheckpoint
                "Checkpoint <data/hora>")
   created_by   FK → User (SET_NULL)
   created_at   DateTimeField
+  active       BooleanField (soft delete — ADR-0005)
 ```
 
-Índice `(experiment, -created_at)`. Sem edição e sem delete físico — coerente
-com ADR-0005/0008; "descartar" um checkpoint, se necessário, é `active=false`
-como nos demais modelos.
+Índice `(experiment, -created_at)`. A mensagem é editável via `PATCH`;
+"descartar" um checkpoint é `active=false` via `DELETE` — nunca delete
+físico (ADR-0005/0008).
 
 ### 2. Timeline agrupada em sessões (auto-checkpoints)
 
 `GET /analytics/experiment/<id>/history/` ganha modo agrupado
 (`?grouped=1`): as revisões voltam agrupadas em **sessões** — bursts de
-atividade separados por inatividade acima de um limiar (começar com 30 min,
-constante de domínio, não configuração). Cada grupo expõe
+atividade separados por inatividade acima de um limiar (15 min —
+`SESSION_GAP_MINUTES` em `analytics/history.py`, constante de domínio, não
+configuração). Cada grupo expõe
 `first_revision_id`, `last_revision_id`, `started_at`, `ended_at`, `count` —
 e a borda de cada sessão é um ponto restaurável. É uma **visão derivada na
 leitura**: nada é gravado (ADR-0017, alternativa B2 descartada).
@@ -47,10 +49,13 @@ leitura**: nada é gravado (ADR-0017, alternativa B2 descartada).
 ### 3. Endpoints de checkpoint e restore
 
 ```
-POST /analytics/experiment/<id>/checkpoints/          { message?, revision_id? }
-GET  /analytics/experiment/<id>/checkpoints/          lista (id, message, author, created_at, revision_id)
-POST /analytics/experiment/<id>/history/<rev>/restore/      { dry_run?, force? }
-POST /analytics/experiment/<id>/checkpoints/<cp>/restore/   { dry_run?, force? }
+POST   /analytics/experiment/<id>/checkpoints/          { message?, revision_id? }
+GET    /analytics/experiment/<id>/checkpoints/          lista (id, message, author, created_at, revision_id)
+PATCH  /analytics/checkpoints/<cp>/                     { message }
+DELETE /analytics/checkpoints/<cp>/                     active=false (soft delete)
+POST   /analytics/experiment/<id>/history/<rev>/restore/      { dry_run?, force? }
+POST   /analytics/checkpoints/<cp>/restore/             { dry_run?, force? }
+GET    /analytics/history/<rev>/state/                  preview: árvore de gates por arquivo na revisão
 ```
 
 - Criar: sem `revision_id`, marca a última revisão do experimento ("salvar
@@ -80,10 +85,28 @@ Gates recriados pelo restore (revert de delete) nascem com ids novos
 calculadas, incluindo o marcador `applicable: false` do ADR-0016 quando o
 canal não existir na amostra.
 
-### 5. Permissões
+### 5. Preview de estado numa revisão
 
-- Leitura (histórico + checkpoints): quem enxerga o experimento.
-- Criar checkpoint e restaurar: `can_edit_experiment` (editor/dono/admin).
+`GET /analytics/history/<rev>/state/` devolve a árvore de gates por arquivo
+**como ela era naquela revisão** (`state_at_revision`): snapshot atual menos
+o efeito das revisões posteriores, aplicado de forma virtual sobre o dado
+em memória — leitura pura, não grava nada. Formato:
+
+```
+{ revision_id, files: { "<file_data_id>": [ { id, name, color, parent_id,
+  copied_from_id, gate_type, gate_config, ... } ] } }
+```
+
+Base do "modo preview" do FE-25 (`👁️ Visualizar`): a primeira versão do
+painel mostra antes/depois textual; o preview gráfico consome este endpoint
+quando o front estiver pronto.
+
+### 6. Permissões
+
+- Leitura (histórico + checkpoints + preview de estado): quem enxerga o
+  experimento.
+- Criar/editar/descartar checkpoint e restaurar: `can_edit_experiment`
+  (editor/dono/admin).
 
 ## Arquivos a tocar
 
@@ -105,9 +128,12 @@ canal não existir na amostra.
 - [ ] `GET .../history/?grouped=1` devolve sessões por janela de atividade
   com bordas (`first`/`last_revision_id`) restauráveis — sem gravar nada.
 - [ ] `POST /checkpoints/` cria marco com mensagem opcional; `revision_id`
-  opcional fixa uma borda passada (pin de auto-checkpoint).
+  opcional fixa uma borda passada (pin de auto-checkpoint); `PATCH` edita a
+  mensagem; `DELETE` desativa (sem delete físico).
 - [ ] `POST .../history/<rev>/restore/` e `.../checkpoints/<cp>/restore/`
   compartilham o mesmo motor de restore.
+- [ ] `GET .../history/<rev>/state/` devolve a árvore por arquivo na revisão,
+  sem tocar o banco.
 - [ ] Restore `dry_run` devolve plano composto + conflitos sem tocar o banco.
 - [ ] Restore com conflito → `409` com a lista de conflitos, nada aplicado.
 - [ ] Restore `force=true` restaura o estado do ponto sobre conflitos e
@@ -122,13 +148,9 @@ canal não existir na amostra.
 
 ## Fora de escopo
 
-- UI — FE-25.
-- Servir o **estado da análise numa revisão passada** (árvore/geometrias daquele
-  ponto, pronto para plotar) — pré-requisito do "modo preview" do FE-25
-  (`👁️ Visualizar`). Hoje `GET .../history/<rev>/` devolve before/after por
-  alvo, não a árvore. Se o preview gráfico for aprovado, vira PRD próprio.
+- UI — FE-25 (o preview gráfico dela consome o endpoint de estado da seção 5).
 - Promover checkpoint a template/workspace — BE-19 (o modelo já está em
   forma compatível; a funcionalidade não é prometida aqui).
-- Expurgo ou edição de checkpoints.
+- Expurgo de checkpoints inativos (eles só saem da listagem; a linha fica).
 - Colaboração em tempo real — o log dá rastreabilidade por autor, não
   presença/merge ao vivo.

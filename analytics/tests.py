@@ -864,3 +864,167 @@ class AnalysisHistoryTestCase(GateFixtureMixin, TestCase):
 
         page2 = self._history(cursor=cursor)
         self.assertEqual(page2.status_code, 200)
+
+
+class AnalysisCheckpointTestCase(GateFixtureMixin, TestCase):
+    """BE-20: checkpoints nomeados, sessões derivadas e restore em cadeia."""
+
+    def _checkpoints_url(self):
+        return f"/analytics/experiment/{self.experiment.id}/checkpoints/"
+
+    def _restore_url(self, revision_id):
+        return (
+            f"/analytics/experiment/{self.experiment.id}"
+            f"/history/{revision_id}/restore/"
+        )
+
+    def test_criar_checkpoint_marca_ultima_revisao(self):
+        self._patch_gate(self.source, name="CD4+")
+        res = self.client.post(
+            self._checkpoints_url(),
+            {"message": "antes do reprocessamento"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        last = AnalysisRevision.objects.order_by("-id").first()
+        self.assertEqual(res.data["revision"], last.id)
+        self.assertEqual(res.data["message"], "antes do reprocessamento")
+
+    def test_pin_com_revision_id_e_rename_delete(self):
+        self._patch_gate(self.source, name="CD4+")
+        rev = AnalysisRevision.objects.order_by("-id").first()
+        res = self.client.post(
+            self._checkpoints_url(), {"revision_id": rev.id}, format="json"
+        )
+        self.assertEqual(res.status_code, 201)
+        cp_id = res.data["id"]
+
+        res = self.client.patch(
+            f"/analytics/checkpoints/{cp_id}/",
+            {"message": "ponto X"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["message"], "ponto X")
+
+        res = self.client.delete(f"/analytics/checkpoints/{cp_id}/")
+        self.assertEqual(res.status_code, 204)
+        self.assertFalse(
+            self._checkpoints_list().filter(pk=cp_id, active=True).exists()
+        )
+
+    def _checkpoints_list(self):
+        from analytics.models import AnalysisCheckpoint
+
+        return AnalysisCheckpoint.objects.all()
+
+    def test_restore_desfaz_cadeia_e_recria_delete(self):
+        self._patch_gate(self.source, name="CD4+")
+        base = AnalysisRevision.objects.order_by("-id").first()
+
+        self._patch_gate(self.source, name="CD8+")
+        self._delete_batch(source_gate_ids=[self.source.id], recursive=True)
+        self.assertFalse(GateModel.objects.filter(id=self.child.id).exists())
+
+        res = self.client.post(self._restore_url(base.id), {})
+        self.assertEqual(res.status_code, 200)
+
+        recreated = GateModel.objects.filter(file_data=self.file_a, name="CD4+").first()
+        self.assertIsNotNone(recreated)
+        self.assertTrue(GateModel.objects.filter(parent=recreated, name="P2").exists())
+        restore_rev = AnalysisRevision.objects.order_by("-id").first()
+        self.assertEqual(restore_rev.action, "restore")
+        self.assertEqual(restore_rev.reverts_id, base.id)
+
+    def test_restore_dry_run_nao_grava_nada(self):
+        self._patch_gate(self.source, name="CD4+")
+        base = AnalysisRevision.objects.order_by("-id").first()
+        self._patch_gate(self.source, name="CD8+")
+        count = AnalysisRevision.objects.count()
+
+        res = self.client.post(self._restore_url(base.id), {"dry_run": True})
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["would_change"])
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.name, "CD8+")
+        self.assertEqual(AnalysisRevision.objects.count(), count)
+
+    def test_restore_conflito_409_e_force_sobrescreve(self):
+        self._patch_gate(self.source, name="CD4+")
+        base = AnalysisRevision.objects.order_by("-id").first()
+        self._patch_gate(self.source, name="CD8+")
+        # drift fora da cadeia: a revisão do revert abaixo aponta para o meio
+        mid_rev = AnalysisRevision.objects.order_by("-id").first()
+        # simula drift: muda o gate direto no banco, sem revisão
+        GateModel.objects.filter(pk=self.source.id).update(name="HACK")
+
+        res = self.client.post(self._restore_url(base.id), {})
+        self.assertEqual(res.status_code, 409)
+
+        res = self.client.post(self._restore_url(base.id), {"force": True})
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.name, "CD4+")
+        self.assertIsNotNone(mid_rev)
+
+    def test_history_agrupado_em_sessoes(self):
+        self._patch_gate(self.source, name="CD4+")
+        old = AnalysisRevision.objects.order_by("-id").first()
+        # empurra a revisão para trás no tempo para abrir gap de sessão
+        from datetime import timedelta as td
+
+        from django.utils import timezone
+
+        AnalysisRevision.objects.filter(pk=old.id).update(
+            created_at=timezone.now() - td(hours=2)
+        )
+        self._patch_gate(self.source, name="CD8+")
+
+        res = self.client.get(
+            f"/analytics/experiment/{self.experiment.id}/history/?grouped=1"
+        )
+        self.assertEqual(res.status_code, 200)
+        sessions = res.data["sessions"]
+        self.assertEqual(len(sessions), 2)
+        self.assertEqual(sessions[0]["count"], 1)
+        self.assertEqual(sessions[0]["revisions"][0]["action"], "rename")
+
+    def test_state_preview_reconstrói_arvore(self):
+        self._patch_gate(self.source, name="CD4+")
+        base = AnalysisRevision.objects.order_by("-id").first()
+        self._patch_gate(self.source, name="CD8+")
+        self._delete_batch(source_gate_ids=[self.source.id], recursive=True)
+
+        res = self.client.get(f"/analytics/history/{base.id}/state/")
+        self.assertEqual(res.status_code, 200)
+        gates = res.data["files"][str(self.file_a.id)]
+        by_name = {g["name"] for g in gates}
+        self.assertIn("CD4+", by_name)
+        self.assertIn("P2", by_name)
+
+    def test_outsider_nao_cria_nem_restaura(self):
+        self._patch_gate(self.source, name="CD4+")
+        rev = AnalysisRevision.objects.order_by("-id").first()
+        self.client.force_authenticate(self.outsider)
+
+        res = self.client.post(self._checkpoints_url(), {}, format="json")
+        self.assertEqual(res.status_code, 404)
+        res = self.client.post(self._restore_url(rev.id), {})
+        self.assertEqual(res.status_code, 404)
+
+    def test_reverter_restore_refaz_o_desfeito(self):
+        self._patch_gate(self.source, name="CD4+")
+        base = AnalysisRevision.objects.order_by("-id").first()
+        self._patch_gate(self.source, name="CD8+")
+
+        res = self.client.post(self._restore_url(base.id), {})
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.name, "CD4+")
+
+        restore_rev = AnalysisRevision.objects.order_by("-id").first()
+        res = self.client.post(f"/analytics/history/{restore_rev.id}/revert/", {})
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.name, "CD8+")

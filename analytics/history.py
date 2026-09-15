@@ -13,6 +13,8 @@ reversão e o preview do detalhe.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.db import transaction
 
 from analytics.gate_author import author_display_name
@@ -33,7 +35,12 @@ REVERSIBLE_ACTIONS = {
     AnalysisRevision.ACTION_ENABLE,
     AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
     AnalysisRevision.ACTION_REVERT,
+    AnalysisRevision.ACTION_RESTORE,
 }
+
+# Inatividade que separa sessões na timeline (auto-checkpoints derivados,
+# ADR-0017). Constante de domínio — não é configuração.
+SESSION_GAP_MINUTES = 15
 
 # Campos de gate que uma edição pode tocar — usados nos snapshots e na
 # verificação "o alvo mudou depois" da reversão.
@@ -124,13 +131,21 @@ def revision_dict(revision: AnalysisRevision) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _gate_field_conflicts(revision: AnalysisRevision) -> tuple[list, list]:
+def _gate_field_conflicts(
+    revision: AnalysisRevision,
+    force: bool = False,
+    pending_recreate: set = frozenset(),
+) -> tuple[list, list]:
     """Confere cada alvo de uma edição de campos (rename/recolor/geometry).
 
     Retorna (mudanças, conflitos): para cada gate registrado, exige que ele
     exista e que os campos tocados continuem com o valor `after` — se o
     gate foi alterado depois, a reversão é bloqueada em vez de sobrescrever
-    às cegas.
+    às cegas. Com `force=True` o drift vira sobrescrita (o `before` é
+    aplicado mesmo assim); conflitos estruturais (gate inexistente, nome
+    em uso) continuam bloqueando. `pending_recreate` cobre a cadeia de
+    restore: um gate que será recriado por um revert de delete anterior na
+    cadeia recebe `old_gate_id` e é resolvido no apply via `id_map`.
     """
     changes = []
     conflicts = []
@@ -139,7 +154,12 @@ def _gate_field_conflicts(revision: AnalysisRevision) -> tuple[list, list]:
     for gid, before_fields in before.items():
         gate = GateModel.objects.filter(pk=int(gid)).first()
         if gate is None:
-            conflicts.append({"gate_id": int(gid), "detail": "Gate não existe mais."})
+            if int(gid) in pending_recreate:
+                changes.append({"old_gate_id": int(gid), "fields": before_fields})
+            else:
+                conflicts.append(
+                    {"gate_id": int(gid), "detail": "Gate não existe mais."}
+                )
             continue
         after_fields = after.get(gid, {})
         drifted = [
@@ -147,7 +167,7 @@ def _gate_field_conflicts(revision: AnalysisRevision) -> tuple[list, list]:
             for field, value in after_fields.items()
             if getattr(gate, field) != value
         ]
-        if drifted:
+        if drifted and not force:
             conflicts.append(
                 {
                     "gate_id": gate.id,
@@ -179,8 +199,14 @@ def _gate_field_conflicts(revision: AnalysisRevision) -> tuple[list, list]:
     return changes, conflicts
 
 
-def _plan_gate_update_revert(revision: AnalysisRevision):
-    changes, conflicts = _gate_field_conflicts(revision)
+def _plan_gate_update_revert(
+    revision: AnalysisRevision,
+    force: bool = False,
+    pending_recreate: set = frozenset(),
+):
+    changes, conflicts = _gate_field_conflicts(
+        revision, force=force, pending_recreate=pending_recreate
+    )
     return {
         "kind": "gate_fields",
         "changes": changes,
@@ -188,7 +214,9 @@ def _plan_gate_update_revert(revision: AnalysisRevision):
     }
 
 
-def _plan_gate_create_revert(revision: AnalysisRevision):
+def _plan_gate_create_revert(
+    revision: AnalysisRevision, pending_recreate: set = frozenset()
+):
     """Reverter uma criação = excluir o gate criado."""
     created = revision.payload_after.get("gates", {})
     changes = []
@@ -196,7 +224,14 @@ def _plan_gate_create_revert(revision: AnalysisRevision):
     for gid in created:
         gate = GateModel.objects.filter(pk=int(gid)).first()
         if gate is None:
-            conflicts.append({"gate_id": int(gid), "detail": "Gate já não existe."})
+            if int(gid) in pending_recreate:
+                # O gate foi deletado e um revert anterior na cadeia vai
+                # recriá-lo — o delete resolve via `id_map` no apply.
+                changes.append(
+                    {"old_gate_id": int(gid), "name": created[gid].get("name")}
+                )
+            else:
+                conflicts.append({"gate_id": int(gid), "detail": "Gate já não existe."})
             continue
         children = gate.children.count()
         changes.append(
@@ -209,7 +244,9 @@ def _plan_gate_create_revert(revision: AnalysisRevision):
     return {"kind": "gate_delete", "changes": changes, "conflicts": conflicts}
 
 
-def _plan_gate_delete_revert(revision: AnalysisRevision):
+def _plan_gate_delete_revert(
+    revision: AnalysisRevision, pending_recreate: set = frozenset()
+):
     """Reverter uma exclusão = recriar as linhas do snapshot (pais primeiro)."""
     snapshots = revision.payload_before.get("gates", {})
     changes = []
@@ -218,7 +255,9 @@ def _plan_gate_delete_revert(revision: AnalysisRevision):
         parent_id = snap.get("parent_id")
         parent_known = parent_id is None or str(parent_id) in snapshots
         parent_alive = (
-            parent_id is None or GateModel.objects.filter(pk=parent_id).exists()
+            parent_id is None
+            or int(parent_id) in pending_recreate
+            or GateModel.objects.filter(pk=parent_id).exists()
         )
         if not parent_known and not parent_alive:
             conflicts.append(
@@ -233,7 +272,7 @@ def _plan_gate_delete_revert(revision: AnalysisRevision):
     return {"kind": "gate_recreate", "changes": changes, "conflicts": conflicts}
 
 
-def _plan_apply_revert(revision: AnalysisRevision):
+def _plan_apply_revert(revision: AnalysisRevision, pending_recreate: set = frozenset()):
     """Reverter um apply: apaga os gates criados e restaura os substituídos."""
     created = revision.payload_after.get("created_gate_ids", [])
     replaced = revision.payload_before.get("replaced", {})
@@ -247,9 +286,17 @@ def _plan_apply_revert(revision: AnalysisRevision):
     for gid, snap in replaced.items():
         gate = GateModel.objects.filter(pk=int(gid)).first()
         if gate is None:
-            conflicts.append(
-                {"gate_id": int(gid), "detail": "Gate substituído não existe mais."}
-            )
+            if int(gid) in pending_recreate:
+                changes.append(
+                    {"old_gate_id": int(gid), "fields": snap, "op": "restore"}
+                )
+            else:
+                conflicts.append(
+                    {
+                        "gate_id": int(gid),
+                        "detail": "Gate substituído não existe mais.",
+                    }
+                )
             continue
         changes.append({"gate_id": gate.id, "fields": snap, "op": "restore"})
     return {"kind": "apply", "changes": changes, "conflicts": conflicts}
@@ -276,12 +323,13 @@ def _target_model(target_type):
     return _TARGET_MODELS[target_type]
 
 
-def _plan_target_fields_revert(revision: AnalysisRevision):
+def _plan_target_fields_revert(revision: AnalysisRevision, force: bool = False):
     """Reversão genérica de campos em amostra/subsample/experimento.
 
     Cobre disable/enable (campo `active`), move_subsample (`subsample_id`)
     e rename de subsample (`name`): exige que os campos tocados continuem
-    com o valor `after` — drift bloqueia a reversão.
+    com o valor `after` — drift bloqueia a reversão (com `force=True` o
+    `before` sobrescreve mesmo com drift).
     """
     from fcs_parser.models import SubsampleModel
 
@@ -303,7 +351,7 @@ def _plan_target_fields_revert(revision: AnalysisRevision):
             for field, value in after_fields.items()
             if getattr(obj, field) != value
         ]
-        if drifted:
+        if drifted and not force:
             conflicts.append(
                 {
                     "target_id": obj.id,
@@ -363,10 +411,23 @@ def _plan_target_fields_revert(revision: AnalysisRevision):
     return {"kind": "target_fields", "changes": changes, "conflicts": conflicts}
 
 
-def plan_revert(revision: AnalysisRevision) -> dict:
-    """O que a reversão faria — e o que a bloqueia — sem gravar nada."""
+def plan_revert(
+    revision: AnalysisRevision,
+    force: bool = False,
+    pending_recreate: set = frozenset(),
+) -> dict:
+    """O que a reversão faria — e o que a bloqueia — sem gravar nada.
+
+    `force=True` relaxa a checagem de drift (o `before` sobrescreve edições
+    posteriores); conflitos estruturais (alvo inexistente, nome em uso)
+    continuam bloqueando mesmo sob force. `pending_recreate` = ids de gates
+    que um revert de delete anterior na cadeia de restore vai recriar —
+    mudanças sobre eles saem com `old_gate_id` e resolvem no apply.
+    """
     if revision.action not in REVERSIBLE_ACTIONS:
         return {"kind": "none", "changes": [], "conflicts": []}
+    if revision.action == AnalysisRevision.ACTION_RESTORE:
+        return _plan_restore_revert(revision, force=force)
     if revision.action in (
         AnalysisRevision.ACTION_RENAME,
         AnalysisRevision.ACTION_RECOLOR,
@@ -374,25 +435,27 @@ def plan_revert(revision: AnalysisRevision) -> dict:
         AnalysisRevision.ACTION_REVERT,
     ):
         if revision.target_type == AnalysisRevision.TARGET_GATE:
-            return _plan_gate_update_revert(revision)
-        return _plan_target_fields_revert(revision)
+            return _plan_gate_update_revert(
+                revision, force=force, pending_recreate=pending_recreate
+            )
+        return _plan_target_fields_revert(revision, force=force)
     if revision.action == AnalysisRevision.ACTION_DELETE:
         if revision.target_type == AnalysisRevision.TARGET_GATE:
-            return _plan_gate_delete_revert(revision)
-        return _plan_target_fields_revert(revision)
+            return _plan_gate_delete_revert(revision, pending_recreate=pending_recreate)
+        return _plan_target_fields_revert(revision, force=force)
     if revision.action == AnalysisRevision.ACTION_CREATE:
         if revision.target_type == AnalysisRevision.TARGET_GATE:
-            return _plan_gate_create_revert(revision)
+            return _plan_gate_create_revert(revision, pending_recreate=pending_recreate)
         # Subsample criado pela UI: reverter é inativá-lo de novo.
         return _plan_create_inactivate_revert(revision)
     if revision.action == AnalysisRevision.ACTION_APPLY:
-        return _plan_apply_revert(revision)
+        return _plan_apply_revert(revision, pending_recreate=pending_recreate)
     if revision.action in (
         AnalysisRevision.ACTION_DISABLE,
         AnalysisRevision.ACTION_ENABLE,
         AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
     ):
-        return _plan_target_fields_revert(revision)
+        return _plan_target_fields_revert(revision, force=force)
     return {"kind": "none", "changes": [], "conflicts": []}
 
 
@@ -413,14 +476,41 @@ def _plan_create_inactivate_revert(revision: AnalysisRevision):
     return {"kind": "target_fields", "changes": changes, "conflicts": conflicts}
 
 
-def _apply_plan(revision: AnalysisRevision, plan: dict) -> dict:
+def _apply_plan(
+    revision: AnalysisRevision, plan: dict, shared_id_map: dict | None = None
+) -> dict:
     """Executa o plano calculado por `plan_revert`. Retorna o que mudou."""
     kind = plan["kind"]
     applied = []
+    skipped = []
+    recreated_gate_ids = []
+    id_map = shared_id_map if shared_id_map is not None else {}
+
+    def _resolve_gid(change):
+        raw = change.get("gate_id", change.get("old_gate_id"))
+        return id_map.get(raw, raw)
+
+    if kind == "chain":
+        # Reversão de um restore: reaplica os efeitos desfeitos em ordem.
+        for sub in plan["plans"]:
+            result = _apply_plan(revision, sub, shared_id_map=id_map)
+            applied.extend(result["applied"])
+            skipped.extend(result["skipped"])
+            recreated_gate_ids.extend(result["recreated_gate_ids"])
+        return {
+            "applied": applied,
+            "skipped": skipped,
+            "recreated_gate_ids": recreated_gate_ids,
+        }
 
     if kind == "gate_fields":
         for change in plan["changes"]:
-            gate = GateModel.objects.get(pk=change["gate_id"])
+            gate = GateModel.objects.filter(pk=_resolve_gid(change)).first()
+            if gate is None:
+                skipped.append(
+                    {"gate_id": change.get("gate_id") or change.get("old_gate_id")}
+                )
+                continue
             fields = change["fields"]
             update_fields = []
             for field, value in fields.items():
@@ -435,11 +525,16 @@ def _apply_plan(revision: AnalysisRevision, plan: dict) -> dict:
 
     elif kind == "gate_delete":
         for change in plan["changes"]:
-            GateModel.objects.filter(pk=change["gate_id"]).delete()
-            applied.append({"gate_id": change["gate_id"], "deleted": True})
+            gid = _resolve_gid(change)
+            if gid is None or not GateModel.objects.filter(pk=gid).exists():
+                skipped.append(
+                    {"gate_id": change.get("gate_id") or change.get("old_gate_id")}
+                )
+                continue
+            GateModel.objects.filter(pk=gid).delete()
+            applied.append({"gate_id": gid, "deleted": True})
 
     elif kind == "gate_recreate":
-        id_map = {}
         for change in plan["changes"]:
             snap = change["snapshot"]
             old_id = change["old_gate_id"]
@@ -471,14 +566,19 @@ def _apply_plan(revision: AnalysisRevision, plan: dict) -> dict:
                 copied_from_id=copied_from_id,
             )
             id_map[old_id] = new_gate.id
+            recreated_gate_ids.append(new_gate.id)
             applied.append({"old_gate_id": old_id, "gate_id": new_gate.id})
 
     elif kind == "apply":
         for change in plan["changes"]:
+            gid = _resolve_gid(change)
             if change["op"] == "delete":
-                GateModel.objects.filter(pk=change["gate_id"]).delete()
+                GateModel.objects.filter(pk=gid).delete()
             else:
-                gate = GateModel.objects.get(pk=change["gate_id"])
+                gate = GateModel.objects.filter(pk=gid).first()
+                if gate is None:
+                    skipped.append({"gate_id": gid})
+                    continue
                 update_fields = []
                 for field, value in change["fields"].items():
                     if field == "copied_from_id":
@@ -509,11 +609,20 @@ def _apply_plan(revision: AnalysisRevision, plan: dict) -> dict:
             obj.save(update_fields=update_fields)
             applied.append({"target_id": obj.id, "fields": update_fields})
 
-    return {"applied": applied}
+    return {
+        "applied": applied,
+        "skipped": skipped,
+        "recreated_gate_ids": recreated_gate_ids,
+    }
 
 
 def public_changes(plan: dict) -> list:
     """`plan["changes"]` sem objetos de modelo — versão segura p/ resposta."""
+    if plan.get("kind") == "chain":
+        out = []
+        for sub in plan["plans"]:
+            out.extend(public_changes(sub))
+        return out
     out = []
     for change in plan["changes"]:
         entry = {k: v for k, v in change.items() if k != "obj"}
@@ -544,6 +653,390 @@ def apply_revert(revision: AnalysisRevision, user) -> dict:
     )
     return {
         "conflicts": [],
-        "would_change": plan["changes"],
+        "would_change": public_changes(plan),
         "applied": result["applied"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Sessões, checkpoints e restauração por ponto (BE-20, ADR-0017)
+# ---------------------------------------------------------------------------
+
+
+def _revisions_after(experiment, target_revision) -> list:
+    """Revisões posteriores ao alvo, mais novas primeiro.
+
+    `target_revision=None` = estado inicial do experimento (todas as
+    revisões entram na cadeia).
+    """
+    qs = AnalysisRevision.objects.filter(experiment=experiment).order_by("-id")
+    if target_revision is not None:
+        qs = qs.filter(id__gt=target_revision.id)
+    return list(qs)
+
+
+def group_into_sessions(revisions) -> list[dict]:
+    """Agrupa revisões (mais novas primeiro) em sessões de atividade.
+
+    Auto-checkpoint derivado na leitura (ADR-0017): um gap maior que
+    SESSION_GAP_MINUTES entre revisões consecutivas fecha a sessão. Nada é
+    gravado — `end_revision_id` é a borda restaurável da sessão.
+    """
+    gap = timedelta(minutes=SESSION_GAP_MINUTES)
+    sessions = []
+    for rev in revisions:
+        if sessions and (sessions[-1]["_prev_at"] - rev.created_at) <= gap:
+            sessions[-1]["revisions"].append(rev)
+        else:
+            sessions.append({"revisions": [rev], "_prev_at": rev.created_at})
+        sessions[-1]["_prev_at"] = rev.created_at
+    out = []
+    for s in sessions:
+        revs = s["revisions"]
+        out.append(
+            {
+                "start_revision_id": revs[-1].id,
+                "end_revision_id": revs[0].id,
+                "started_at": revs[-1].created_at,
+                "ended_at": revs[0].created_at,
+                "count": len(revs),
+                "revisions": revs,
+            }
+        )
+    return out
+
+
+def plan_restore(experiment, target_revision, force: bool = False) -> dict:
+    """Plano composto do restore: reverter em cadeia (mais nova primeiro)
+    tudo que veio depois da revisão-alvo.
+
+    Cada conflito é anotado com o `revision_id` que o gerou. Sem `force`,
+    qualquer conflito bloqueia o restore inteiro (atômico); com `force`, o
+    drift é sobrescrito e só conflitos estruturais restam.
+    """
+    plans = []
+    conflicts = []
+    pending_recreate = set()
+    for rev in _revisions_after(experiment, target_revision):
+        plan = plan_revert(rev, force=force, pending_recreate=pending_recreate)
+        for c in plan["conflicts"]:
+            conflicts.append({**c, "revision_id": rev.id})
+        if plan["kind"] != "none" or plan["conflicts"]:
+            plans.append({"revision": rev, "plan": plan})
+        if plan["kind"] == "gate_recreate":
+            pending_recreate.update(c["old_gate_id"] for c in plan["changes"])
+    return {"plans": plans, "conflicts": conflicts}
+
+
+def _public_plan(plan: dict) -> dict:
+    return {
+        "kind": plan["kind"],
+        "changes": public_changes(plan),
+        "conflicts": plan["conflicts"],
+    }
+
+
+def apply_restore(experiment, target_revision, user, force: bool = False) -> dict:
+    """Restaura o experimento ao estado da revisão-alvo.
+
+    Atômico por padrão (conflito → `blocked`); `force=True` sobrescreve o
+    drift. Grava UMA revisão `action="restore"` com o antes de cada
+    operação e o que foi desfeito — suficiente para reverter o próprio
+    restore (replay forward) e auditar depois. Gates recriados são
+    recalculados após o commit (stats voltam, incluindo o marcador
+    `applicable:false` do ADR-0016 quando couber).
+    """
+    outcome = plan_restore(experiment, target_revision, force=force)
+    if outcome["conflicts"] and not force:
+        return {
+            "blocked": True,
+            "conflicts": outcome["conflicts"],
+            "would_change": [
+                {"revision_id": item["revision"].id, **_public_plan(item["plan"])}
+                for item in outcome["plans"]
+            ],
+        }
+
+    applied = []
+    recreated_ids = []
+    id_map = {}
+    with transaction.atomic():
+        for item in outcome["plans"]:
+            rev, plan = item["revision"], item["plan"]
+            result = _apply_plan(rev, plan, shared_id_map=id_map)
+            applied.append({"revision_id": rev.id, "applied": result["applied"]})
+            recreated_ids.extend(result["recreated_gate_ids"])
+        record_revision(
+            experiment=experiment,
+            action=AnalysisRevision.ACTION_RESTORE,
+            target_type=AnalysisRevision.TARGET_EXPERIMENT,
+            target_id=experiment.id,
+            user=user,
+            payload_before={
+                "plans": [
+                    {"revision_id": item["revision"].id, **_public_plan(item["plan"])}
+                    for item in outcome["plans"]
+                ]
+            },
+            payload_after={
+                "restored_to": target_revision.id if target_revision else None,
+                "undone": [
+                    {
+                        "revision_id": item["revision"].id,
+                        "action": item["revision"].action,
+                        "target_type": item["revision"].target_type,
+                        "payload_before": item["revision"].payload_before,
+                        "payload_after": item["revision"].payload_after,
+                    }
+                    for item in reversed(outcome["plans"])
+                ],
+                "recreated_id_map": id_map,
+            },
+            affected_ids=[item["revision"].id for item in outcome["plans"]],
+            summary=(
+                f"restaurou o estado de {target_revision.summary!r}"
+                if target_revision
+                else "restaurou o estado inicial do experimento"
+            )[:512],
+            reverts=target_revision,
+        )
+
+    from analytics.tasks import recalculate_gate_analysis
+
+    for gid in recreated_ids:
+        recalculate_gate_analysis(gid)
+
+    return {
+        "blocked": False,
+        "applied": applied,
+        "skipped": outcome["conflicts"],
+    }
+
+
+def _plan_restore_revert(revision: AnalysisRevision, force: bool = False) -> dict:
+    """Reverter um restore = refazer, em ordem cronológica, o que ele desfez.
+
+    O payload_after do restore carrega os `payload_*` de cada revisão
+    desfeita e o mapa old→new dos gates recriados — replay auto-contido.
+    """
+    undone = revision.payload_after.get("undone", [])
+    id_map = {
+        int(old): new
+        for old, new in revision.payload_after.get("recreated_id_map", {}).items()
+    }
+    subplans = []
+    conflicts = []
+    for entry in sorted(undone, key=lambda e: e["revision_id"]):
+        plan = _forward_plan(entry, id_map)
+        subplans.append(plan)
+        for c in plan["conflicts"]:
+            conflicts.append({**c, "revision_id": entry["revision_id"]})
+    return {"kind": "chain", "plans": subplans, "conflicts": conflicts}
+
+
+def _forward_plan(entry: dict, id_map: dict) -> dict:
+    """Plano que REFAZ o efeito de uma revisão desfeita por um restore."""
+    action = entry["action"]
+    after = entry.get("payload_after") or {}
+    before = entry.get("payload_before") or {}
+    target_type = entry["target_type"]
+
+    def mid(gid):
+        return id_map.get(int(gid), int(gid))
+
+    gate_field_actions = {
+        AnalysisRevision.ACTION_RENAME,
+        AnalysisRevision.ACTION_RECOLOR,
+        AnalysisRevision.ACTION_UPDATE_GEOMETRY,
+        AnalysisRevision.ACTION_REVERT,
+    }
+    if action in gate_field_actions and target_type == AnalysisRevision.TARGET_GATE:
+        changes, conflicts = [], []
+        for gid, fields in after.get("gates", {}).items():
+            gate = GateModel.objects.filter(pk=mid(gid)).first()
+            if gate is None:
+                conflicts.append(
+                    {"gate_id": mid(gid), "detail": "Gate não existe mais."}
+                )
+            else:
+                changes.append({"gate_id": gate.id, "fields": fields})
+        return {"kind": "gate_fields", "changes": changes, "conflicts": conflicts}
+    if action == AnalysisRevision.ACTION_CREATE and target_type == "gate":
+        changes = [
+            {"old_gate_id": int(gid), "snapshot": snap}
+            for gid, snap in after.get("gates", {}).items()
+        ]
+        return {"kind": "gate_recreate", "changes": changes, "conflicts": []}
+    if action == AnalysisRevision.ACTION_DELETE and target_type == "gate":
+        changes, conflicts = [], []
+        for gid in before.get("gates", {}):
+            gate = GateModel.objects.filter(pk=mid(gid)).first()
+            if gate is None:
+                conflicts.append(
+                    {"gate_id": mid(gid), "detail": "Gate recriado não existe mais."}
+                )
+            else:
+                changes.append({"gate_id": gate.id, "name": gate.name})
+        return {"kind": "gate_delete", "changes": changes, "conflicts": conflicts}
+    if action == AnalysisRevision.ACTION_APPLY:
+        subplans, conflicts = [], []
+        created = after.get("created")
+        if created is None:
+            conflicts.append(
+                {
+                    "revision_id": entry["revision_id"],
+                    "detail": "Apply antigo sem snapshot dos criados — não refeito.",
+                }
+            )
+        else:
+            subplans.append(
+                {
+                    "kind": "gate_recreate",
+                    "changes": [
+                        {"old_gate_id": int(gid), "snapshot": snap}
+                        for gid, snap in created.items()
+                    ],
+                    "conflicts": [],
+                }
+            )
+        replaced_changes = []
+        for gid, snap in after.get("replaced", {}).items():
+            gate = GateModel.objects.filter(pk=mid(gid)).first()
+            if gate is None:
+                conflicts.append(
+                    {"gate_id": mid(gid), "detail": "Gate substituído não existe mais."}
+                )
+            else:
+                replaced_changes.append(
+                    {
+                        "gate_id": gate.id,
+                        "fields": {f: snap[f] for f in GATE_FIELDS if f in snap},
+                    }
+                )
+        if replaced_changes:
+            subplans.append(
+                {
+                    "kind": "gate_fields",
+                    "changes": replaced_changes,
+                    "conflicts": [],
+                }
+            )
+        return {"kind": "chain", "plans": subplans, "conflicts": conflicts}
+    if action == AnalysisRevision.ACTION_RESTORE:
+        return {
+            "kind": "none",
+            "changes": [],
+            "conflicts": [
+                {
+                    "revision_id": entry["revision_id"],
+                    "detail": "Restauração aninhada não é refeita automaticamente.",
+                }
+            ],
+        }
+    # target_fields (disable/enable/move/rename de subsample): refaz o after.
+    targets = after.get("targets", {})
+    if targets:
+        model = _target_model(target_type)
+        changes, conflicts = [], []
+        for tid, fields in targets.items():
+            obj = model.objects.filter(pk=int(tid)).first()
+            if obj is None:
+                conflicts.append(
+                    {"target_id": int(tid), "detail": "Registro não existe mais."}
+                )
+            else:
+                changes.append({"obj": obj, "fields": fields})
+        return {"kind": "target_fields", "changes": changes, "conflicts": conflicts}
+    return {"kind": "none", "changes": [], "conflicts": []}
+
+
+def state_at_revision(experiment, target_revision) -> dict:
+    """Árvore de gates como estava na revisão-alvo — preview read-only (FE-25).
+
+    Reconstrução virtual: parte do estado atual e aplica os inversos das
+    revisões posteriores ao alvo, sem validar conflitos (o virtual sempre
+    acompanha). `None` = estado inicial (sem gates).
+    """
+    virtual = {}
+    for gate in GateModel.objects.filter(file_data__experiment=experiment):
+        virtual[gate.id] = gate_snapshot(gate)
+    for rev in _revisions_after(experiment, target_revision):
+        _apply_inverse_virtual(virtual, rev)
+    files = {}
+    for gid, snap in sorted(virtual.items()):
+        files.setdefault(str(snap["file_data_id"]), []).append({"id": gid, **snap})
+    return {
+        "revision_id": target_revision.id if target_revision else None,
+        "files": files,
+    }
+
+
+def _apply_inverse_virtual(virtual: dict, rev: AnalysisRevision) -> None:
+    action = rev.action
+    before, after = rev.payload_before or {}, rev.payload_after or {}
+    gate_field_actions = {
+        AnalysisRevision.ACTION_RENAME,
+        AnalysisRevision.ACTION_RECOLOR,
+        AnalysisRevision.ACTION_UPDATE_GEOMETRY,
+        AnalysisRevision.ACTION_REVERT,
+    }
+    if rev.target_type == AnalysisRevision.TARGET_GATE and action in gate_field_actions:
+        for gid, fields in before.get("gates", {}).items():
+            gate = virtual.get(int(gid))
+            if gate is not None:
+                gate.update(fields)
+    elif action == AnalysisRevision.ACTION_CREATE and rev.target_type == "gate":
+        for gid in after.get("gates", {}):
+            virtual.pop(int(gid), None)
+    elif action == AnalysisRevision.ACTION_DELETE and rev.target_type == "gate":
+        for gid, snap in before.get("gates", {}).items():
+            virtual[int(gid)] = snap
+    elif action == AnalysisRevision.ACTION_APPLY:
+        for gid in after.get("created_gate_ids", []):
+            virtual.pop(int(gid), None)
+        for gid, snap in before.get("replaced", {}).items():
+            virtual[int(gid)] = snap
+    elif action == AnalysisRevision.ACTION_RESTORE:
+        # Desfazer um restore = refazer o que ele desfez (ordem cronológica).
+        id_map = {
+            int(old): new for old, new in after.get("recreated_id_map", {}).items()
+        }
+        for new_id in id_map.values():
+            virtual.pop(new_id, None)
+        for entry in sorted(after.get("undone", []), key=lambda e: e["revision_id"]):
+            _apply_forward_virtual(virtual, entry, id_map)
+
+
+def _apply_forward_virtual(virtual: dict, entry: dict, id_map: dict) -> None:
+    """Refaz virtualmente o efeito de uma revisão desfeita por um restore."""
+    action = entry["action"]
+    before, after = entry.get("payload_before") or {}, entry.get("payload_after") or {}
+
+    def mid(gid):
+        return id_map.get(int(gid), int(gid))
+
+    gate_field_actions = {
+        AnalysisRevision.ACTION_RENAME,
+        AnalysisRevision.ACTION_RECOLOR,
+        AnalysisRevision.ACTION_UPDATE_GEOMETRY,
+        AnalysisRevision.ACTION_REVERT,
+    }
+    if entry["target_type"] == "gate" and action in gate_field_actions:
+        for gid, fields in after.get("gates", {}).items():
+            gate = virtual.get(mid(gid))
+            if gate is not None:
+                gate.update(fields)
+    elif action == AnalysisRevision.ACTION_CREATE:
+        for gid, snap in after.get("gates", {}).items():
+            virtual[int(gid)] = snap
+    elif action == AnalysisRevision.ACTION_DELETE:
+        for gid in before.get("gates", {}):
+            virtual.pop(mid(gid), None)
+    elif action == AnalysisRevision.ACTION_APPLY:
+        for gid, snap in after.get("created", {}).items():
+            virtual[int(gid)] = snap
+        for gid, snap in after.get("replaced", {}).items():
+            key = mid(gid)
+            if key in virtual:
+                virtual[key] = snap
+    # restore aninhado e target_fields não afetam a árvore de gates do preview.

@@ -197,6 +197,7 @@ class AnalysisRevision(models.Model):
     ACTION_ENABLE = "enable"
     ACTION_MOVE_SUBSAMPLE = "move_subsample"
     ACTION_REVERT = "revert"
+    ACTION_RESTORE = "restore"
     ACTION_CHOICES = [
         (ACTION_CREATE, "Criação"),
         (ACTION_UPDATE_GEOMETRY, "Geometria"),
@@ -208,6 +209,7 @@ class AnalysisRevision(models.Model):
         (ACTION_ENABLE, "Reativar"),
         (ACTION_MOVE_SUBSAMPLE, "Mover de subsample"),
         (ACTION_REVERT, "Reversão"),
+        (ACTION_RESTORE, "Restauração de ponto"),
     ]
 
     SCOPE_CHOICES = [
@@ -249,3 +251,45 @@ class AnalysisRevision(models.Model):
 
     def __str__(self) -> str:
         return f"Revision {self.id} – {self.action} {self.target_type}:{self.target_id}"
+
+
+class AnalysisCheckpoint(models.Model):
+    """Marco nomeado sobre o log de análise (BE-20, ADR-0017).
+
+    O checkpoint aponta para a revisão que fecha o ponto ("desfazer tudo
+    depois dela"); `revision=None` marca o estado inicial do experimento
+    (antes de qualquer revisão). Auto-checkpoints temporais são derivados
+    na leitura — não viram linhas aqui. `active=False` é o descarte
+    (soft delete, ADR-0005).
+    """
+
+    class Meta:
+        db_table = "analysis_checkpoint"
+        indexes = [models.Index(fields=["experiment", "-created_at"])]
+
+    experiment = models.ForeignKey(
+        ExperimentModel,
+        on_delete=models.CASCADE,
+        related_name="checkpoints",
+    )
+    revision = models.ForeignKey(
+        AnalysisRevision,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="checkpoints",
+    )
+    message = models.CharField(max_length=200, blank=True)
+    active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_checkpoints",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        label = self.message or f"#{self.revision_id or 0}"
+        return f"Checkpoint {self.id} – {label}"

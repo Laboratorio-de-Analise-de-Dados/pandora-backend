@@ -4,6 +4,7 @@ from rest_framework import serializers
 from analytics.gate_author import author_display_name
 from analytics.gate_scope import PROPAGATING_SCOPES, SCOPE_CHOICES, SCOPE_FILE
 from analytics.models import (
+    AnalysisCheckpoint,
     AnalysisResult,
     AnalysisRevision,
     DashboardModel,
@@ -260,3 +261,50 @@ class RevertRevisionSerializer(serializers.Serializer):
     """Payload de POST /analytics/history/<id>/revert/."""
 
     dry_run = serializers.BooleanField(default=False)
+
+
+class RestoreSerializer(serializers.Serializer):
+    """Payload de POST .../restore/ (revisão ou checkpoint como alvo)."""
+
+    dry_run = serializers.BooleanField(default=False)
+    force = serializers.BooleanField(default=False)
+
+
+class AnalysisCheckpointSerializer(serializers.ModelSerializer):
+    """Marco nomeado sobre o log (BE-20/ADR-0017)."""
+
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AnalysisCheckpoint
+        fields = [
+            "id",
+            "revision",
+            "message",
+            "created_by_name",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_created_by_name(self, obj):
+        if not obj.created_by:
+            return None
+        return author_display_name(
+            obj.created_by.first_name,
+            obj.created_by.last_name,
+            obj.created_by.username,
+        )
+
+
+class CheckpointCreateSerializer(serializers.Serializer):
+    """POST .../checkpoints/ — `revision_id` fixa uma borda passada (pin)."""
+
+    message = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    revision_id = serializers.IntegerField(required=False, allow_null=True)
+
+
+class CheckpointPatchSerializer(serializers.Serializer):
+    """PATCH .../checkpoints/<id>/ — só a mensagem é editável."""
+
+    message = serializers.CharField(max_length=200, allow_blank=True)

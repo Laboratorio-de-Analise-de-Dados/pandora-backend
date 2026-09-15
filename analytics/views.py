@@ -23,21 +23,34 @@ from analytics.gate_scope import (
     gates_in_experiment_scope,
 )
 from analytics.history import (
+    apply_restore,
     apply_revert,
     gate_snapshot,
     gate_subtree_snapshots,
+    group_into_sessions,
     plan_revert,
+    plan_restore,
     public_changes,
     record_revision,
+    state_at_revision,
 )
-from analytics.models import AnalysisRevision, DashboardModel, GateModel
+from analytics.models import (
+    AnalysisCheckpoint,
+    AnalysisRevision,
+    DashboardModel,
+    GateModel,
+)
 from analytics.serializers import (
+    AnalysisCheckpointSerializer,
     AnalysisRevisionDetailSerializer,
     AnalysisRevisionSerializer,
+    CheckpointCreateSerializer,
+    CheckpointPatchSerializer,
     DashboardSerializer,
     GateBatchDeleteSerializer,
     GateSerializer,
     GateUpdateSerializer,
+    RestoreSerializer,
     RevertRevisionSerializer,
 )
 from utils.density import (
@@ -1066,6 +1079,7 @@ class ApplyGateView(APIView):
         conflicts = []
         details = []
         created_gate_ids = []
+        created_snapshots = {}
         replaced_before = {}
         replaced_after = {}
 
@@ -1156,6 +1170,7 @@ class ApplyGateView(APIView):
                     id_map[gate.id] = new_gate.id
                     file_created += 1
                     created_gate_ids.append(new_gate.id)
+                    created_snapshots[str(new_gate.id)] = gate_snapshot(new_gate)
 
                 details.append(
                     {
@@ -1178,6 +1193,7 @@ class ApplyGateView(APIView):
                 payload_before={"replaced": replaced_before},
                 payload_after={
                     "created_gate_ids": created_gate_ids,
+                    "created": created_snapshots,
                     "replaced": replaced_after,
                 },
                 affected_ids=created_gate_ids + [int(g) for g in replaced_after],
@@ -1255,6 +1271,25 @@ class ExperimentHistoryView(generics.ListAPIView):
         has_more = len(page) > self.PAGE_SIZE
         page = page[: self.PAGE_SIZE]
         serializer = self.get_serializer(page, many=True)
+        if request.query_params.get("grouped"):
+            checkpoints = {
+                cp.revision_id: AnalysisCheckpointSerializer(cp).data
+                for cp in AnalysisCheckpoint.objects.filter(
+                    experiment_id=self.kwargs["experiment_id"], active=True
+                )
+            }
+            sessions = group_into_sessions(page)
+            idx = 0
+            for s in sessions:
+                s["checkpoint"] = checkpoints.get(s["end_revision_id"])
+                s["revisions"] = serializer.data[idx : idx + s["count"]]  # noqa: E203
+                idx += s["count"]
+            return Response(
+                {
+                    "sessions": sessions,
+                    "next_cursor": page[-1].id if has_more and page else None,
+                }
+            )
         return Response(
             {
                 "results": serializer.data,
@@ -1339,3 +1374,200 @@ class HistoryRevertView(APIView):
             {"would_change": public_changes(plan), "conflicts": []},
             status=status.HTTP_200_OK,
         )
+
+
+class _ScopedExperimentMixin:
+    """Resolve o experimento do path dentro do escopo de visão do usuário."""
+
+    def get_experiment(self, request):
+        from fcs_parser.permissions import experiments_visible_to
+
+        return get_object_or_404(
+            experiments_visible_to(request.user), id=self.kwargs["experiment_id"]
+        )
+
+
+class CheckpointListCreateView(_ScopedExperimentMixin, APIView):
+    """GET/POST /analytics/experiment/<id>/checkpoints/ (BE-20).
+
+    POST {"message"?, "revision_id"?} fixa um marco: sem `revision_id`,
+    marca a última revisão do experimento; com, faz o "pin" de uma borda
+    passada (auto-checkpoint ou revisão avulsa).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, experiment_id):
+        experiment = self.get_experiment(request)
+        qs = experiment.checkpoints.filter(active=True).order_by("-created_at")
+        return Response({"results": AnalysisCheckpointSerializer(qs, many=True).data})
+
+    @extend_schema(
+        request=CheckpointCreateSerializer,
+        responses=AnalysisCheckpointSerializer,
+    )
+    def post(self, request, experiment_id):
+        from fcs_parser.permissions import can_edit_experiment
+
+        experiment = self.get_experiment(request)
+        if not can_edit_experiment(request.user, experiment):
+            raise PermissionDenied("Criar checkpoint exige permissão de escrita.")
+        payload = CheckpointCreateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+
+        revision_id = payload.validated_data.get("revision_id")
+        if revision_id is not None:
+            revision = get_object_or_404(
+                AnalysisRevision, id=revision_id, experiment=experiment
+            )
+        else:
+            revision = experiment.analysis_revisions.order_by("-id").first()
+        checkpoint = AnalysisCheckpoint.objects.create(
+            experiment=experiment,
+            revision=revision,
+            message=payload.validated_data.get("message", ""),
+            created_by=request.user,
+        )
+        return Response(
+            AnalysisCheckpointSerializer(checkpoint).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class CheckpointDetailView(APIView):
+    """PATCH/DELETE /analytics/checkpoints/<id>/ — renomear/descartar (soft)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_checkpoint(self, request, pk):
+        from fcs_parser.permissions import experiments_visible_to
+
+        return get_object_or_404(
+            AnalysisCheckpoint.objects.select_related("experiment"),
+            id=pk,
+            experiment__in=experiments_visible_to(request.user),
+        )
+
+    @extend_schema(
+        request=CheckpointPatchSerializer,
+        responses=AnalysisCheckpointSerializer,
+    )
+    def patch(self, request, pk):
+        from fcs_parser.permissions import can_edit_experiment
+
+        checkpoint = self._get_checkpoint(request, pk)
+        if not can_edit_experiment(request.user, checkpoint.experiment):
+            raise PermissionDenied("Editar checkpoint exige permissão de escrita.")
+        payload = CheckpointPatchSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        checkpoint.message = payload.validated_data["message"]
+        checkpoint.save(update_fields=["message"])
+        return Response(AnalysisCheckpointSerializer(checkpoint).data)
+
+    def delete(self, request, pk):
+        from fcs_parser.permissions import can_edit_experiment
+
+        checkpoint = self._get_checkpoint(request, pk)
+        if not can_edit_experiment(request.user, checkpoint.experiment):
+            raise PermissionDenied("Descartar checkpoint exige permissão de escrita.")
+        checkpoint.active = False
+        checkpoint.save(update_fields=["active"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _restore_response(experiment, target_revision, request):
+    """Fluxo comum de restore: dry_run → plano; real → aplica ou bloqueia."""
+    payload = RestoreSerializer(data=request.data)
+    payload.is_valid(raise_exception=True)
+    force = payload.validated_data["force"]
+    if payload.validated_data["dry_run"]:
+        outcome = plan_restore(experiment, target_revision, force=force)
+        return Response(
+            {
+                "would_change": [
+                    {
+                        "revision_id": i["revision"].id,
+                        "changes": public_changes(i["plan"]),
+                    }
+                    for i in outcome["plans"]
+                ],
+                "conflicts": outcome["conflicts"],
+            }
+        )
+    result = apply_restore(experiment, target_revision, request.user, force=force)
+    if result["blocked"]:
+        return Response(
+            {
+                "would_change": result["would_change"],
+                "conflicts": result["conflicts"],
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+    return Response(
+        {"applied": result["applied"], "skipped": result["skipped"]},
+        status=status.HTTP_200_OK,
+    )
+
+
+class HistoryRestoreView(_ScopedExperimentMixin, APIView):
+    """POST /analytics/experiment/<id>/history/<rev>/restore/ {"dry_run","force"}.
+
+    Desfaz em cadeia tudo que veio depois da revisão-alvo (BE-20/ADR-0017).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=RestoreSerializer)
+    def post(self, request, experiment_id, revision_id):
+        from fcs_parser.permissions import can_edit_experiment
+
+        experiment = self.get_experiment(request)
+        if not can_edit_experiment(request.user, experiment):
+            raise PermissionDenied("Restaurar exige permissão de escrita.")
+        target = get_object_or_404(
+            AnalysisRevision, id=revision_id, experiment=experiment
+        )
+        return _restore_response(experiment, target, request)
+
+
+class CheckpointRestoreView(APIView):
+    """POST /analytics/checkpoints/<id>/restore/ — mesmo motor, alvo = marco."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=RestoreSerializer)
+    def post(self, request, pk):
+        from fcs_parser.permissions import (
+            can_edit_experiment,
+            experiments_visible_to,
+        )
+
+        checkpoint = get_object_or_404(
+            AnalysisCheckpoint.objects.select_related("experiment"),
+            id=pk,
+            experiment__in=experiments_visible_to(request.user),
+            active=True,
+        )
+        if not can_edit_experiment(request.user, checkpoint.experiment):
+            raise PermissionDenied("Restaurar exige permissão de escrita.")
+        return _restore_response(checkpoint.experiment, checkpoint.revision, request)
+
+
+class HistoryStateView(APIView):
+    """GET /analytics/history/<revision_id>/state/ — árvore naquela revisão.
+
+    Preview read-only do FE-25: reconstrói a floresta de gates aplicando os
+    inversos das revisões posteriores ao alvo, sem gravar nada.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, revision_id):
+        from fcs_parser.permissions import experiments_visible_to
+
+        revision = get_object_or_404(
+            AnalysisRevision.objects.select_related("experiment"),
+            id=revision_id,
+            experiment__in=experiments_visible_to(request.user),
+        )
+        return Response(state_at_revision(revision.experiment, revision))
