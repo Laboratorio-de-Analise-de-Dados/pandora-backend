@@ -8,8 +8,8 @@
 | [BE-04](BE-04-propagar-nome-cor-gate.md) | Propagar nome/cor por escopo | Entregue (#69) |
 | [BE-05](BE-05-upload-fcs-solto.md) | `.fcs` solto e validação de extensão | Entregue (#70) |
 | [BE-06](BE-06-fechar-pr-65.md) | Fechar a dívida do PR #65 | Resolvido (#66) |
-| [BE-07](BE-07-subsamples.md) | Subsamples e caminho do ZIP | Parcial (#78); escopo de gates pendente |
-| [BE-08](BE-08-historico-rollback.md) | Histórico e rollback da análise | Não iniciado |
+| [BE-07](BE-07-subsamples.md) | Subsamples e caminho do ZIP | Entregue (#78, partes 1 e 2) |
+| [BE-08](BE-08-historico-rollback.md) | Histórico e rollback da análise | Backend em `fix/gate-density-missing-channel`; front é MR à parte |
 | [BE-09](BE-09-headers-fcs.md) | Expor metadados do header FCS | Entregue (#80) |
 | [BE-10](BE-10-identidade-de-conteudo-e-blob-compartilhado.md) | Identidade de conteúdo e blob compartilhado | Implementado em `feat/file-identity-copy` |
 | [BE-11](BE-11-copiar-mover-experimento.md) | Copiar/mover experimento entre contextos | Implementado em `feat/file-identity-copy` |
