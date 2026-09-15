@@ -39,9 +39,9 @@ físico (ADR-0005/0008).
 
 `GET /analytics/experiment/<id>/history/` ganha modo agrupado
 (`?grouped=1`): as revisões voltam agrupadas em **sessões** — bursts de
-atividade separados por inatividade acima de um limiar (15 min —
-`SESSION_GAP_MINUTES` em `analytics/history.py`, constante de domínio, não
-configuração). Cada grupo expõe
+atividade separados por inatividade acima de um limiar (15 min por padrão —
+env `ANALYSIS_SESSION_GAP_MINUTES`, lida em `analytics/history.py` como
+`SESSION_GAP_MINUTES`). Cada grupo expõe
 `first_revision_id`, `last_revision_id`, `started_at`, `ended_at`, `count` —
 e a borda de cada sessão é um ponto restaurável. É uma **visão derivada na
 leitura**: nada é gravado (ADR-0017, alternativa B2 descartada).

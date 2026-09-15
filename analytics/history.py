@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
 
 from analytics.gate_author import author_display_name
@@ -39,8 +40,8 @@ REVERSIBLE_ACTIONS = {
 }
 
 # Inatividade que separa sessões na timeline (auto-checkpoints derivados,
-# ADR-0017). Constante de domínio — não é configuração.
-SESSION_GAP_MINUTES = 15
+# ADR-0017). Configurável via env ANALYSIS_SESSION_GAP_MINUTES (default 15).
+SESSION_GAP_MINUTES = settings.ANALYSIS_SESSION_GAP_MINUTES
 
 # Campos de gate que uma edição pode tocar — usados nos snapshots e na
 # verificação "o alvo mudou depois" da reversão.

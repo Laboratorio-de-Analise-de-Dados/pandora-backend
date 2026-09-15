@@ -47,6 +47,9 @@ CACHES = {
 }
 # Tempo de vida (segundos) do cache de density; renovado a cada acesso (sliding).
 DENSITY_CACHE_TTL = int(os.getenv("DENSITY_CACHE_TTL", 3600))
+# Inatividade (minutos) que separa sessões na timeline do histórico
+# (auto-checkpoints derivados na leitura — ADR-0017/BE-20).
+ANALYSIS_SESSION_GAP_MINUTES = int(os.getenv("ANALYSIS_SESSION_GAP_MINUTES", 15))
 
 LOGGING = {
     "version": 1,
