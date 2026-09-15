@@ -21,6 +21,7 @@
 | [BE-17](BE-17-creator-name-na-listagem.md) | `created_by_name` na listagem de experimentos | Implementado em `feat/created-by-name-list`                   |
 | [BE-18](BE-18-density-erro-canais.md) | "Erro ao carregar dados" em gate/arquivo sem o canal pedido | Implementado em `fix/gate-density-missing-channel` |
 | [BE-19](BE-19-workspaces-templates-analise.md) | Workspaces/templates: estratégia reutilizável entre experimentos | Visão (exige ADR próprio) |
+| [BE-20](BE-20-checkpoints-de-analise.md) | Checkpoints: salvar ponto nomeado e restaurar o experimento até ele | Não iniciado (ADR-0017 Proposto) |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na
