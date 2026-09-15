@@ -2,7 +2,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from accounts.models import User
-from analytics.models import DashboardModel, GateModel
+from analytics.models import AnalysisRevision, DashboardModel, GateModel
 from analytics.tasks import recalculate_gate_analysis
 from fcs_parser.models import (
     ExperimentModel,
@@ -696,3 +696,171 @@ class GateMissingChannelTestCase(GateFixtureMixin, TestCase):
 
         copy = GateModel.objects.get(file_data=self.file_b, copied_from=source)
         self.assertFalse(copy.analysis_result.analysis_result["applicable"])
+
+
+class AnalysisHistoryTestCase(GateFixtureMixin, TestCase):
+    """BE-08: log append-only de mutações + reversão com dry_run/conflitos."""
+
+    def _history(self, **params):
+        return self.client.get(
+            f"/analytics/experiment/{self.experiment.id}/history/", params
+        )
+
+    def test_criar_gate_registra_revisao(self):
+        res = self.client.post(
+            "/analytics/gate",
+            {
+                "name": "novo",
+                "file_data": self.file_a.id,
+                "gate_coordinates": {},
+                "dashboard": {
+                    "name": "dash-novo",
+                    "dashboard_config": {},
+                    "file_data": self.file_a.id,
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        res = self._history()
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(any(r["action"] == "create" for r in res.data["results"]))
+
+    def test_rename_grava_antes_depois_e_reverte(self):
+        res = self._patch_gate(self.source, name="CD4+")
+
+        self.assertEqual(res.status_code, 200)
+        res = self._history(target=f"gate:{self.source.id}")
+        revision = res.data["results"][0]
+        self.assertEqual(revision["action"], "rename")
+        self.assertTrue(revision["revertible"])
+
+        detail = self.client.get(f"/analytics/history/{revision['id']}/")
+        self.assertEqual(
+            detail.data["payload_before"]["gates"][str(self.source.id)]["name"],
+            "P1",
+        )
+        self.assertEqual(
+            detail.data["payload_after"]["gates"][str(self.source.id)]["name"],
+            "CD4+",
+        )
+
+        # Reverte de verdade: o nome volta e nasce uma revisão "revert".
+        res = self.client.post(f"/analytics/history/{revision['id']}/revert/", {})
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.name, "P1")
+        res = self._history()
+        self.assertTrue(any(r["action"] == "revert" for r in res.data["results"]))
+
+    def test_rename_propagado_registra_copias_e_reverte_todas(self):
+        res = self._patch_gate(self.source, name="CD4+", scope="experiment")
+
+        self.assertEqual(res.status_code, 200)
+        revision = self._history().data["results"][0]
+        self.assertEqual(
+            set(revision["affected_ids"]),
+            {self.source.id, self.copy_b.id, self.copy_c.id},
+        )
+
+        self.client.post(f"/analytics/history/{revision['id']}/revert/", {})
+        for gate in (self.source, self.copy_b, self.copy_c):
+            gate.refresh_from_db()
+            self.assertEqual(gate.name, "P1")
+
+    def test_revert_bloqueia_quando_gate_mudou_depois(self):
+        self._patch_gate(self.source, name="CD4+")
+        revision = self._history().data["results"][0]
+        self._patch_gate(self.source, name="CD8+")
+
+        res = self.client.post(f"/analytics/history/{revision['id']}/revert/", {})
+
+        self.assertEqual(res.status_code, 409)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.name, "CD8+")
+
+    def test_delete_batch_registra_subarvore_e_revert_recria(self):
+        res = self._delete_batch(source_gate_ids=[self.source.id], recursive=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(GateModel.objects.filter(id=self.child.id).exists())
+
+        revision = self._history().data["results"][0]
+        self.assertEqual(revision["action"], "delete")
+
+        res = self.client.post(f"/analytics/history/{revision['id']}/revert/", {})
+        self.assertEqual(res.status_code, 200)
+        recreated = GateModel.objects.filter(file_data=self.file_a, name="P1").first()
+        self.assertIsNotNone(recreated)
+        self.assertTrue(GateModel.objects.filter(parent=recreated, name="P2").exists())
+
+    def test_dry_run_nao_grava_nada(self):
+        self._patch_gate(self.source, name="CD4+")
+        revision = self._history().data["results"][0]
+        count = self._history().data["results"].__len__()
+
+        res = self.client.post(
+            f"/analytics/history/{revision['id']}/revert/", {"dry_run": True}
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["would_change"])
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.name, "CD4+")
+        self.assertEqual(len(self._history().data["results"]), count)
+
+    def test_disable_enable_amostra_registra_e_reverte(self):
+        res = self.client.post(f"/experiment/file/{self.file_a.id}/disable")
+        self.assertEqual(res.status_code, 200)
+
+        revision = self._history().data["results"][0]
+        self.assertEqual(revision["action"], "disable")
+        self.assertEqual(revision["target"]["type"], "file")
+
+        res = self.client.post(f"/analytics/history/{revision['id']}/revert/", {})
+        self.assertEqual(res.status_code, 200)
+        self.file_a.refresh_from_db()
+        self.assertTrue(self.file_a.active)
+
+    def test_mover_subsample_registra_e_reverte(self):
+        subsample = SubsampleModel.objects.create(
+            experiment=self.experiment, name="tempo_1"
+        )
+        res = self.client.patch(
+            f"/experiment/file/{self.file_a.id}/subsample",
+            {"subsample": subsample.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+
+        revision = self._history().data["results"][0]
+        self.assertEqual(revision["action"], "move_subsample")
+
+        res = self.client.post(f"/analytics/history/{revision['id']}/revert/", {})
+        self.assertEqual(res.status_code, 200)
+        self.file_a.refresh_from_db()
+        self.assertIsNone(self.file_a.subsample_id)
+
+    def test_outsider_nao_le_historico_nem_reverte(self):
+        self._patch_gate(self.source, name="CD4+")
+        self.client.force_authenticate(self.outsider)
+
+        res = self._history()
+        self.assertEqual(res.status_code, 404)
+
+        revision_id = AnalysisRevision.objects.first().id
+        res = self.client.post(f"/analytics/history/{revision_id}/revert/", {})
+        self.assertEqual(res.status_code, 404)
+
+    def test_cursor_pagina_resultados(self):
+        for i in range(3):
+            self._patch_gate(self.source, name=f"P{i}")
+
+        page1 = self._history()
+        self.assertEqual(page1.status_code, 200)
+        results = page1.data["results"]
+        self.assertEqual(len(results), 3)
+        cursor = page1.data["results"][-1]["id"]
+
+        page2 = self._history(cursor=cursor)
+        self.assertEqual(page2.status_code, 200)

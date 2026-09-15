@@ -1,10 +1,14 @@
-
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from analytics.gate_author import author_display_name
 from analytics.gate_scope import PROPAGATING_SCOPES, SCOPE_CHOICES, SCOPE_FILE
-from analytics.models import AnalysisResult, DashboardModel, GateModel
+from analytics.models import (
+    AnalysisResult,
+    AnalysisRevision,
+    DashboardModel,
+    GateModel,
+)
 from fcs_parser.models import FileDataModel
 
 
@@ -19,57 +23,71 @@ def gate_author_name(gate):
 class DashboardSerializer(serializers.ModelSerializer):
     class Meta:
         model = DashboardModel
-        fields = ['id', 'name', 'dashboard_config', 'created_at', 'file_data']
+        fields = ["id", "name", "dashboard_config", "created_at", "file_data"]
         validators = []  # disable auto UniqueTogetherValidator; handled in create()
 
     def create(self, validated_data):
         dashboard_instance, created = DashboardModel.objects.update_or_create(
-            name=validated_data['name'],
-            file_data=validated_data['file_data'],
-            defaults={'dashboard_config': validated_data.get('dashboard_config', {})},
+            name=validated_data["name"],
+            file_data=validated_data["file_data"],
+            defaults={"dashboard_config": validated_data.get("dashboard_config", {})},
         )
         return dashboard_instance
-        
+
+
 class GateSerializer(serializers.ModelSerializer):
     file_data = serializers.PrimaryKeyRelatedField(
         queryset=FileDataModel.objects.all(),
         allow_null=True,
     )
     dashboard = serializers.PrimaryKeyRelatedField(
-        queryset= DashboardModel.objects.all(),
-        required=True, 
-        allow_null=False
-    ) 
-    parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False, default=None)
+        queryset=DashboardModel.objects.all(), required=True, allow_null=False
+    )
+    parent = serializers.PrimaryKeyRelatedField(
+        queryset=GateModel.objects.all(), allow_null=True, required=False, default=None
+    )
     created_by_name = serializers.SerializerMethodField()
 
-    class Meta: 
+    class Meta:
         model = GateModel
         fields = [
-            'id', 'name', 'gate_coordinates', 'plot_config', 'created_at', 
-            'dashboard',
-            'file_data', 'parent', 'copied_from', 'color',
-            'created_by', 'created_by_name',
+            "id",
+            "name",
+            "gate_coordinates",
+            "plot_config",
+            "created_at",
+            "dashboard",
+            "file_data",
+            "parent",
+            "copied_from",
+            "color",
+            "created_by",
+            "created_by_name",
         ]
-        read_only_fields = ['id', 'created_at', 'created_by'] 
+        read_only_fields = ["id", "created_at", "created_by"]
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_created_by_name(self, obj):
         return gate_author_name(obj)
 
     def create(self, validated_data):
-        file_data_instance = validated_data.get('file_data') 
+        file_data_instance = validated_data.get("file_data")
         if not file_data_instance:
-            raise serializers.ValidationError({"file_data": "File data is required to create or associate a dashboard."})
+            raise serializers.ValidationError(
+                {
+                    "file_data": "File data is required to create or associate a dashboard."
+                }
+            )
 
         gate = GateModel.objects.create(**validated_data)
-        
+
         return gate
-    
+
     def get_children(self, obj):
         # Serializa os filhos do gate
         children = obj.children.all()
         return GateSerializer(children, many=True).data
+
 
 class GateBatchDeleteSerializer(serializers.Serializer):
     """Payload de POST /analytics/gate/delete-batch."""
@@ -134,8 +152,9 @@ class GateUpdateSerializer(serializers.Serializer):
 class AnalysisResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = AnalysisResult
-        fields = ['analysis_result'] 
-        read_only_fields = ['id', 'gate']
+        fields = ["analysis_result"]
+        read_only_fields = ["id", "gate"]
+
 
 class ListGateSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
@@ -144,11 +163,14 @@ class ListGateSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
     parent_id = serializers.PrimaryKeyRelatedField(
-        source="parent", queryset=GateModel.objects.all(), allow_null=True, required=False
+        source="parent",
+        queryset=GateModel.objects.all(),
+        allow_null=True,
+        required=False,
     )
     analysis_result = AnalysisResultSerializer(read_only=True)
     depth = 1
-    
+
     copied_from_id = serializers.PrimaryKeyRelatedField(
         source="copied_from", read_only=True
     )
@@ -156,7 +178,21 @@ class ListGateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = GateModel
-        fields = ['id', 'created_at', 'parent_id', 'children', 'file_data', 'name', 'gate_coordinates', 'plot_config', 'analysis_result', 'copied_from_id', 'color', 'created_by', 'created_by_name']
+        fields = [
+            "id",
+            "created_at",
+            "parent_id",
+            "children",
+            "file_data",
+            "name",
+            "gate_coordinates",
+            "plot_config",
+            "analysis_result",
+            "copied_from_id",
+            "color",
+            "created_by",
+            "created_by_name",
+        ]
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_created_by_name(self, obj):
@@ -164,9 +200,63 @@ class ListGateSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_children(self, obj):
-         # Serializa os filhos do gate
+        # Serializa os filhos do gate
         children = obj.children.all()
         return GateSerializer(children, many=True).data
 
 
+class AnalysisRevisionSerializer(serializers.ModelSerializer):
+    """Item do histórico (BE-08): frase pronta + alvo + autor."""
 
+    author = serializers.SerializerMethodField()
+    revertible = serializers.SerializerMethodField()
+    target = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AnalysisRevision
+        fields = [
+            "id",
+            "action",
+            "scope",
+            "target",
+            "summary",
+            "author",
+            "affected_ids",
+            "created_at",
+            "reverts",
+            "revertible",
+        ]
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_author(self, obj):
+        if not obj.user:
+            return None
+        return author_display_name(
+            obj.user.first_name, obj.user.last_name, obj.user.username
+        )
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_revertible(self, obj):
+        from analytics.history import REVERSIBLE_ACTIONS
+
+        return obj.action in REVERSIBLE_ACTIONS
+
+    @extend_schema_field(serializers.DictField())
+    def get_target(self, obj):
+        return {"type": obj.target_type, "id": obj.target_id}
+
+
+class AnalysisRevisionDetailSerializer(AnalysisRevisionSerializer):
+    """Detalhe da revisão: payloads completos para o diff antes/depois."""
+
+    class Meta(AnalysisRevisionSerializer.Meta):
+        fields = AnalysisRevisionSerializer.Meta.fields + [
+            "payload_before",
+            "payload_after",
+        ]
+
+
+class RevertRevisionSerializer(serializers.Serializer):
+    """Payload de POST /analytics/history/<id>/revert/."""
+
+    dry_run = serializers.BooleanField(default=False)

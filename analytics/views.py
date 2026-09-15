@@ -8,6 +8,7 @@ from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from fcs_parser.serializers import ParamListDataSerializer
 from rest_framework import generics, serializers
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView, Response, status
 from fcs_parser.permissions import (
@@ -21,12 +22,23 @@ from analytics.gate_scope import (
     effective_scope,
     gates_in_experiment_scope,
 )
-from analytics.models import DashboardModel, GateModel
+from analytics.history import (
+    apply_revert,
+    gate_snapshot,
+    gate_subtree_snapshots,
+    plan_revert,
+    public_changes,
+    record_revision,
+)
+from analytics.models import AnalysisRevision, DashboardModel, GateModel
 from analytics.serializers import (
+    AnalysisRevisionDetailSerializer,
+    AnalysisRevisionSerializer,
     DashboardSerializer,
     GateBatchDeleteSerializer,
     GateSerializer,
     GateUpdateSerializer,
+    RevertRevisionSerializer,
 )
 from utils.density import (
     DEFAULT_COFACTOR,
@@ -75,6 +87,7 @@ def _propagate_gate_changes(
         "file_data"
     ):
         fields = []
+        before_fields = {}
         if new_name is not None and copy.name != new_name:
             clash = (
                 GateModel.objects.filter(
@@ -95,16 +108,19 @@ def _propagate_gate_changes(
                     }
                 )
             else:
+                before_fields["name"] = copy.name
                 copy.name = new_name
                 fields.append("name")
 
         if color_changed:
             normalized = new_color if new_color else None
             if copy.color != normalized:
+                before_fields["color"] = copy.color
                 copy.color = normalized
                 fields.append("color")
 
         if new_coords is not None and copy.gate_coordinates != new_coords:
+            before_fields["gate_coordinates"] = copy.gate_coordinates
             copy.gate_coordinates = new_coords
             fields.append("gate_coordinates")
 
@@ -119,6 +135,7 @@ def _propagate_gate_changes(
                     "file_name": copy.file_data.file_name,
                     "source_path": copy.file_data.source_path,
                     "fields": fields,
+                    "before": before_fields,
                 }
             )
 
@@ -154,6 +171,22 @@ class CreateGateView(generics.CreateAPIView):
 
         recalculate_gate_analysis(gate_instance.id)
 
+        record_revision(
+            experiment=gate_instance.file_data.experiment,
+            action=AnalysisRevision.ACTION_CREATE,
+            target_type=AnalysisRevision.TARGET_GATE,
+            target_id=gate_instance.id,
+            user=request.user,
+            payload_after={
+                "gates": {str(gate_instance.id): gate_snapshot(gate_instance)}
+            },
+            affected_ids=[gate_instance.id],
+            summary=(
+                f'criou o gate "{gate_instance.name}" em '
+                f"{gate_instance.file_data.file_name}"
+            ),
+        )
+
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -170,6 +203,25 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_destroy(self, instance):
         require_can_edit_gate(self.request.user, instance)
+        snapshots = gate_subtree_snapshots(instance)
+        record_revision(
+            experiment=instance.file_data.experiment,
+            action=AnalysisRevision.ACTION_DELETE,
+            target_type=AnalysisRevision.TARGET_GATE,
+            target_id=instance.id,
+            user=self.request.user,
+            payload_before={"gates": snapshots},
+            affected_ids=[int(gid) for gid in snapshots],
+            summary=(
+                f'excluiu o gate "{instance.name}" em '
+                f"{instance.file_data.file_name}"
+                + (
+                    f" ({len(snapshots) - 1} sub-gate(s) junto)"
+                    if len(snapshots) > 1
+                    else ""
+                )
+            ),
+        )
         instance.delete()
 
     @extend_schema(request=GateUpdateSerializer, responses=GateSerializer)
@@ -182,12 +234,20 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         scope = effective_scope(data["scope"], gate.file_data)
 
         update_fields = []
+        gate_before = {}
+        gate_after = {}
         new_name = data.get("name")
         if new_name is not None:
+            if gate.name != new_name:
+                gate_before["name"] = gate.name
+                gate_after["name"] = new_name
             gate.name = new_name
             update_fields.append("name")
         new_coords = data.get("gate_coordinates")
         if new_coords is not None:
+            if gate.gate_coordinates != new_coords:
+                gate_before["gate_coordinates"] = gate.gate_coordinates
+                gate_after["gate_coordinates"] = new_coords
             gate.gate_coordinates = new_coords
             update_fields.append("gate_coordinates")
             # Geometria customizada só nesta amostra desfaz o vínculo com a
@@ -196,14 +256,23 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
             # escopo do experimento a mudança vale para a família inteira e o
             # vínculo é mantido.
             if gate.copied_from_id and scope not in PROPAGATING_SCOPES:
+                gate_before["copied_from_id"] = gate.copied_from_id
+                gate_after["copied_from_id"] = None
                 gate.copied_from = None
                 update_fields.append("copied_from")
         new_color = data.get("color")
         if new_color is not None:
-            gate.color = new_color if new_color else None
+            normalized_color = new_color if new_color else None
+            if gate.color != normalized_color:
+                gate_before["color"] = gate.color
+                gate_after["color"] = normalized_color
+            gate.color = normalized_color
             update_fields.append("color")
         new_plot_config = data.get("plot_config")
         if new_plot_config is not None:
+            if gate.plot_config != new_plot_config:
+                gate_before["plot_config"] = gate.plot_config
+                gate_after["plot_config"] = new_plot_config
             gate.plot_config = new_plot_config
             update_fields.append("plot_config")
 
@@ -232,6 +301,7 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
 
         propagated_ids = []
         conflicts = []
+        propagated_affected = []
         with transaction.atomic():
             if update_fields:
                 try:
@@ -248,13 +318,57 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
                     )
 
             if scope in PROPAGATING_SCOPES:
-                propagated_ids, conflicts, _ = _propagate_gate_changes(
-                    gate,
-                    new_name=new_name,
-                    new_color=new_color,
-                    color_changed="color" in data,
-                    new_coords=new_coords,
+                propagated_ids, conflicts, propagated_affected = (
+                    _propagate_gate_changes(
+                        gate,
+                        new_name=new_name,
+                        new_color=new_color,
+                        color_changed="color" in data,
+                        new_coords=new_coords,
+                        scope=scope,
+                    )
+                )
+
+            if gate_before or propagated_affected:
+                new_values = {
+                    "name": new_name,
+                    "color": (new_color or None) if "color" in data else None,
+                    "gate_coordinates": new_coords,
+                }
+                payload_before = {"gates": {}}
+                payload_after = {"gates": {}}
+                if gate_before:
+                    payload_before["gates"][str(gate.id)] = gate_before
+                    payload_after["gates"][str(gate.id)] = gate_after
+                for entry in propagated_affected:
+                    gid = str(entry["gate_id"])
+                    payload_before["gates"][gid] = entry["before"]
+                    payload_after["gates"][gid] = {
+                        field: new_values[field] for field in entry["fields"]
+                    }
+                if new_coords is not None:
+                    action = AnalysisRevision.ACTION_UPDATE_GEOMETRY
+                    action_summary = f'alterou a geometria de "{gate.name}"'
+                elif new_name is not None:
+                    action = AnalysisRevision.ACTION_RENAME
+                    old_name = gate_before.get("name", gate.name)
+                    action_summary = f'renomeou "{old_name}" → "{new_name}"'
+                else:
+                    action = AnalysisRevision.ACTION_RECOLOR
+                    action_summary = f'mudou a cor de "{gate.name}"'
+                total = len(payload_before["gates"])
+                record_revision(
+                    experiment=gate.file_data.experiment,
+                    action=action,
+                    target_type=AnalysisRevision.TARGET_GATE,
+                    target_id=gate.id,
+                    user=request.user,
                     scope=scope,
+                    payload_before=payload_before,
+                    payload_after=payload_after,
+                    affected_ids=[int(gid) for gid in payload_before["gates"]],
+                    summary=action_summary
+                    + (f" em {total} amostras (escopo {scope})" if total > 1 else ""),
                 )
 
         # Só recalcula métricas/invalida densidade quando a geometria muda.
@@ -704,8 +818,29 @@ class DeleteGateBatchView(APIView):
         for gate in targets.values():
             per_file[gate.file_data_id] = per_file.get(gate.file_data_id, 0) + 1
 
+        # BE-08: snapshot de cada alvo + subárvore antes do delete — a CASCADE
+        # de `parent` leva os filhos junto e é o que viabiliza o revert.
+        snapshots = {}
+        for gate in targets.values():
+            for gid, snap in gate_subtree_snapshots(gate).items():
+                snapshots.setdefault(gid, snap)
+
         with transaction.atomic():
             deleted, _ = GateModel.objects.filter(id__in=list(targets.keys())).delete()
+            record_revision(
+                experiment=source_gates[0].file_data.experiment,
+                action=AnalysisRevision.ACTION_DELETE,
+                target_type=AnalysisRevision.TARGET_GATE,
+                target_id=source_gates[0].id,
+                user=request.user,
+                scope=data["scope"],
+                payload_before={"gates": snapshots},
+                affected_ids=[int(gid) for gid in snapshots],
+                summary=(
+                    f"excluiu {deleted} gate(s)"
+                    + (f" (escopo {data['scope']})" if data["scope"] != "file" else "")
+                ),
+            )
 
         from utils.density import invalidate_density
 
@@ -930,6 +1065,9 @@ class ApplyGateView(APIView):
         total_replaced = 0
         conflicts = []
         details = []
+        created_gate_ids = []
+        replaced_before = {}
+        replaced_after = {}
 
         with transaction.atomic():
             for target_fd_id in target_ids:
@@ -957,6 +1095,7 @@ class ApplyGateView(APIView):
                             file_skipped += 1
                             continue
                         elif on_conflict == "replace":
+                            replaced_before[str(existing.id)] = gate_snapshot(existing)
                             existing.gate_coordinates = gate.gate_coordinates
                             existing.plot_config = gate.plot_config
                             existing.color = gate.color
@@ -971,6 +1110,7 @@ class ApplyGateView(APIView):
                             )
                             id_map[gate.id] = existing.id
                             file_replaced += 1
+                            replaced_after[str(existing.id)] = gate_snapshot(existing)
                             conflicts.append(
                                 {
                                     "gate_id": existing.id,
@@ -1015,6 +1155,7 @@ class ApplyGateView(APIView):
                     )
                     id_map[gate.id] = new_gate.id
                     file_created += 1
+                    created_gate_ids.append(new_gate.id)
 
                 details.append(
                     {
@@ -1027,6 +1168,25 @@ class ApplyGateView(APIView):
                 total_created += file_created
                 total_skipped += file_skipped
                 total_replaced += file_replaced
+
+            record_revision(
+                experiment=target_files[target_ids[0]].experiment,
+                action=AnalysisRevision.ACTION_APPLY,
+                target_type=AnalysisRevision.TARGET_GATE,
+                target_id=source_gates[0].id,
+                user=request.user,
+                payload_before={"replaced": replaced_before},
+                payload_after={
+                    "created_gate_ids": created_gate_ids,
+                    "replaced": replaced_after,
+                },
+                affected_ids=created_gate_ids + [int(g) for g in replaced_after],
+                summary=(
+                    f"aplicou {len(source_gates)} gate(s) em "
+                    f"{len(target_ids)} amostra(s) ({total_created} criados, "
+                    f"{total_replaced} substituídos, {total_skipped} ignorados)"
+                ),
+            )
 
         # Trigger async recalculation + cache invalidation outside the transaction.
         for target_fd_id in target_ids:
@@ -1051,4 +1211,131 @@ class ApplyGateView(APIView):
                 "details": details,
             },
             status=status.HTTP_201_CREATED,
+        )
+
+
+class ExperimentHistoryView(generics.ListAPIView):
+    """GET /analytics/experiment/<experiment_id>/history/
+
+    Log append-only da análise (BE-08/ADR-0008), mais recente primeiro.
+    Filtros: `target=gate:51` (ou subsample/file/experiment), `user=<id>`;
+    paginação por cursor: `cursor=<revision_id>` devolve os itens
+    anteriores a ele (50 por página).
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = AnalysisRevisionSerializer
+    PAGE_SIZE = 50
+
+    def get_queryset(self):
+        from fcs_parser.permissions import experiments_visible_to
+
+        experiment = get_object_or_404(
+            experiments_visible_to(self.request.user),
+            id=self.kwargs["experiment_id"],
+        )
+        qs = AnalysisRevision.objects.filter(experiment=experiment).select_related(
+            "user"
+        )
+        target = self.request.query_params.get("target")
+        if target and ":" in target:
+            target_type, target_id = target.split(":", 1)
+            if target_id.isdigit():
+                qs = qs.filter(target_type=target_type, target_id=int(target_id))
+        user_id = self.request.query_params.get("user")
+        if user_id and user_id.isdigit():
+            qs = qs.filter(user_id=int(user_id))
+        cursor = self.request.query_params.get("cursor")
+        if cursor and cursor.isdigit():
+            qs = qs.filter(id__lt=int(cursor))
+        return qs.order_by("-id")
+
+    def list(self, request, *args, **kwargs):
+        page = list(self.get_queryset()[: self.PAGE_SIZE + 1])
+        has_more = len(page) > self.PAGE_SIZE
+        page = page[: self.PAGE_SIZE]
+        serializer = self.get_serializer(page, many=True)
+        return Response(
+            {
+                "results": serializer.data,
+                "next_cursor": page[-1].id if has_more and page else None,
+            }
+        )
+
+
+class HistoryDetailView(APIView):
+    """GET /analytics/history/<revision_id>/ — revisão + o que reverteria."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, revision_id):
+        from fcs_parser.permissions import experiments_visible_to
+
+        revision = get_object_or_404(
+            AnalysisRevision.objects.select_related("user", "experiment"),
+            id=revision_id,
+            experiment__in=experiments_visible_to(request.user),
+        )
+        data = AnalysisRevisionDetailSerializer(revision).data
+        if data["revertible"]:
+            data["revert_preview"] = plan_revert(revision)
+        return Response(data)
+
+
+class HistoryRevertView(APIView):
+    """POST /analytics/history/<revision_id>/revert/ {"dry_run": bool}.
+
+    Reverte uma revisão aplicando o inverso como uma revisão nova
+    (`action="revert"`, `reverts=<id>`) — o log nunca é reescrito.
+    `dry_run` devolve `would_change`/`conflicts` sem gravar; com conflitos
+    a reversão é bloqueada, nunca aplicada parcialmente.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=RevertRevisionSerializer,
+        responses=inline_serializer(
+            name="RevertResponse",
+            fields={
+                "would_change": serializers.ListField(child=serializers.DictField()),
+                "conflicts": serializers.ListField(child=serializers.DictField()),
+            },
+        ),
+    )
+    def post(self, request, revision_id):
+        from fcs_parser.permissions import (
+            can_edit_experiment,
+            experiments_visible_to,
+        )
+
+        revision = get_object_or_404(
+            AnalysisRevision.objects.select_related("experiment"),
+            id=revision_id,
+            experiment__in=experiments_visible_to(request.user),
+        )
+        if not can_edit_experiment(request.user, revision.experiment):
+            raise PermissionDenied(
+                "Reverter exige permissão de escrita no experimento."
+            )
+        payload = RevertRevisionSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+
+        plan = plan_revert(revision)
+        if payload.validated_data["dry_run"] or plan["conflicts"]:
+            return Response(
+                {
+                    "would_change": public_changes(plan),
+                    "conflicts": plan["conflicts"],
+                },
+                status=(
+                    status.HTTP_200_OK
+                    if payload.validated_data["dry_run"]
+                    else status.HTTP_409_CONFLICT
+                ),
+            )
+        result = apply_revert(revision, request.user)
+        return Response(
+            {"would_change": public_changes(plan), "conflicts": []},
+            status=status.HTTP_200_OK,
         )

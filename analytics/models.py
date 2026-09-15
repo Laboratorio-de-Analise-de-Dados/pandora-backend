@@ -156,3 +156,96 @@ class AnalysisResult(models.Model):
         related_name="analysis_result",
     )
     analysis_result = models.JSONField(default=dict)
+
+
+class AnalysisRevision(models.Model):
+    """Log append-only de mutações da estratégia de análise (BE-08, ADR-0008).
+
+    Uma operação do usuário = uma revisão, mesmo quando toca N alvos
+    (`affected_ids`). `payload_before`/`payload_after` guardam só os campos
+    tocados por alvo — `{"<id>": {campo: valor}}` — e, para create/delete/
+    apply, snapshots completos que viabilizam a reversão. O log nunca é
+    editado nem apagado: reverter grava uma revisão nova com
+    `action="revert"` e `reverts` apontando para a original.
+    """
+
+    class Meta:
+        db_table = "analysis_revision"
+        indexes = [
+            models.Index(fields=["experiment", "-created_at"]),
+            models.Index(fields=["target_type", "target_id"]),
+        ]
+
+    TARGET_GATE = "gate"
+    TARGET_SUBSAMPLE = "subsample"
+    TARGET_FILE = "file"
+    TARGET_EXPERIMENT = "experiment"
+    TARGET_CHOICES = [
+        (TARGET_GATE, "Gate"),
+        (TARGET_SUBSAMPLE, "Subsample"),
+        (TARGET_FILE, "Amostra"),
+        (TARGET_EXPERIMENT, "Experimento"),
+    ]
+
+    ACTION_CREATE = "create"
+    ACTION_UPDATE_GEOMETRY = "update_geometry"
+    ACTION_RENAME = "rename"
+    ACTION_RECOLOR = "recolor"
+    ACTION_APPLY = "apply"
+    ACTION_DELETE = "delete"
+    ACTION_DISABLE = "disable"
+    ACTION_ENABLE = "enable"
+    ACTION_MOVE_SUBSAMPLE = "move_subsample"
+    ACTION_REVERT = "revert"
+    ACTION_CHOICES = [
+        (ACTION_CREATE, "Criação"),
+        (ACTION_UPDATE_GEOMETRY, "Geometria"),
+        (ACTION_RENAME, "Renomear"),
+        (ACTION_RECOLOR, "Cor"),
+        (ACTION_APPLY, "Aplicar em amostras"),
+        (ACTION_DELETE, "Excluir"),
+        (ACTION_DISABLE, "Desativar"),
+        (ACTION_ENABLE, "Reativar"),
+        (ACTION_MOVE_SUBSAMPLE, "Mover de subsample"),
+        (ACTION_REVERT, "Reversão"),
+    ]
+
+    SCOPE_CHOICES = [
+        ("file", "Amostra"),
+        ("subsample", "Subsample"),
+        ("experiment", "Experimento"),
+    ]
+
+    experiment = models.ForeignKey(
+        ExperimentModel,
+        on_delete=models.CASCADE,
+        related_name="analysis_revisions",
+    )
+    target_type = models.CharField(max_length=20, choices=TARGET_CHOICES)
+    target_id = models.BigIntegerField()
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    scope = models.CharField(
+        max_length=20, choices=SCOPE_CHOICES, null=True, blank=True
+    )
+    payload_before = models.JSONField(default=dict, blank=True)
+    payload_after = models.JSONField(default=dict, blank=True)
+    affected_ids = models.JSONField(default=list, blank=True)
+    summary = models.CharField(max_length=512)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_revisions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    reverts = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reverted_by",
+    )
+
+    def __str__(self) -> str:
+        return f"Revision {self.id} – {self.action} {self.target_type}:{self.target_id}"

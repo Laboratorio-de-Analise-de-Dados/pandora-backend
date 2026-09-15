@@ -12,7 +12,8 @@ from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from accounts.models import Organization
-from analytics.models import GateModel
+from analytics.history import record_revision
+from analytics.models import AnalysisRevision, GateModel
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework.response import Response
 from rest_framework import status
@@ -393,6 +394,17 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
         if instance.active:
             instance.active = False
             instance.save(update_fields=["active"])
+            record_revision(
+                experiment=instance,
+                action=AnalysisRevision.ACTION_DISABLE,
+                target_type=AnalysisRevision.TARGET_EXPERIMENT,
+                target_id=instance.id,
+                user=self.request.user,
+                payload_before={"targets": {str(instance.id): {"active": True}}},
+                payload_after={"targets": {str(instance.id): {"active": False}}},
+                affected_ids=[instance.id],
+                summary=f'desativou o experimento "{instance.title}"',
+            )
 
 
 class ExperimentRestoreView(APIView):
@@ -442,6 +454,17 @@ class ExperimentRestoreView(APIView):
                     },
                     status=status.HTTP_409_CONFLICT,
                 )
+            record_revision(
+                experiment=experiment,
+                action=AnalysisRevision.ACTION_ENABLE,
+                target_type=AnalysisRevision.TARGET_EXPERIMENT,
+                target_id=experiment.id,
+                user=request.user,
+                payload_before={"targets": {str(experiment.id): {"active": False}}},
+                payload_after={"targets": {str(experiment.id): {"active": True}}},
+                affected_ids=[experiment.id],
+                summary=f'reativou o experimento "{experiment.title}"',
+            )
         return Response(
             ListExperimentSerializer(experiment).data, status=status.HTTP_200_OK
         )
@@ -481,6 +504,17 @@ class DisableFileDataView(APIView):
             file_data.deactivated_by = request.user
             file_data.save(update_fields=["active", "deactivated_at", "deactivated_by"])
             invalidate_density(file_data.id)
+            record_revision(
+                experiment=file_data.experiment,
+                action=AnalysisRevision.ACTION_DISABLE,
+                target_type=AnalysisRevision.TARGET_FILE,
+                target_id=file_data.id,
+                user=request.user,
+                payload_before={"targets": {str(file_data.id): {"active": True}}},
+                payload_after={"targets": {str(file_data.id): {"active": False}}},
+                affected_ids=[file_data.id],
+                summary=f'desabilitou a amostra "{file_data.file_name}"',
+            )
 
         return Response(
             {
@@ -511,6 +545,17 @@ class EnableFileDataView(APIView):
             file_data.deactivated_at = None
             file_data.deactivated_by = None
             file_data.save(update_fields=["active", "deactivated_at", "deactivated_by"])
+            record_revision(
+                experiment=file_data.experiment,
+                action=AnalysisRevision.ACTION_ENABLE,
+                target_type=AnalysisRevision.TARGET_FILE,
+                target_id=file_data.id,
+                user=request.user,
+                payload_before={"targets": {str(file_data.id): {"active": False}}},
+                payload_after={"targets": {str(file_data.id): {"active": True}}},
+                affected_ids=[file_data.id],
+                summary=f'reativou a amostra "{file_data.file_name}"',
+            )
 
         return Response(
             {
@@ -554,12 +599,24 @@ class SubsampleListCreateView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            serializer.save(experiment=experiment, created_by=request.user)
+            subsample = serializer.save(experiment=experiment, created_by=request.user)
         except IntegrityError:
             return Response(
                 {"name": "Já existe um subsample com esse nome neste experimento."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        record_revision(
+            experiment=experiment,
+            action=AnalysisRevision.ACTION_CREATE,
+            target_type=AnalysisRevision.TARGET_SUBSAMPLE,
+            target_id=subsample.id,
+            user=request.user,
+            payload_after={
+                "targets": {str(subsample.id): {"name": subsample.name, "active": True}}
+            },
+            affected_ids=[subsample.id],
+            summary=f'criou o subsample "{subsample.name}"',
+        )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -584,19 +641,56 @@ class SubsampleDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         self.check_can_edit(serializer.instance)
+        old_name = serializer.instance.name
         try:
-            serializer.save()
+            subsample = serializer.save()
         except IntegrityError:
             raise serializers.ValidationError(
                 {"name": "Já existe um subsample com esse nome neste experimento."}
             )
+        if subsample.name != old_name:
+            record_revision(
+                experiment=subsample.experiment,
+                action=AnalysisRevision.ACTION_RENAME,
+                target_type=AnalysisRevision.TARGET_SUBSAMPLE,
+                target_id=subsample.id,
+                user=self.request.user,
+                payload_before={"targets": {str(subsample.id): {"name": old_name}}},
+                payload_after={
+                    "targets": {str(subsample.id): {"name": subsample.name}}
+                },
+                affected_ids=[subsample.id],
+                summary=f'renomeou o subsample "{old_name}" → "{subsample.name}"',
+            )
 
     def perform_destroy(self, instance):
         self.check_can_edit(instance)
+        linked_ids = list(instance.files.values_list("id", flat=True))
         if instance.active:
             instance.active = False
             instance.save(update_fields=["active"])
         instance.files.update(subsample=None)
+        record_revision(
+            experiment=instance.experiment,
+            action=AnalysisRevision.ACTION_DELETE,
+            target_type=AnalysisRevision.TARGET_SUBSAMPLE,
+            target_id=instance.id,
+            user=self.request.user,
+            payload_before={
+                "targets": {str(instance.id): {"active": True}},
+                "unlinked_file_ids": linked_ids,
+            },
+            payload_after={"targets": {str(instance.id): {"active": False}}},
+            affected_ids=[instance.id, *linked_ids],
+            summary=(
+                f'arquivou o subsample "{instance.name}"'
+                + (
+                    f" ({len(linked_ids)} amostra(s) desagrupada(s))"
+                    if linked_ids
+                    else ""
+                )
+            ),
+        )
 
 
 class FileSubsampleView(APIView):
@@ -644,8 +738,32 @@ class FileSubsampleView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        old_subsample_id = file_data.subsample_id
         file_data.subsample = subsample
         file_data.save(update_fields=["subsample"])
+        if old_subsample_id != file_data.subsample_id:
+            record_revision(
+                experiment=file_data.experiment,
+                action=AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
+                target_type=AnalysisRevision.TARGET_FILE,
+                target_id=file_data.id,
+                user=request.user,
+                payload_before={
+                    "targets": {str(file_data.id): {"subsample_id": old_subsample_id}}
+                },
+                payload_after={
+                    "targets": {
+                        str(file_data.id): {"subsample_id": file_data.subsample_id}
+                    }
+                },
+                affected_ids=[file_data.id],
+                summary=(
+                    f'moveu a amostra "{file_data.file_name}" para '
+                    f'"{subsample.name}"'
+                    if subsample
+                    else f'removeu a amostra "{file_data.file_name}" do subsample'
+                ),
+            )
 
         return Response(
             ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
