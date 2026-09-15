@@ -34,29 +34,44 @@ AnalysisCheckpoint
 com ADR-0005/0008; "descartar" um checkpoint, se necessário, é `active=false`
 como nos demais modelos.
 
-### 2. Endpoints
+### 2. Timeline agrupada em sessões (auto-checkpoints)
+
+`GET /analytics/experiment/<id>/history/` ganha modo agrupado
+(`?grouped=1`): as revisões voltam agrupadas em **sessões** — bursts de
+atividade separados por inatividade acima de um limiar (começar com 30 min,
+constante de domínio, não configuração). Cada grupo expõe
+`first_revision_id`, `last_revision_id`, `started_at`, `ended_at`, `count` —
+e a borda de cada sessão é um ponto restaurável. É uma **visão derivada na
+leitura**: nada é gravado (ADR-0017, alternativa B2 descartada).
+
+### 3. Endpoints de checkpoint e restore
 
 ```
-POST /analytics/experiment/<id>/checkpoints/          { message? }
+POST /analytics/experiment/<id>/checkpoints/          { message?, revision_id? }
 GET  /analytics/experiment/<id>/checkpoints/          lista (id, message, author, created_at, revision_id)
+POST /analytics/experiment/<id>/history/<rev>/restore/      { dry_run?, force? }
 POST /analytics/experiment/<id>/checkpoints/<cp>/restore/   { dry_run?, force? }
 ```
 
-- Criar: resolve a última `AnalysisRevision` do experimento (ou a revisão
-  indicada, se o front quiser marcar um ponto retroativo — parâmetro
-  opcional `revision_id`) e grava o checkpoint.
-- Restore `dry_run`: percorre as revisões posteriores a `checkpoint.revision`
-  em ordem inversa, compõe o plano reusando `plan_revert` por revisão e
-  devolve `would_change` + `conflicts` agregados — mesma ergonomia do
-  revert unitário.
+- Criar: sem `revision_id`, marca a última revisão do experimento ("salvar
+  ponto agora"); com `revision_id`, fixa aquela borda — é o "pin" de um
+  auto-checkpoint ou de uma revisão avulsa.
+- **O alvo do restore é sempre uma revisão.** `.../history/<rev>/restore/`
+  desfaz todas as revisões posteriores a `rev`; o endpoint de checkpoint é
+  a mesma operação apontando para `checkpoint.revision` — um único motor,
+  dois nomes de entrada.
+- Restore `dry_run`: percorre as revisões posteriores ao alvo em ordem
+  inversa, compõe o plano reusando `plan_revert` por revisão e devolve
+  `would_change` + `conflicts` agregados — mesma ergonomia do revert
+  unitário.
 - Restore real: **atômico** — qualquer conflito → `409` com a lista, nada
   aplicado. `force=true` sobrescreve os conflitos e restaura o estado do
-  checkpoint; o front nomeia isso "Sobrescrever alterações".
-- Sucesso grava **uma** revisão nova (`action="restore"`, `reverts` →
-  `checkpoint.revision`, `payload_before` com o antes de cada operação) —
-  o log continua append-only e legível.
+  ponto; o front nomeia isso "Sobrescrever alterações".
+- Sucesso grava **uma** revisão nova (`action="restore"`, `reverts` → a
+  revisão-alvo, `payload_before` com o antes de cada operação) — o log
+  continua append-only e legível.
 
-### 3. Recriação com recálculo
+### 4. Recriação com recálculo
 
 Gates recriados pelo restore (revert de delete) nascem com ids novos
 (`id_map` remapeia a subárvore; `copied_from` externo já consumido por
@@ -65,7 +80,7 @@ Gates recriados pelo restore (revert de delete) nascem com ids novos
 calculadas, incluindo o marcador `applicable: false` do ADR-0016 quando o
 canal não existir na amostra.
 
-### 4. Permissões
+### 5. Permissões
 
 - Leitura (histórico + checkpoints): quem enxerga o experimento.
 - Criar checkpoint e restaurar: `can_edit_experiment` (editor/dono/admin).
@@ -74,9 +89,10 @@ canal não existir na amostra.
 
 - `analytics/models.py` — `AnalysisCheckpoint` + `ACTION_RESTORE` em
   `AnalysisRevision`.
-- `analytics/history.py` — `plan_restore(checkpoint)` (compõe `plan_revert`
+- `analytics/history.py` — `plan_restore(revision)` (compõe `plan_revert`
   em cadeia) + `apply_restore` (executa, grava revisão composta, dispara
-  recálculo dos gates recriados).
+  recálculo dos gates recriados); agrupamento em sessões na leitura do
+  histórico (`?grouped=1`).
 - `analytics/serializers.py` — create/list/restore; validação no serializer
   (ADR-0009).
 - `analytics/views.py` + `urls.py` — os três endpoints, queryset escopado
@@ -86,12 +102,16 @@ canal não existir na amostra.
 
 ## Critérios de aceite
 
-- [ ] `POST /checkpoints/` cria marco com mensagem opcional; lista ordenada
-  por data desc.
+- [ ] `GET .../history/?grouped=1` devolve sessões por janela de atividade
+  com bordas (`first`/`last_revision_id`) restauráveis — sem gravar nada.
+- [ ] `POST /checkpoints/` cria marco com mensagem opcional; `revision_id`
+  opcional fixa uma borda passada (pin de auto-checkpoint).
+- [ ] `POST .../history/<rev>/restore/` e `.../checkpoints/<cp>/restore/`
+  compartilham o mesmo motor de restore.
 - [ ] Restore `dry_run` devolve plano composto + conflitos sem tocar o banco.
 - [ ] Restore com conflito → `409` com a lista de conflitos, nada aplicado.
-- [ ] Restore `force=true` restaura o estado do checkpoint sobre conflitos e
-  grava revisão `action="restore"` com `reverts` apontando ao marco.
+- [ ] Restore `force=true` restaura o estado do ponto sobre conflitos e
+  grava revisão `action="restore"` com `reverts` apontando à revisão-alvo.
 - [ ] Restore sem conflito devolve a árvore ao estado do checkpoint
   (edições posteriores desfeitas; gates deletados recriados).
 - [ ] Gates recriados têm `AnalysisResult` recalculado (incluindo

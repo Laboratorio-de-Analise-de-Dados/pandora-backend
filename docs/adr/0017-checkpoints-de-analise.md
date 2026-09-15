@@ -42,6 +42,25 @@ imediatamente; o checkpoint apenas aponta para a última revisão do momento.
 Não existe estado "não salvo" — fechar a página nunca perde trabalho, e o
 prompt de saída deixa de ser necessário.
 
+**Dois tipos de ponto de retorno, um só mecanismo.** O alvo de qualquer
+restore é sempre uma *revisão* ("desfazer tudo depois dela"); sobre isso
+existem duas granularidades:
+
+- **Auto-checkpoint (temporal, derivado):** a timeline agrupa revisões em
+  sessões por janelas de atividade — bursts separados por inatividade acima
+  de um limiar viram grupos ("hoje 14:20–14:45, 12 alterações"). É uma visão
+  computada na leitura sobre o log: nada é escrito, não precisa de
+  scheduler, e o limiar pode ser ajustado sem migração. Qualquer borda de
+  sessão é um ponto restaurável.
+- **Checkpoint fixado (entidade):** "pin" de uma borda automática ou "salvar
+  ponto" com mensagem — ambos criam um `AnalysisCheckpoint` apontando para
+  a revisão que fecha o ponto. Persiste nomeado e é o candidato a molde
+  (BE-19).
+
+Ou seja: toda revisão já é implicitamente um ponto de retorno; a sessão dá
+navegação temporal de graça; o checkpoint dá identidade permanente ao ponto
+que importa.
+
 **Restaurar um checkpoint = reverter em cadeia**, na ordem inversa, todas as
 revisões posteriores à revisão marcada:
 
@@ -85,6 +104,15 @@ um ganho que o log append-only já cobre.
 Descartada pela ponte com BE-19: um ponto nomeado que no futuro pode ser
 promovido a template de análise precisa de identidade própria. Como flag,
 viraria reuso torto de um registro de evento.
+
+### B2) Auto-checkpoints materializados no banco
+
+Descartada: gravar uma linha de checkpoint a cada burst exigiria gatilho de
+escrita (regra de inatividade embutida na gravação da revisão ou um job —
+e não temos worker), política de expurgo para o ruído, e a regra ficaria
+congelada no dado escrito. O agrupamento temporal derivado na leitura
+entrega o mesmo resultado com custo zero de escrita — e "pin" materializa
+só o ponto que o usuário considerou importante.
 
 ### C) Restore parcial (reverte o que dá, reporta o resto)
 
