@@ -71,6 +71,10 @@ pandora/    Projeto Django (settings, urls raiz, wsgi/asgi)
 - Código usado por 2+ apps → `utils/` da raiz; código de um app → dentro
   dele (`services/`, `permissions.py`, `tasks.py`).
 - `path()` de id usa `<int:...>` e `name=` quando a rota é referenciada.
+- **Timestamps sempre UTC**: `USE_TZ=True` + `TIME_ZONE="UTC"` são fixos —
+  banco grava UTC e a API emite ISO-8601 `Z`; a conversão para o fuso do
+  usuário é responsabilidade do front. Não mude `TIME_ZONE` nem emita
+  datetime naive/formatado em resposta.
 
 ## Regras duras
 
