@@ -47,3 +47,4 @@ valor à pasta.
 | [0013](adr/0013-blob-compartilhado-entre-experimentos.md) | Blob físico compartilhado; experimento↔blob via `FileDataModel` | Proposto |
 | [0014](adr/0014-todo-lookup-via-queryset-escopada.md) | Todo lookup por id passa por queryset escopado | Aceito |
 | [0015](adr/0015-unicidade-de-titulo-entre-ativos.md) | Unicidade de título vale apenas entre experimentos ativos | Aceito |
+| [0016](adr/0016-gate-nao-avaliavel-sem-canal.md) | Canal ausente torna o gate não-avaliável e corta a linhagem na amostra | Aceito |
