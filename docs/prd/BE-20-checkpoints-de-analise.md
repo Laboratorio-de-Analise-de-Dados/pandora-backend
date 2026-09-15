@@ -123,6 +123,10 @@ canal não existir na amostra.
 ## Fora de escopo
 
 - UI — FE-25.
+- Servir o **estado da análise numa revisão passada** (árvore/geometrias daquele
+  ponto, pronto para plotar) — pré-requisito do "modo preview" do FE-25
+  (`👁️ Visualizar`). Hoje `GET .../history/<rev>/` devolve before/after por
+  alvo, não a árvore. Se o preview gráfico for aprovado, vira PRD próprio.
 - Promover checkpoint a template/workspace — BE-19 (o modelo já está em
   forma compatível; a funcionalidade não é prometida aqui).
 - Expurgo ou edição de checkpoints.

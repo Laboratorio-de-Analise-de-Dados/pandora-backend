@@ -48,6 +48,23 @@ em experimentos diferentes. O fluxo imaginado:
   marcação de não-avaliável (BE-18) já cobre a consequência, mas o ADR
   deve decidir se o painel é parte do contrato do template.
 
+## Restrição de design — analisador não-humano
+
+A construção deve permitir que um **agente de análise não-humano** entre no
+futuro (serviço externo de ML — projeto "juvia", repo próprio ainda não
+iniciado). O que isso já exige hoje:
+
+- mutações de análise sempre via API, nunca por atalho interno — o log
+  (BE-08) já trata qualquer ator igual;
+- identidade do autor na revisão deve comportar um ator de serviço, não só
+  usuário — hoje `created_by` é FK de User; quando o serviço existir, a
+  decisão é usuário-que-disparou vs. identidade própria (ADR de fronteira);
+- uma rodada de ML aparece naturalmente como uma **sessão** na timeline do
+  BE-20 — o checkpoint "antes da análise automática" é o ponto de retorno.
+
+Nada a construir agora: é critério para as decisões de workspace/checkpoint
+não fecharem a porta. O PRD/ADR da fronteira nasce quando o juvia existir.
+
 ## Fora de escopo
 
 - Automação completa da aplicação (auto-gating) — depende da definição da
