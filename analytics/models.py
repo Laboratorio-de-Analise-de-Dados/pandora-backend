@@ -202,6 +202,7 @@ class AnalysisRevision(models.Model):
     ACTION_RESTORE = "restore"
     ACTION_COMPENSATION_APPLY = "compensation_apply"
     ACTION_COMPENSATION_REMOVE = "compensation_remove"
+    ACTION_DERIVE = "derive"
     ACTION_CHOICES = [
         (ACTION_CREATE, "Criação"),
         (ACTION_UPDATE_GEOMETRY, "Geometria"),
@@ -216,6 +217,7 @@ class AnalysisRevision(models.Model):
         (ACTION_RESTORE, "Restauração de ponto"),
         (ACTION_COMPENSATION_APPLY, "Aplicar compensação"),
         (ACTION_COMPENSATION_REMOVE, "Remover compensação"),
+        (ACTION_DERIVE, "Derivação de análise"),
     ]
 
     SCOPE_CHOICES = [

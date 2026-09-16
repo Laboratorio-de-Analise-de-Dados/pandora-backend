@@ -10,6 +10,7 @@ from .views import (
     ExperimentCompensationRemoveView,
     ExperimentCompleteView,
     ExperimentCopyView,
+    ExperimentDeriveAnalysisView,
     ExperimentDownloadView,
     ExperimentEmbeddedCompensationView,
     ExperimentFileChunkView,
@@ -46,6 +47,10 @@ urlpatterns = [
     path("<int:experiment_id>/files/init", ExperimentFileInitView.as_view()),
     path("<int:experiment_id>/download", ExperimentDownloadView.as_view()),
     path("<int:experiment_id>/copy", ExperimentCopyView.as_view()),
+    path(
+        "<int:experiment_id>/derive-analysis",
+        ExperimentDeriveAnalysisView.as_view(),
+    ),
     path("<int:experiment_id>/preview", ExperimentPreviewView.as_view()),
     path(
         "<int:experiment_id>/compensations/embedded",

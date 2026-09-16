@@ -1,8 +1,10 @@
 # BE-19 — Workspaces/templates: estratégia de análise reutilizável entre experimentos
 
 **Repo:** pandora-backend (+ front) · **Item do doc:** direção levantada em 14/09 · **Tipo:** feature (exploratório) · **Base:** `main`
-**Status:** não iniciado — PRD de visão; exige ADR próprio antes de implementar.
-**ADRs relacionados:** [0003](../adr/0003-linhagem-de-gates-por-copied-from.md) (linhagem por `copied_from`), [0006](../adr/0006-identidade-de-amostra-e-subsample.md), [0008](../adr/0008-historico-append-only-de-analise.md), [0016](../adr/0016-gate-nao-avaliavel-sem-canal.md).
+**Status:** parcial — derivação experimento→experimento implementada
+(`POST /experiment/<id>/derive-analysis/`, ADR-0021); template como objeto
+persistido segue visão.
+**ADRs relacionados:** [0003](../adr/0003-linhagem-de-gates-por-copied-from.md) (linhagem por `copied_from`), [0006](../adr/0006-identidade-de-amostra-e-subsample.md), [0008](../adr/0008-historico-append-only-de-analise.md), [0016](../adr/0016-gate-nao-avaliavel-sem-canal.md), [0021](../adr/0021-derivar-analise-entre-experimentos-por-snapshot.md).
 
 ## Caso de uso concreto (registro da discussão de 16/09)
 

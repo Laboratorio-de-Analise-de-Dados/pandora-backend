@@ -64,6 +64,7 @@ from fcs_parser.services.compensation import (
     apply_compensation,
 )
 from fcs_parser.services.copy_experiment import copy_experiment
+from fcs_parser.services.derive_analysis import derive_analysis
 from fcs_parser.serializers import (
     ChunkUploadSerializer,
     ExperimentCompleteSerializer,
@@ -1710,6 +1711,72 @@ class ExperimentCopyView(APIView):
         return Response(
             ListExperimentSerializer(clone).data, status=status.HTTP_201_CREATED
         )
+
+
+class ExperimentDeriveAnalysisView(APIView):
+    """POST /experiment/<experiment_id>/derive-analysis/ — deriva a estratégia
+    de outro experimento sobre as amostras deste (BE-19, ADR-0021).
+
+    Casa amostras por `content_guid` (fallback `file_name`) e clona as
+    árvores de gates — snapshot, sem vínculo vivo e sem `copied_from`
+    cross-experimento. Amostras com gates existentes são puladas. Opcional:
+    encaixe em subsamples homônimos e cópia da matriz de compensação
+    aplicada. Zero trust: exige edição nos dois experimentos.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=inline_serializer(
+            name="ExperimentDeriveAnalysisRequest",
+            fields={
+                "source_experiment_id": serializers.IntegerField(),
+                "include_subsamples": serializers.BooleanField(required=False),
+                "include_compensation": serializers.BooleanField(required=False),
+            },
+        ),
+        responses={200: inline_serializer(name="DeriveAnalysisResponse", fields={})},
+    )
+    def post(self, request, experiment_id):
+        target = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        if not can_edit_experiment(request.user, target):
+            return Response(
+                {"detail": "Derivar análise exige edição no experimento alvo."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        raw = request.data.get("source_experiment_id")
+        try:
+            source_id = int(raw)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "source_experiment_id é obrigatório."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if source_id == target.id:
+            return Response(
+                {"detail": "Origem e alvo são o mesmo experimento."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source = get_object_or_404(experiments_visible_to(request.user), id=source_id)
+        if not can_edit_experiment(request.user, source):
+            return Response(
+                {
+                    "detail": "Derivar exige permissão de edição no experimento de origem."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        report = derive_analysis(
+            target,
+            source,
+            user=request.user,
+            include_subsamples=request.data.get("include_subsamples", True),
+            include_compensation=request.data.get("include_compensation", True),
+        )
+        return Response(report, status=status.HTTP_200_OK)
 
 
 class FileHashCheckView(APIView):

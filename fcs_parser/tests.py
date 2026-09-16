@@ -17,7 +17,12 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from accounts.models import Membership, Organization, Role, User
-from analytics.models import AnalysisResult, DashboardModel, GateModel
+from analytics.models import (
+    AnalysisResult,
+    AnalysisRevision,
+    DashboardModel,
+    GateModel,
+)
 from fcs_parser.models import (
     ExperimentModel,
     FileDataModel,
@@ -1790,9 +1795,7 @@ class CompensationControlsTestCase(TestCase):
         fd.headers = {"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"}
         fd.save(update_fields=["headers"])
 
-        res = self.client.get(
-            f"/experiment/list/data/{self.experiment.id}/"
-        )
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
 
         self.assertEqual(res.status_code, 200)
         entry = next(f for f in res.data if f["id"] == fd.id)
@@ -1814,3 +1817,220 @@ class CompensationControlsTestCase(TestCase):
 
         self.assertEqual(res.status_code, 201)
         self.assertTrue(res.data["is_applied"])
+
+
+class DeriveAnalysisApiTestCase(TestCase):
+    """BE-19/ADR-0021: derivar a estratégia de um experimento em outro —
+    match por content_guid (fallback file_name), snapshot sem copied_from."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.other = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+
+        self.source = ExperimentModel.objects.create(
+            title="origem", type="t", created_by=self.owner, status="done"
+        )
+        self.target = ExperimentModel.objects.create(
+            title="alvo", type="t", created_by=self.owner, status="done"
+        )
+        src_fm = FileModel.objects.create(
+            file_name="o.zip",
+            file="o.zip",
+            sha256="s" * 64,
+            experiment=self.source,
+        )
+        tgt_fm = FileModel.objects.create(
+            file_name="t.zip",
+            file="t.zip",
+            sha256="t" * 64,
+            experiment=self.target,
+        )
+        self.src_sub = SubsampleModel.objects.create(
+            experiment=self.source, name="tempo_1", source_path="tempo_1"
+        )
+        self.src_fd = FileDataModel.objects.create(
+            headers={"guid": "g-shared"},
+            content_guid="g-shared",
+            experiment=self.source,
+            file_name="a1.fcs",
+            subsample=self.src_sub,
+            file=src_fm,
+        )
+        self.tgt_fd = FileDataModel.objects.create(
+            headers={"guid": "g-shared"},
+            content_guid="g-shared",
+            experiment=self.target,
+            file_name="a1.fcs",
+            file=tgt_fm,
+        )
+        self.tgt_extra = FileDataModel.objects.create(
+            headers={"guid": "g-solo"},
+            content_guid="g-solo",
+            experiment=self.target,
+            file_name="solo.fcs",
+            file=tgt_fm,
+        )
+        dash = DashboardModel.objects.create(
+            file_data=self.src_fd, name="dash", dashboard_config={}
+        )
+        self.src_gate = GateModel.objects.create(
+            file_data=self.src_fd,
+            name="P1",
+            gate_coordinates={"x": [1, 2], "y": [3, 4]},
+            dashboard=dash,
+            created_by=self.owner,
+        )
+        self.src_child = GateModel.objects.create(
+            file_data=self.src_fd,
+            name="P2",
+            gate_coordinates={},
+            dashboard=dash,
+            parent=self.src_gate,
+            created_by=self.owner,
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _derive(self, **payload):
+        payload.setdefault("source_experiment_id", self.source.id)
+        return self.client.post(
+            f"/experiment/{self.target.id}/derive-analysis",
+            payload,
+            format="json",
+        )
+
+    def test_derive_copias_arvore_subsample_e_revisoes(self):
+        res = self._derive()
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["matched_files"], 1)
+        self.assertEqual(res.data["created_gates"], 2)
+        self.assertEqual(
+            [f["file_name"] for f in res.data["unmatched_target_files"]],
+            ["solo.fcs"],
+        )
+
+        tgt_gates = GateModel.objects.filter(file_data=self.tgt_fd)
+        self.assertEqual(tgt_gates.count(), 2)
+        root = tgt_gates.get(parent__isnull=True)
+        self.assertEqual(root.name, "P1")
+        self.assertIsNone(root.copied_from_id)  # cross-experimento: sem família
+        self.assertEqual(root.children.get().name, "P2")
+
+        # Amostra alvo encaixada em subsample homônimo criado no alvo.
+        self.tgt_fd.refresh_from_db()
+        self.assertEqual(self.tgt_fd.subsample.name, "tempo_1")
+        self.assertNotEqual(self.tgt_fd.subsample_id, self.src_sub.id)
+
+        # Revisões: create por amostra + derive no experimento + move_subsample.
+        revs = AnalysisRevision.objects.filter(experiment=self.target)
+        actions = set(revs.values_list("action", flat=True))
+        self.assertIn("create", actions)
+        self.assertIn("derive", actions)
+        self.assertIn("move_subsample", actions)
+
+    def test_derive_pula_amostra_que_ja_tem_gates(self):
+        dash = DashboardModel.objects.create(
+            file_data=self.tgt_fd, name="d", dashboard_config={}
+        )
+        GateModel.objects.create(
+            file_data=self.tgt_fd,
+            name="existente",
+            gate_coordinates={},
+            dashboard=dash,
+        )
+
+        res = self._derive()
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["matched_files"], 0)
+        self.assertEqual(len(res.data["skipped_files"]), 1)
+        self.assertEqual(GateModel.objects.filter(file_data=self.tgt_fd).count(), 1)
+
+    def test_derive_casa_por_file_name_quando_guid_diverge(self):
+        self.tgt_fd.content_guid = "outro-guid"
+        self.tgt_fd.save(update_fields=["content_guid"])
+
+        res = self._derive()
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["matched_files"], 1)
+        self.assertEqual(GateModel.objects.filter(file_data=self.tgt_fd).count(), 2)
+
+    def test_derive_sem_match_reporta_sem_criar_nada(self):
+        self.tgt_fd.delete()
+        self.tgt_extra.delete()
+
+        res = self._derive()
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["matched_files"], 0)
+        self.assertEqual(len(res.data["unmatched_source_files"]), 1)
+        self.assertFalse(
+            AnalysisRevision.objects.filter(
+                experiment=self.target, action="derive"
+            ).exists()
+        )
+
+    def test_derive_exige_edicao_e_alvo_diferente(self):
+        res = self._derive(source_experiment_id=self.target.id)
+        self.assertEqual(res.status_code, 400)
+
+        # Estranho não enxerga o alvo → 404.
+        client = APIClient()
+        client.force_authenticate(self.other)
+        res = client.post(
+            f"/experiment/{self.target.id}/derive-analysis",
+            {"source_experiment_id": self.source.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 404)
+
+        # Origem de outro usuário, visível só para ele → 404 para o dono.
+        foreign = ExperimentModel.objects.create(
+            title="alheio", type="t", created_by=self.other, status="done"
+        )
+        res = self._derive(source_experiment_id=foreign.id)
+        self.assertEqual(res.status_code, 404)
+
+    def test_derive_copia_compensacao_aplicada(self):
+        from analytics.models import CompensationMatrix
+
+        CompensationMatrix.objects.create(
+            experiment=self.source,
+            name="orig",
+            channels=["A", "B"],
+            matrix=[[1, 0.1], [0, 1]],
+            source="computed",
+            is_applied=True,
+            created_by=self.owner,
+        )
+
+        res = self._derive()
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["compensation_applied"])
+        m = CompensationMatrix.objects.get(experiment=self.target)
+        self.assertTrue(m.is_applied)
+        self.assertEqual(m.name, "orig")
+        self.assertTrue(
+            AnalysisRevision.objects.filter(
+                experiment=self.target, action="compensation_apply"
+            ).exists()
+        )
+
+    def test_revert_da_derivacao_remove_gates_copiados(self):
+        res = self._derive()
+        self.assertEqual(res.status_code, 200)
+
+        create_rev = AnalysisRevision.objects.get(
+            experiment=self.target, action="create"
+        )
+        res = self.client.post(f"/analytics/history/{create_rev.id}/revert/")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(GateModel.objects.filter(file_data=self.tgt_fd).exists())

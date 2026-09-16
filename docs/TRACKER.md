@@ -21,10 +21,12 @@ ou alinhe com o responsável.
 |---|---|
 | BE-18/17/08/20/21 | Histórico, checkpoints, metadados da listagem — implementados |
 | BE-22 | Compensação completa: `compensated` + `embedded` + `CompensationMatrix` + controles via subsample + `compute`/`from-header`/`apply`/`remove` + leitura compensada em density/stats/preview/list/gates (cache key com id da matriz) |
+| BE-19 (derivação) | `POST /experiment/<id>/derive-analysis/` (ADR-0021): match por `content_guid`/`file_name`, cópia de árvore + subsamples homônimos + compensação aplicada; revisões `derive`/`create` revertíveis |
 
 ## Livres para pegar
 
 | Feature | Observação |
 |---|---|
-| BE-19 workspaces/templates | Precisa de ADR de domínio antes (visão no PRD) |
+| FE: UI de "derivar análise" (BE-19) | Backend pronto — consumir `POST /experiment/<id>/derive-analysis/` no front |
+| BE-19 workspaces/templates (objeto persistido) | Visão no PRD — ADR-0021 escolheu snapshot sem template; reabrir só se o caso de uso pedir catálogo |
 | BE-23 análise colaborativa (branch/merge) | PRD de visão pronto — precisa de ADR (estado visível de branch, merge de árvores) |
