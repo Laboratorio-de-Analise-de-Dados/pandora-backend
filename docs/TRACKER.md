@@ -27,4 +27,4 @@ ou alinhe com o responsável.
 | Feature | Observação |
 |---|---|
 | BE-19 workspaces/templates | Precisa de ADR de domínio antes (visão no PRD) |
-| Front-end do BE-22 | Editor de matriz, marcação de controles, badge "Compensado" — repo `pandora-front` |
+| BE-23 análise colaborativa (branch/merge) | PRD de visão pronto — precisa de ADR (estado visível de branch, merge de árvores) |
