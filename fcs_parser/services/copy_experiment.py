@@ -11,7 +11,12 @@ reconstruído sob demanda a partir do ZIP compartilhado.
 
 from __future__ import annotations
 
-from analytics.models import AnalysisResult, DashboardModel, GateModel
+from analytics.models import (
+    AnalysisBranch,
+    AnalysisResult,
+    DashboardModel,
+    GateModel,
+)
 from fcs_parser.models import (
     ExperimentModel,
     FileDataModel,
@@ -85,6 +90,36 @@ def copy_experiment(
             created_by=sub.created_by,
         )
 
+    # BE-23: branches são linhas de análise do experimento — a cópia leva
+    # todas (main primeiro para resolver base_branch), e os forks
+    # internos são religados no fim via o mapa old→new de gates.
+    source_branches = list(
+        AnalysisBranch.objects.filter(experiment=source).order_by(
+            "-is_main", "created_at"
+        )
+    )
+    if not source_branches:
+        from analytics.services.branches import ensure_main_branch
+
+        source_branches = [ensure_main_branch(source)]
+    branch_map: dict[int, AnalysisBranch] = {}
+    for br in source_branches:
+        branch_map[br.id] = AnalysisBranch.objects.create(
+            experiment=clone,
+            name=br.name,
+            is_main=br.is_main,
+            active=br.active,
+            created_by=user,
+        )
+    for br in source_branches:
+        if br.base_branch_id and br.base_branch_id in branch_map:
+            clone_br = branch_map[br.id]
+            clone_br.base_branch = branch_map[br.base_branch_id]
+            clone_br.save(update_fields=["base_branch"])
+
+    # gate_map global (todos os arquivos/branches) — religa forked_from e
+    # traduz os fork_snapshots para os ids novos.
+    gate_map: dict[int, GateModel] = {}
     for fd in FileDataModel.objects.filter(experiment=source):
         new_fd = FileDataModel.objects.create(
             experiment=clone,
@@ -102,12 +137,46 @@ def copy_experiment(
             deactivated_at=fd.deactivated_at,
             deactivated_by=fd.deactivated_by,
         )
-        _copy_analysis(fd, new_fd)
+        _copy_analysis(fd, new_fd, branch_map, gate_map)
+
+    for gate in GateModel.objects.filter(file_data__experiment=clone).exclude(
+        forked_from__isnull=True
+    ):
+        source_fork = gate.forked_from_id
+        if source_fork in gate_map:
+            gate.forked_from_id = gate_map[source_fork].id
+            gate.save(update_fields=["forked_from"])
+        else:
+            # Origem não copiada (não deveria acontecer) — corta o elo.
+            gate.forked_from = None
+            gate.save(update_fields=["forked_from"])
+
+    for br in source_branches:
+        if not br.fork_snapshot:
+            continue
+        clone_br = branch_map[br.id]
+        pairs = {
+            str(gate_map[int(b)].id): gate_map[a].id
+            for b, a in (br.fork_snapshot.get("pairs") or {}).items()
+            if int(b) in gate_map and a in gate_map
+        }
+        base = {
+            str(gate_map[int(a)].id): fields
+            for a, fields in (br.fork_snapshot.get("base") or {}).items()
+            if int(a) in gate_map
+        }
+        clone_br.fork_snapshot = {"pairs": pairs, "base": base}
+        clone_br.save(update_fields=["fork_snapshot"])
 
     return clone
 
 
-def _copy_analysis(source_fd: FileDataModel, new_fd: FileDataModel) -> None:
+def _copy_analysis(
+    source_fd: FileDataModel,
+    new_fd: FileDataModel,
+    branch_map: dict[int, AnalysisBranch],
+    gate_map: dict[int, GateModel],
+) -> None:
     """Clona dashboards, árvore de gates e resultados de uma amostra."""
     dashboard_map: dict[int, DashboardModel] = {}
     for dash in DashboardModel.objects.filter(file_data=source_fd):
@@ -117,7 +186,6 @@ def _copy_analysis(source_fd: FileDataModel, new_fd: FileDataModel) -> None:
             dashboard_config=dash.dashboard_config,
         )
 
-    gate_map: dict[int, GateModel] = {}
     pending = list(GateModel.objects.filter(file_data=source_fd))
     while pending:
         progressed = False
@@ -132,6 +200,8 @@ def _copy_analysis(source_fd: FileDataModel, new_fd: FileDataModel) -> None:
                 dashboard=dashboard_map[gate.dashboard_id],
                 parent=gate_map.get(gate.parent_id),
                 copied_from=gate,
+                forked_from=gate.forked_from,  # provisório — religado depois
+                branch=branch_map.get(gate.branch_id),
                 color=gate.color,
                 created_by=gate.created_by,
             )

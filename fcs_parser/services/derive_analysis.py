@@ -68,7 +68,9 @@ def _target_dashboard(fd: FileDataModel) -> DashboardModel:
     return dash
 
 
-def _copy_gate_tree(source_fd: FileDataModel, target_fd: FileDataModel, user):
+def _copy_gate_tree(
+    source_fd: FileDataModel, target_fd: FileDataModel, user, branch=None
+):
     """Clona a árvore de gates de source_fd em target_fd (sem copied_from —
     cross-experimento não entra na família de cópias, ADR-0021).
 
@@ -92,6 +94,7 @@ def _copy_gate_tree(source_fd: FileDataModel, target_fd: FileDataModel, user):
                 dashboard=dashboard,
                 parent=gate_map.get(gate.parent_id),
                 copied_from=None,
+                branch=branch,
                 color=gate.color,
                 created_by=user,
             )
@@ -118,6 +121,12 @@ def derive_analysis(
     da derivação para a resposta da API.
     """
     from fcs_parser.services.compensation import set_applied_compensation
+
+    from analytics.services.branches import ensure_main_branch
+
+    # BE-19 derivado vai para a main do alvo — criar a análise recebida
+    # como branch separada é a evolução quando BE-23 tiver UI.
+    target_main = ensure_main_branch(target)
 
     source_files = list(FileDataModel.objects.filter(experiment=source, active=True))
     target_files = list(FileDataModel.objects.filter(experiment=target, active=True))
@@ -158,7 +167,7 @@ def derive_analysis(
                 )
                 continue
 
-            gate_map, snapshots = _copy_gate_tree(sfd, tfd, user)
+            gate_map, snapshots = _copy_gate_tree(sfd, tfd, user, branch=target_main)
             if not gate_map:
                 report["skipped_files"].append(
                     {

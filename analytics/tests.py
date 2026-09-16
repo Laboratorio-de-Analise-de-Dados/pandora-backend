@@ -2,7 +2,12 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from accounts.models import User
-from analytics.models import AnalysisRevision, DashboardModel, GateModel
+from analytics.models import (
+    AnalysisBranch,
+    AnalysisRevision,
+    DashboardModel,
+    GateModel,
+)
 from analytics.tasks import recalculate_gate_analysis
 from fcs_parser.models import (
     ExperimentModel,
@@ -722,7 +727,7 @@ class AnalysisHistoryTestCase(GateFixtureMixin, TestCase):
             format="json",
         )
 
-        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.status_code, 201, res.data)
         res = self._history()
         self.assertEqual(res.status_code, 200)
         self.assertTrue(any(r["action"] == "create" for r in res.data["results"]))
@@ -1078,3 +1083,349 @@ class HistoryFileFilterTestCase(GateFixtureMixin, TestCase):
         deletes = [r for r in res.data["results"] if r["action"] == "delete"]
         self.assertTrue(deletes)
         self.assertEqual(deletes[0]["file_data"], self.file_a.id)
+
+
+class BranchWorkflowTestCase(GateFixtureMixin, TestCase):
+    """BE-23/ADR-0020: branches como cópias materializadas + merge."""
+
+    def setUp(self):
+        super().setUp()
+        from analytics.services.branches import ensure_main_branch
+
+        self.ensure_main_branch = ensure_main_branch
+        self.main = ensure_main_branch(self.experiment)
+
+    def _branches_url(self):
+        return f"/analytics/experiment/{self.experiment.id}/branches/"
+
+    def _fork(self, name="revisao", base=None):
+        payload = {"name": name}
+        if base is not None:
+            payload["base_branch_id"] = base.id
+        return self.client.post(self._branches_url(), payload, format="json")
+
+    def _merge(self, branch, **payload):
+        return self.client.post(
+            f"/analytics/branches/{branch.id}/merge/", payload, format="json"
+        )
+
+    # -- criação e isolamento ------------------------------------------------
+
+    def test_gates_sem_branch_caem_na_main(self):
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.branch_id, self.main.id)
+        self.assertTrue(self.main.is_main)
+
+    def test_lista_devolve_main(self):
+        res = self.client.get(self._branches_url())
+
+        self.assertEqual(res.status_code, 200)
+        names = [b["name"] for b in res.data["results"]]
+        self.assertIn("main", names)
+
+    def test_fork_materializa_arvore_com_forked_from(self):
+        res = self._fork("revisao")
+
+        self.assertEqual(res.status_code, 201)
+        branch = AnalysisBranch.objects.get(id=res.data["id"])
+        self.assertEqual(branch.base_branch_id, self.main.id)
+
+        b_source = GateModel.objects.get(
+            branch=branch, file_data=self.file_a, name="P1"
+        )
+        self.assertEqual(b_source.forked_from_id, self.source.id)
+        self.assertIsNone(b_source.copied_from_id)
+        self.assertTrue(
+            GateModel.objects.filter(
+                branch=branch, file_data=self.file_a, name="P2", parent=b_source
+            ).exists()
+        )
+        # a main não ganhou nem perdeu gates
+        self.assertEqual(
+            GateModel.objects.filter(branch=self.main).count(),
+            GateModel.objects.filter(branch=branch).count(),
+        )
+        self.assertTrue(
+            AnalysisRevision.objects.filter(
+                action="fork", branch=branch, target_id=branch.id
+            ).exists()
+        )
+
+    def test_edicao_na_branch_nao_toca_a_main(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        b_gate = GateModel.objects.get(branch=branch, file_data=self.file_a, name="P1")
+
+        res = self._patch_gate(b_gate, name="P1-orientador")
+
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.name, "P1")
+
+    def test_propagacao_nao_cruza_branches(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        b_src = GateModel.objects.get(branch=branch, file_data=self.file_a, name="P1")
+        b_copy = GateModel.objects.get(branch=branch, file_data=self.file_b, name="P1")
+        b_copy.copied_from = b_src
+        b_copy.save(update_fields=["copied_from"])
+
+        res = self._patch_gate(b_src, name="CD4+", scope="experiment")
+
+        self.assertEqual(res.status_code, 200)
+        self.copy_b.refresh_from_db()
+        b_copy.refresh_from_db()
+        self.assertEqual(self.copy_b.name, "P1")  # main intacta
+        self.assertEqual(b_copy.name, "CD4+")  # propagou só na branch
+
+    def test_nome_duplicado_e_base_invalida(self):
+        self.assertEqual(self._fork("revisao").status_code, 201)
+        self.assertEqual(self._fork("revisao").status_code, 409)
+        # base de outro experimento não é base válida
+        outra = self.ensure_main_branch(self.other_experiment)
+        self.assertEqual(self._fork("x", base=outra).status_code, 404)
+
+    def test_fork_exige_permissao(self):
+        self.client.force_authenticate(self.outsider)
+        self.assertEqual(self._fork("revisao").status_code, 404)
+
+    def test_main_nao_arquiva_nem_renomeia(self):
+        res = self.client.patch(
+            f"/analytics/branches/{self.main.id}/", {"name": "x"}, format="json"
+        )
+        self.assertEqual(res.status_code, 400)
+        res = self.client.delete(f"/analytics/branches/{self.main.id}/")
+        self.assertEqual(res.status_code, 400)
+
+    def test_arquivar_branch_e_soft_delete(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+
+        res = self.client.delete(f"/analytics/branches/{branch.id}/")
+
+        self.assertEqual(res.status_code, 204)
+        branch.refresh_from_db()
+        self.assertFalse(branch.active)
+        # gates da branch continuam no banco (soft delete)
+        self.assertTrue(GateModel.objects.filter(branch=branch).exists())
+
+    # -- diff -----------------------------------------------------------------
+
+    def _gate_on(self, branch, file_data, name, parent=None, **kw):
+        return GateModel.objects.create(
+            file_data=file_data,
+            name=name,
+            dashboard=DashboardModel.objects.create(
+                name=f"{file_data.file_name}-{name}", file_data=file_data
+            ),
+            parent=parent,
+            branch=branch,
+            **kw,
+        )
+
+    def test_diff_adicao(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        self._gate_on(branch, self.file_a, "P9")
+
+        res = self.client.get(f"/analytics/branches/{branch.id}/diff/")
+
+        self.assertEqual(res.status_code, 200)
+        creates = [c for c in res.data["changes"] if c["type"] == "create"]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(creates[0]["name"], "P9")
+        self.assertEqual(res.data["conflicts"], [])
+
+    def test_diff_modificacao_so_na_branch(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        b_gate = GateModel.objects.get(branch=branch, file_data=self.file_a, name="P1")
+        b_gate.color = "#ff0000"
+        b_gate.save(update_fields=["color"])
+
+        res = self.client.get(f"/analytics/branches/{branch.id}/diff/")
+
+        updates = [c for c in res.data["changes"] if c["type"] == "update"]
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0]["fields"], {"color": "#ff0000"})
+        self.assertEqual(res.data["conflicts"], [])
+
+    def test_diff_remocao_na_branch(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        GateModel.objects.get(branch=branch, file_data=self.file_c, name="P1").delete()
+
+        res = self.client.get(f"/analytics/branches/{branch.id}/diff/")
+
+        deletes = [c for c in res.data["changes"] if c["type"] == "delete"]
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(deletes[0]["target_gate_id"], self.copy_c.id)
+
+    def test_diff_edit_dos_dois_lados_vira_conflito(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        b_gate = GateModel.objects.get(branch=branch, file_data=self.file_a, name="P1")
+        b_gate.color = "#ff0000"
+        b_gate.save(update_fields=["color"])
+        self.source.color = "#00ff00"
+        self.source.save(update_fields=["color"])
+
+        res = self.client.get(f"/analytics/branches/{branch.id}/diff/")
+
+        self.assertEqual(len(res.data["conflicts"]), 1)
+        conflict = res.data["conflicts"][0]
+        self.assertEqual(conflict["key"], f"f:{self.source.id}")
+        self.assertEqual(conflict["type"], "modified_both")
+
+    def test_diff_edit_na_branch_delete_na_base(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        b_gate = GateModel.objects.get(branch=branch, file_data=self.file_c, name="P1")
+        b_gate.color = "#ff0000"
+        b_gate.save(update_fields=["color"])
+        self.copy_c.delete()  # apagado na main
+
+        res = self.client.get(f"/analytics/branches/{branch.id}/diff/")
+
+        self.assertEqual(len(res.data["conflicts"]), 1)
+        self.assertEqual(res.data["conflicts"][0]["type"], "deleted_in_target")
+
+    # -- merge -----------------------------------------------------------------
+
+    def test_merge_dry_run_nao_escreve(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        self._gate_on(branch, self.file_a, "P9")
+
+        res = self._merge(branch, dry_run=True)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data["changes"]), 1)
+        self.assertFalse(
+            GateModel.objects.filter(
+                branch=self.main, file_data=self.file_a, name="P9"
+            ).exists()
+        )
+
+    def test_merge_limpo_aplica_mudancas(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        novo = self._gate_on(branch, self.file_a, "P9")
+        b_gate = GateModel.objects.get(branch=branch, file_data=self.file_a, name="P1")
+        b_gate.color = "#ff0000"
+        b_gate.save(update_fields=["color"])
+        GateModel.objects.get(branch=branch, file_data=self.file_c, name="P1").delete()
+
+        res = self._merge(branch)
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertTrue(res.data["merged"])
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.color, "#ff0000")
+        self.assertTrue(
+            GateModel.objects.filter(
+                branch=self.main, file_data=self.file_a, name="P9"
+            ).exists()
+        )
+        self.assertFalse(GateModel.objects.filter(id=self.copy_c.id).exists())
+        merge_rev = AnalysisRevision.objects.get(
+            id=res.data["merge_revision_id"], action="merge"
+        )
+        self.assertEqual(merge_rev.branch_id, self.main.id)
+        self.assertTrue(merge_rev.payload_after["revision_ids"])
+
+    def test_merge_com_conflito_sem_resolucao_da_409(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        b_gate = GateModel.objects.get(branch=branch, file_data=self.file_a, name="P1")
+        b_gate.color = "#ff0000"
+        b_gate.save(update_fields=["color"])
+        self.source.color = "#00ff00"
+        self.source.save(update_fields=["color"])
+
+        res = self._merge(branch)
+
+        self.assertEqual(res.status_code, 409)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.color, "#00ff00")  # nada gravado
+
+    def test_merge_theirs_e_mine(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        b_gate = GateModel.objects.get(branch=branch, file_data=self.file_a, name="P1")
+        b_gate.color = "#ff0000"
+        b_gate.save(update_fields=["color"])
+        self.source.color = "#00ff00"
+        self.source.save(update_fields=["color"])
+        key = f"f:{self.source.id}"
+
+        res = self._merge(branch, resolutions={key: "mine"})
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.color, "#00ff00")
+
+        branch2 = AnalysisBranch.objects.get(id=self._fork("tentativa2").data["id"])
+        b2 = GateModel.objects.get(branch=branch2, file_data=self.file_a, name="P1")
+        b2.color = "#0000ff"
+        b2.save(update_fields=["color"])
+        self.source.color = "#aaaaaa"
+        self.source.save(update_fields=["color"])
+
+        res = self._merge(branch2, resolutions={f"f:{self.source.id}": "theirs"})
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.color, "#0000ff")
+
+    def test_merge_both_preserva_os_dois(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        b_gate = GateModel.objects.get(branch=branch, file_data=self.file_a, name="P1")
+        b_gate.color = "#ff0000"
+        b_gate.save(update_fields=["color"])
+        self.source.color = "#00ff00"
+        self.source.save(update_fields=["color"])
+
+        res = self._merge(branch, resolutions={f"f:{self.source.id}": "both"})
+
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.color, "#00ff00")  # mine preservado
+        duplicata = GateModel.objects.filter(
+            branch=self.main, file_data=self.file_a
+        ).exclude(id__in=[self.source.id, self.child.id])
+        self.assertEqual(duplicata.count(), 1)
+        self.assertEqual(duplicata[0].name, "P1 (2)")
+        self.assertEqual(duplicata[0].color, "#ff0000")
+
+    def test_merge_reverte_em_cadeia(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        self._gate_on(branch, self.file_a, "P9")
+        b_gate = GateModel.objects.get(branch=branch, file_data=self.file_a, name="P1")
+        b_gate.color = "#ff0000"
+        b_gate.save(update_fields=["color"])
+
+        res = self._merge(branch)
+        self.assertEqual(res.status_code, 200)
+
+        rev = self.client.post(
+            f"/analytics/history/{res.data['merge_revision_id']}/revert/",
+            {},
+            format="json",
+        )
+        self.assertEqual(rev.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.color, "#111111")
+        self.assertFalse(
+            GateModel.objects.filter(
+                branch=self.main, file_data=self.file_a, name="P9"
+            ).exists()
+        )
+
+    # -- histórico por branch ---------------------------------------------------
+
+    def test_history_filtra_por_branch(self):
+        branch = AnalysisBranch.objects.get(id=self._fork("revisao").data["id"])
+        b_gate = GateModel.objects.get(branch=branch, file_data=self.file_a, name="P1")
+        self._patch_gate(b_gate, name="P1-b")
+        self._patch_gate(self.source, name="P1-main")
+
+        res = self.client.get(
+            f"/analytics/experiment/{self.experiment.id}/history/?branch={branch.id}"
+        )
+        actions = [(r["action"], r["branch"]) for r in res.data["results"]]
+        self.assertIn(("rename", branch.id), actions)
+        self.assertNotIn(("rename", self.main.id), actions)
+
+        res_main = self.client.get(
+            f"/analytics/experiment/{self.experiment.id}/history/?branch={self.main.id}"
+        )
+        actions_main = [(r["action"], r["branch"]) for r in res_main.data["results"]]
+        self.assertIn(("rename", self.main.id), actions_main)
+        self.assertNotIn(("rename", branch.id), actions_main)

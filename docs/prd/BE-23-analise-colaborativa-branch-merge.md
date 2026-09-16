@@ -1,9 +1,9 @@
 # BE-23 — Análise colaborativa: branches, merge e resolução de conflitos
 
-**Repo:** pandora-backend · **Tipo:** visão (não iniciar sem ADR) · **Base:** `main`
-**Status:** visão registrada — ADR-0020 propõe o modelo (branch =
-cópias materializadas de gates + merge por diff de árvores); aguarda
-aceite para implementar.
+**Repo:** pandora-backend · **Tipo:** backend · **Base:** `main`
+**Status:** backend implementado (ADR-0020 aceito) — branches como
+cópias materializadas de gates, diff estrutural e merge com resolução
+humana de conflitos. Falta a UI (front).
 **Contexto:** o modelo de histórico atual (BE-08/BE-20) já é uma engine
 estilo git — `AnalysisRevision` append-only ≈ commits,
 `AnalysisCheckpoint` ≈ tags, restore ≈ `reset --hard`. Este PRD registra

@@ -5,6 +5,60 @@ from analytics.gate_author import author_display_name
 from fcs_parser.models import ExperimentModel, FileDataModel
 
 
+class AnalysisBranch(models.Model):
+    """Linha de trabalho nomeada dentro de um experimento (BE-23, ADR-0020).
+
+    Branch não é presa a usuário: qualquer editor do experimento commita
+    nela. O fork materializa as árvores de gates da branch base — o estado
+    visível é sempre linhas reais, nunca replay. `fork_snapshot` guarda o
+    mapa do fork para o merge: {"pairs": {<gate_id_da_branch>:
+    <gate_id_da_base>}, "base": {<gate_id_da_base>: {campos no fork}}}.
+
+    `is_main` marca a linha vigente do experimento (criada por
+    `ensure_main_branch`); `active=False` arquiva a branch (soft delete,
+    ADR-0005) — a main nunca é arquivada.
+    """
+
+    class Meta:
+        db_table = "analysis_branch"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["experiment", "name"],
+                condition=models.Q(active=True),
+                name="unique_branch_name_per_experiment",
+            )
+        ]
+        indexes = [models.Index(fields=["experiment"])]
+
+    experiment = models.ForeignKey(
+        ExperimentModel,
+        on_delete=models.CASCADE,
+        related_name="analysis_branches",
+    )
+    name = models.CharField(max_length=50)
+    base_branch = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="derived_branches",
+    )
+    is_main = models.BooleanField(default=False)
+    fork_snapshot = models.JSONField(default=dict, blank=True)
+    active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_branches_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"Branch {self.id} – {self.name} (exp {self.experiment_id})"
+
+
 # Create your models here.
 class GateModel(models.Model):
 
@@ -16,7 +70,7 @@ class GateModel(models.Model):
                 name="unique_gate_name_per_parent",
             ),
             models.UniqueConstraint(
-                fields=["name", "file_data"],
+                fields=["name", "file_data", "branch"],
                 condition=models.Q(parent__isnull=True),
                 name="unique_gate_name_root_level",
             ),
@@ -45,6 +99,22 @@ class GateModel(models.Model):
         on_delete=models.SET_NULL,
         related_name="copies",
     )
+    # BE-23: toda gate pertence a uma branch (auto-atribuída à main no
+    # save quando omitida). `copied_from` continua marcando a família de
+    # cópias intra-branch (ADR-0003); a linhagem cross-branch usa
+    # `forked_from`, que NUNCA é desfeita por edições de geometria.
+    branch = models.ForeignKey(
+        AnalysisBranch,
+        on_delete=models.CASCADE,
+        related_name="gates",
+    )
+    forked_from = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="forked_copies",
+    )
     color = models.CharField(max_length=7, null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -57,21 +127,42 @@ class GateModel(models.Model):
     def __str__(self) -> str:
         return f"Gate {self.id} – {self.name}"
 
+    def save(self, *args, **kwargs):
+        # Gates criadas sem branch explícita caem na main do experimento —
+        # mantém compatível todo caminho que não conhece branches.
+        if self.branch_id is None and self.file_data_id is not None:
+            from analytics.services.branches import ensure_main_branch
+
+            self.branch = ensure_main_branch(self.file_data.experiment)
+        super().save(*args, **kwargs)
+
     @classmethod
-    def build_tree(cls, file_data_id):
+    def build_tree(cls, file_data_id, branch=None):
         """
         Constrói uma estrutura de árvore de gates a partir de dados de um arquivo.
+
+        `branch` (id ou AnalysisBranch) seleciona a linha de análise —
+        default: a main do experimento da amostra.
         """
         from analytics.models import AnalysisResult
 
+        branch_id = getattr(branch, "id", branch)
+        if branch_id is None:
+            from analytics.services.branches import ensure_main_branch
+
+            fd = FileDataModel.objects.only("experiment_id").get(pk=file_data_id)
+            branch_id = ensure_main_branch(fd.experiment).id
+
         gates = list(
-            cls.objects.filter(file_data_id=file_data_id).values(
+            cls.objects.filter(file_data_id=file_data_id, branch_id=branch_id).values(
                 "id",
                 "name",
                 "parent_id",
                 "gate_coordinates",
                 "plot_config",
                 "copied_from_id",
+                "forked_from_id",
+                "branch_id",
                 "color",
                 "created_at",
                 "created_by_id",
@@ -181,12 +272,14 @@ class AnalysisRevision(models.Model):
     TARGET_FILE = "file"
     TARGET_EXPERIMENT = "experiment"
     TARGET_COMPENSATION = "compensation"
+    TARGET_BRANCH = "branch"
     TARGET_CHOICES = [
         (TARGET_GATE, "Gate"),
         (TARGET_SUBSAMPLE, "Subsample"),
         (TARGET_FILE, "Amostra"),
         (TARGET_EXPERIMENT, "Experimento"),
         (TARGET_COMPENSATION, "Compensação"),
+        (TARGET_BRANCH, "Branch"),
     ]
 
     ACTION_CREATE = "create"
@@ -203,6 +296,8 @@ class AnalysisRevision(models.Model):
     ACTION_COMPENSATION_APPLY = "compensation_apply"
     ACTION_COMPENSATION_REMOVE = "compensation_remove"
     ACTION_DERIVE = "derive"
+    ACTION_FORK = "fork"
+    ACTION_MERGE = "merge"
     ACTION_CHOICES = [
         (ACTION_CREATE, "Criação"),
         (ACTION_UPDATE_GEOMETRY, "Geometria"),
@@ -218,6 +313,8 @@ class AnalysisRevision(models.Model):
         (ACTION_COMPENSATION_APPLY, "Aplicar compensação"),
         (ACTION_COMPENSATION_REMOVE, "Remover compensação"),
         (ACTION_DERIVE, "Derivação de análise"),
+        (ACTION_FORK, "Criação de branch"),
+        (ACTION_MERGE, "Merge de branch"),
     ]
 
     SCOPE_CHOICES = [
@@ -265,6 +362,16 @@ class AnalysisRevision(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="reverted_by",
+    )
+    # BE-23: a linha de análise que a revisão pertence. NULL = ação
+    # experiment-wide (move_subsample, compensação) — aparece em qualquer
+    # recorte `?branch=` da timeline, como `file_data` NULL no `?file=`.
+    branch = models.ForeignKey(
+        AnalysisBranch,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="revisions",
     )
 
     def __str__(self) -> str:

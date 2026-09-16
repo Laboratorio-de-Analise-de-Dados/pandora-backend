@@ -112,6 +112,7 @@ def _propagate_gate_changes(
                     file_data_id=copy.file_data_id,
                     parent_id=copy.parent_id,
                     name=new_name,
+                    branch_id=gate.branch_id,
                 )
                 .exclude(id=copy.id)
                 .exists()
@@ -199,6 +200,7 @@ class CreateGateView(generics.CreateAPIView):
                 "gates": {str(gate_instance.id): gate_snapshot(gate_instance)}
             },
             affected_ids=[gate_instance.id],
+            branch=gate_instance.branch_id,
             summary=(
                 f'criou o gate "{gate_instance.name}" em '
                 f"{gate_instance.file_data.file_name}"
@@ -230,6 +232,7 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
             user=self.request.user,
             payload_before={"gates": snapshots},
             affected_ids=[int(gid) for gid in snapshots],
+            branch=instance.branch_id,
             summary=(
                 f'excluiu o gate "{instance.name}" em '
                 f"{instance.file_data.file_name}"
@@ -385,6 +388,7 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
                     payload_before=payload_before,
                     payload_after=payload_after,
                     affected_ids=[int(gid) for gid in payload_before["gates"]],
+                    branch=gate.branch_id,
                     summary=action_summary
                     + (f" em {total} amostras (escopo {scope})" if total > 1 else ""),
                 )
@@ -720,7 +724,7 @@ class GateDensityView(APIView):
         return Response(payload, status=status.HTTP_200_OK)
 
 
-def _resolve_target_parent(source_gate, target_fd_id, id_map):
+def _resolve_target_parent(source_gate, target_fd_id, id_map, branch_id=None):
     """Resolve the parent for *source_gate* inside the target file.
 
     If the source gate's parent was already created in the target (present in
@@ -753,6 +757,7 @@ def _resolve_target_parent(source_gate, target_fd_id, id_map):
             file_data_id=target_fd_id,
             name=ancestor.name,
             parent_id=target_parent_id,
+            branch_id=branch_id or source_gate.branch_id,
         ).first()
         if match is None:
             return target_parent_id  # partial match; attach here
@@ -865,6 +870,7 @@ class DeleteGateBatchView(APIView):
                 scope=data["scope"],
                 payload_before={"gates": snapshots},
                 affected_ids=[int(gid) for gid in snapshots],
+                branch=source_gates[0].branch_id,
                 summary=(
                     f"excluiu {deleted} gate(s)"
                     + (f" (escopo {data['scope']})" if data["scope"] != "file" else "")
@@ -888,7 +894,7 @@ class DeleteGateBatchView(APIView):
         )
 
 
-def _apply_conflicts(ordered_gates, target_file_data_ids):
+def _apply_conflicts(ordered_gates, target_file_data_ids, branch_id=None):
     """Gates de destino que seriam sobrescritos/renomeados pela aplicação.
 
     Só considera os gates cujo pai já existe no destino (id_map vazio): os
@@ -897,11 +903,14 @@ def _apply_conflicts(ordered_gates, target_file_data_ids):
     found = []
     for target_fd_id in target_file_data_ids:
         for gate in ordered_gates:
-            parent_id = _resolve_target_parent(gate, target_fd_id, {})
+            parent_id = _resolve_target_parent(
+                gate, target_fd_id, {}, branch_id=branch_id
+            )
             existing = GateModel.objects.filter(
                 file_data_id=target_fd_id,
                 name=gate.name,
                 parent_id=parent_id,
+                branch_id=branch_id or gate.branch_id,
             ).first()
             if existing:
                 found.append(
@@ -1082,7 +1091,9 @@ class ApplyGateView(APIView):
                     "created": 0,
                     "skipped": 0,
                     "replaced": 0,
-                    "conflicts": _apply_conflicts(ordered_gates, target_ids),
+                    "conflicts": _apply_conflicts(
+                        ordered_gates, target_ids, branch_id=source_gates[0].branch_id
+                    ),
                     "non_evaluable": non_evaluable,
                     "details": [],
                 },
@@ -1108,13 +1119,16 @@ class ApplyGateView(APIView):
 
                 for gate in ordered_gates:
                     # Determine new parent in target file.
-                    new_parent_id = _resolve_target_parent(gate, target_fd_id, id_map)
+                    new_parent_id = _resolve_target_parent(
+                        gate, target_fd_id, id_map, branch_id=gate.branch_id
+                    )
 
                     # Conflict check.
                     existing = GateModel.objects.filter(
                         file_data_id=target_fd_id,
                         name=gate.name,
                         parent_id=new_parent_id,
+                        branch_id=gate.branch_id,
                     ).first()
 
                     gate_name = gate.name
@@ -1157,6 +1171,7 @@ class ApplyGateView(APIView):
                                 file_data_id=target_fd_id,
                                 name=gate_name,
                                 parent_id=new_parent_id,
+                                branch_id=gate.branch_id,
                             ).exists():
                                 suffix += 1
                                 gate_name = f"{gate.name} ({suffix})"
@@ -1180,6 +1195,7 @@ class ApplyGateView(APIView):
                         dashboard=new_dash,
                         parent_id=new_parent_id,
                         copied_from=gate,
+                        branch_id=gate.branch_id,
                         color=gate.color,
                         created_by=author,
                     )
@@ -1213,6 +1229,7 @@ class ApplyGateView(APIView):
                     "replaced": replaced_after,
                 },
                 affected_ids=created_gate_ids + [int(g) for g in replaced_after],
+                branch=source_gates[0].branch_id,
                 summary=(
                     f"aplicou {len(source_gates)} gate(s) em "
                     f"{len(target_ids)} amostra(s) ({total_created} criados, "
@@ -1229,6 +1246,7 @@ class ApplyGateView(APIView):
                 file_data_id=fd_id,
                 parent__isnull=True,
                 copied_from__isnull=False,
+                branch_id=source_gates[0].branch_id,
             )
             for rg in root_gates:
                 recalculate_gate_analysis(rg.id)
@@ -1283,6 +1301,11 @@ class ExperimentHistoryView(generics.ListAPIView):
         file_id = self.request.query_params.get("file")
         if file_id and file_id.isdigit():
             qs = qs.filter(Q(file_data_id=int(file_id)) | Q(file_data__isnull=True))
+        # ?branch=<id> recorta a timeline por linha de análise (BE-23):
+        # revisões da branch + as experiment-wide (branch NULL).
+        branch_id = self.request.query_params.get("branch")
+        if branch_id and branch_id.isdigit():
+            qs = qs.filter(Q(branch_id=int(branch_id)) | Q(branch__isnull=True))
         cursor = self.request.query_params.get("cursor")
         if cursor and cursor.isdigit():
             qs = qs.filter(id__lt=int(cursor))
@@ -1644,3 +1667,265 @@ class CompensationDetailView(APIView):
         matrix.active = False
         matrix.save(update_fields=["is_applied", "active"])
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ExperimentBranchListCreateView(_ScopedExperimentMixin, APIView):
+    """GET/POST /analytics/experiment/<id>/branches/ (BE-23, ADR-0020).
+
+    GET lista as linhas de análise ativas (main primeiro). POST cria uma
+    branch nova como fork materializado da base (default: main) — copia
+    as árvores de gates e grava a revisão `fork`.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, experiment_id):
+        from analytics.models import AnalysisBranch
+        from analytics.services.branches import ensure_main_branch
+
+        experiment = self.get_experiment(request)
+        ensure_main_branch(experiment)
+        branches = (
+            AnalysisBranch.objects.filter(experiment=experiment, active=True)
+            .select_related("created_by")
+            .order_by("-is_main", "created_at")
+        )
+        from analytics.serializers import AnalysisBranchSerializer
+
+        return Response({"results": AnalysisBranchSerializer(branches, many=True).data})
+
+    def post(self, request, experiment_id):
+        from analytics.models import AnalysisBranch
+        from analytics.serializers import (
+            AnalysisBranchSerializer,
+            BranchCreateSerializer,
+        )
+        from analytics.services.branches import fork_branch
+        from fcs_parser.permissions import can_edit_experiment
+
+        experiment = self.get_experiment(request)
+        if not can_edit_experiment(request.user, experiment):
+            raise PermissionDenied("Criar branch exige permissão de escrita.")
+
+        payload = BranchCreateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        name = payload.validated_data["name"].strip()
+        if not name:
+            return Response(
+                {"detail": "Nome da branch é obrigatório."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if AnalysisBranch.objects.filter(
+            experiment=experiment, name=name, active=True
+        ).exists():
+            return Response(
+                {"detail": f'Já existe uma branch ativa chamada "{name}".'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        base_id = payload.validated_data.get("base_branch_id")
+        if base_id is None:
+            from analytics.services.branches import ensure_main_branch
+
+            base = ensure_main_branch(experiment)
+        else:
+            base = get_object_or_404(
+                AnalysisBranch, id=base_id, experiment=experiment, active=True
+            )
+
+        branch = fork_branch(base, name, request.user)
+        return Response(
+            AnalysisBranchSerializer(branch).data, status=status.HTTP_201_CREATED
+        )
+
+
+class BranchDetailView(APIView):
+    """PATCH/DELETE /analytics/branches/<id>/ — renomear/arquivar (BE-23).
+
+    A main não pode ser arquivada nem renomeada; arquivar é soft delete
+    (active=false) — os gates da branch continuam no banco.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_branch(self, request, pk):
+        from analytics.models import AnalysisBranch
+        from fcs_parser.permissions import experiments_visible_to
+
+        return get_object_or_404(
+            AnalysisBranch.objects.select_related("experiment"),
+            id=pk,
+            experiment__in=experiments_visible_to(request.user),
+            active=True,
+        )
+
+    def patch(self, request, pk):
+        from analytics.serializers import (
+            AnalysisBranchSerializer,
+            BranchRenameSerializer,
+        )
+        from fcs_parser.permissions import can_edit_experiment
+
+        branch = self._get_branch(request, pk)
+        if not can_edit_experiment(request.user, branch.experiment):
+            raise PermissionDenied("Renomear branch exige permissão de escrita.")
+        if branch.is_main:
+            return Response(
+                {"detail": "A branch main não pode ser renomeada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        payload = BranchRenameSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        name = payload.validated_data["name"].strip()
+        from analytics.models import AnalysisBranch
+
+        if (
+            AnalysisBranch.objects.filter(
+                experiment=branch.experiment, name=name, active=True
+            )
+            .exclude(id=branch.id)
+            .exists()
+        ):
+            return Response(
+                {"detail": f'Já existe uma branch ativa chamada "{name}".'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        branch.name = name
+        branch.save(update_fields=["name"])
+        return Response(AnalysisBranchSerializer(branch).data)
+
+    def delete(self, request, pk):
+        from fcs_parser.permissions import can_edit_experiment
+
+        branch = self._get_branch(request, pk)
+        if not can_edit_experiment(request.user, branch.experiment):
+            raise PermissionDenied("Arquivar branch exige permissão de escrita.")
+        if branch.is_main:
+            return Response(
+                {"detail": "A branch main não pode ser arquivada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        branch.active = False
+        branch.save(update_fields=["active"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class BranchDiffView(APIView):
+    """GET /analytics/branches/<id>/diff/ — preview do merge na base (BE-23).
+
+    Devolve ``changes`` (aplicáveis automaticamente) e ``conflicts``
+    (chave → tipo/fields para a UI pedir resolução). O alvo é sempre o
+    ``base_branch`` da origem — v1 só mergeia filha → base.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from analytics.models import AnalysisBranch
+        from analytics.services.branches import diff_branches
+        from fcs_parser.permissions import experiments_visible_to
+
+        source = get_object_or_404(
+            AnalysisBranch.objects.select_related("experiment", "base_branch"),
+            id=pk,
+            experiment__in=experiments_visible_to(request.user),
+            active=True,
+        )
+        if source.base_branch_id is None or not source.base_branch.active:
+            return Response(
+                {"detail": "A branch main não tem base para mergear."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        diff = diff_branches(source, source.base_branch)
+        return Response(
+            {
+                "source": {"id": source.id, "name": source.name},
+                "target": {
+                    "id": source.base_branch.id,
+                    "name": source.base_branch.name,
+                },
+                **diff,
+            }
+        )
+
+
+class BranchMergeView(APIView):
+    """POST /analytics/branches/<id>/merge/ — consolida a branch na base.
+
+    Payload: ``{"resolutions": {"<key>": "mine"|"theirs"|"both"},
+    "dry_run": bool}``. Conflito sem resolução → 409 com o diff; nada é
+    gravado parcialmente (transação única). As mudanças viram revisões
+    padrão na base + um marco `merge` revertível (BE-08/ADR-0020).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from analytics.models import AnalysisBranch
+        from analytics.serializers import BranchMergeSerializer
+        from analytics.services.branches import (
+            diff_branches,
+            merge_branches,
+            refresh_after_merge,
+        )
+        from fcs_parser.permissions import (
+            can_edit_experiment,
+            experiments_visible_to,
+        )
+
+        source = get_object_or_404(
+            AnalysisBranch.objects.select_related("experiment", "base_branch"),
+            id=pk,
+            experiment__in=experiments_visible_to(request.user),
+            active=True,
+        )
+        if not can_edit_experiment(request.user, source.experiment):
+            raise PermissionDenied("Merge exige permissão de escrita.")
+        if source.base_branch_id is None or not source.base_branch.active:
+            return Response(
+                {"detail": "A branch main não tem base para mergear."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payload = BranchMergeSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        target = source.base_branch
+
+        if payload.validated_data["dry_run"]:
+            diff = diff_branches(source, target)
+            return Response(
+                {
+                    "source": {"id": source.id, "name": source.name},
+                    "target": {"id": target.id, "name": target.name},
+                    **diff,
+                }
+            )
+
+        try:
+            result = merge_branches(
+                source,
+                target,
+                resolutions=payload.validated_data["resolutions"],
+                user=request.user,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not result["merged"]:
+            return Response(
+                {
+                    "detail": "Há conflitos sem resolução.",
+                    "conflicts": result["conflicts"],
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        refresh_after_merge(result["touched_files"])
+        return Response(
+            {
+                "merged": True,
+                "applied": result["applied"],
+                "merge_revision_id": result["merge_revision_id"],
+            },
+            status=status.HTTP_200_OK,
+        )

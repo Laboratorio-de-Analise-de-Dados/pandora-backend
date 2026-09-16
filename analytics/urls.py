@@ -2,12 +2,16 @@ from django.urls import path
 
 from .views import (
     ApplyGateView,
+    BranchDetailView,
+    BranchDiffView,
+    BranchMergeView,
     CheckpointDetailView,
     CheckpointListCreateView,
     CheckpointRestoreView,
     CompensationDetailView,
     CreateGateView,
     DeleteGateBatchView,
+    ExperimentBranchListCreateView,
     ExperimentHistoryView,
     GateDensityView,
     GetGateDataView,
@@ -36,6 +40,26 @@ urlpatterns = [
         "experiment/<int:experiment_id>/history/<int:revision_id>/restore/",
         HistoryRestoreView.as_view(),
         name="history-restore",
+    ),
+    path(
+        "experiment/<int:experiment_id>/branches/",
+        ExperimentBranchListCreateView.as_view(),
+        name="experiment-branches",
+    ),
+    path(
+        "branches/<int:pk>/",
+        BranchDetailView.as_view(),
+        name="branch-detail",
+    ),
+    path(
+        "branches/<int:pk>/diff/",
+        BranchDiffView.as_view(),
+        name="branch-diff",
+    ),
+    path(
+        "branches/<int:pk>/merge/",
+        BranchMergeView.as_view(),
+        name="branch-merge",
     ),
     path(
         "experiment/<int:experiment_id>/checkpoints/",

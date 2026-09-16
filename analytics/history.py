@@ -39,6 +39,7 @@ REVERSIBLE_ACTIONS = {
     AnalysisRevision.ACTION_COMPENSATION_REMOVE,
     AnalysisRevision.ACTION_REVERT,
     AnalysisRevision.ACTION_RESTORE,
+    AnalysisRevision.ACTION_MERGE,
 }
 
 # Inatividade que separa sessões na timeline (auto-checkpoints derivados,
@@ -58,6 +59,8 @@ def gate_snapshot(gate: GateModel) -> dict:
         "gate_coordinates": gate.gate_coordinates,
         "plot_config": gate.plot_config,
         "copied_from_id": gate.copied_from_id,
+        "forked_from_id": gate.forked_from_id,
+        "branch_id": gate.branch_id,
         "parent_id": gate.parent_id,
         "file_data_id": gate.file_data_id,
         "dashboard_id": gate.dashboard_id,
@@ -113,6 +116,7 @@ def record_revision(
     summary,
     reverts=None,
     file_data=None,
+    branch=None,
 ) -> AnalysisRevision:
     file_data_id = (
         getattr(file_data, "id", file_data)
@@ -132,6 +136,7 @@ def record_revision(
         summary=summary,
         reverts=reverts,
         file_data_id=file_data_id,
+        branch_id=getattr(branch, "id", branch),
     )
 
 
@@ -146,6 +151,7 @@ def revision_dict(revision: AnalysisRevision) -> dict:
         "id": revision.id,
         "action": revision.action,
         "scope": revision.scope,
+        "branch": revision.branch_id,
         "target": {"type": revision.target_type, "id": revision.target_id},
         "summary": revision.summary,
         "author": author_name(revision.user),
@@ -480,6 +486,8 @@ def plan_revert(
         return _plan_create_inactivate_revert(revision)
     if revision.action == AnalysisRevision.ACTION_APPLY:
         return _plan_apply_revert(revision, pending_recreate=pending_recreate)
+    if revision.action == AnalysisRevision.ACTION_MERGE:
+        return _plan_merge_revert(revision, force=force)
     if revision.action in (
         AnalysisRevision.ACTION_COMPENSATION_APPLY,
         AnalysisRevision.ACTION_COMPENSATION_REMOVE,
@@ -539,6 +547,28 @@ def _plan_compensation_revert(revision: AnalysisRevision, force: bool = False) -
         "changes": [{"compensation": set_to, "target_id": revision.target_id}],
         "conflicts": conflicts,
     }
+
+
+def _plan_merge_revert(revision: AnalysisRevision, force: bool = False) -> dict:
+    """Reverter um merge = reverter, em ordem inversa, as revisões que ele
+    gravou na branch alvo (ADR-0020).
+
+    O merge não duplica estado: seu `payload_after.revision_ids` aponta as
+    revisões constituintes (create/delete/update_*), cada uma revertível
+    pelo plano padrão. A cadeia é a composição delas, mais novas primeiro.
+    """
+    ids = revision.payload_after.get("revision_ids", [])
+    subplans = []
+    conflicts = []
+    for rev_id in reversed(ids):
+        sub = AnalysisRevision.objects.filter(pk=rev_id).first()
+        if sub is None:
+            continue
+        plan = plan_revert(sub, force=force)
+        subplans.append(plan)
+        for c in plan["conflicts"]:
+            conflicts.append({**c, "revision_id": sub.id})
+    return {"kind": "chain", "plans": subplans, "conflicts": conflicts}
 
 
 def _plan_create_inactivate_revert(revision: AnalysisRevision):
@@ -637,6 +667,12 @@ def _apply_plan(
                 copied_from_id = id_map.get(copied_from_id, copied_from_id)
                 if not GateModel.objects.filter(pk=copied_from_id).exists():
                     copied_from_id = None
+            forked_from_id = snap.get("forked_from_id")
+            if (
+                forked_from_id is not None
+                and not GateModel.objects.filter(pk=forked_from_id).exists()
+            ):
+                forked_from_id = None
             new_gate = GateModel.objects.create(
                 file_data_id=snap.get("file_data_id"),
                 name=snap.get("name"),
@@ -646,6 +682,8 @@ def _apply_plan(
                 dashboard=dashboard,
                 parent_id=parent_id,
                 copied_from_id=copied_from_id,
+                forked_from_id=forked_from_id,
+                branch_id=snap.get("branch_id"),
             )
             id_map[old_id] = new_gate.id
             recreated_gate_ids.append(new_gate.id)
@@ -752,6 +790,7 @@ def apply_revert(revision: AnalysisRevision, user) -> dict:
         affected_ids=revision.affected_ids,
         summary=f"reverteu: {revision.summary}",
         reverts=revision,
+        branch=revision.branch_id,
     )
     return {
         "conflicts": [],
@@ -769,11 +808,18 @@ def _revisions_after(experiment, target_revision) -> list:
     """Revisões posteriores ao alvo, mais novas primeiro.
 
     `target_revision=None` = estado inicial do experimento (todas as
-    revisões entram na cadeia).
+    revisões entram na cadeia). Com branches (BE-23), o restore é escopado
+    à linha do alvo: revisões daquela branch + as experiment-wide
+    (branch NULL — afetam todas as linhas).
     """
     qs = AnalysisRevision.objects.filter(experiment=experiment).order_by("-id")
     if target_revision is not None:
         qs = qs.filter(id__gt=target_revision.id)
+        from django.db.models import Q as _Q
+
+        qs = qs.filter(
+            _Q(branch_id=target_revision.branch_id) | _Q(branch__isnull=True)
+        )
     return list(qs)
 
 
@@ -901,6 +947,7 @@ def apply_restore(experiment, target_revision, user, force: bool = False) -> dic
                 else "restaurou o estado inicial do experimento"
             )[:512],
             reverts=target_revision,
+            branch=getattr(target_revision, "branch_id", None),
         )
 
     from analytics.tasks import recalculate_gate_analysis
@@ -1064,6 +1111,14 @@ def state_at_revision(experiment, target_revision) -> dict:
         virtual[gate.id] = gate_snapshot(gate)
     for rev in _revisions_after(experiment, target_revision):
         _apply_inverse_virtual(virtual, rev)
+    # O preview é da linha do alvo: snapshots de outras branches saem.
+    branch_id = getattr(target_revision, "branch_id", None)
+    if branch_id is not None:
+        virtual = {
+            gid: snap
+            for gid, snap in virtual.items()
+            if snap.get("branch_id") in (branch_id, None)
+        }
     files = {}
     for gid, snap in sorted(virtual.items()):
         files.setdefault(str(snap["file_data_id"]), []).append({"id": gid, **snap})

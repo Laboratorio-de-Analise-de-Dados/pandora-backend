@@ -1187,8 +1187,22 @@ class GetExperimentFiles(generics.ListAPIView):
         ]
     )
     def list(self, request, *args, **kwargs):
+        from analytics.services.branches import resolve_branch
+        from fcs_parser.permissions import experiments_visible_to
+
         # Retrieve the queryset of files
         queryset = self.get_queryset()
+
+        # BE-23: a árvore é da linha de análise pedida (?branch=<id>,
+        # default main do experimento). Experimento invisível já resulta
+        # em queryset vazio — mantemos [] em vez de 404 (contrato antigo).
+        branch_id = request.query_params.get("branch")
+        experiment = (
+            experiments_visible_to(request.user)
+            .filter(id=self.kwargs.get("experiment_id"))
+            .first()
+        )
+        branch = resolve_branch(experiment, branch_id) if experiment else None
 
         # Manually create the response data with the gate tree
         data = []
@@ -1198,7 +1212,7 @@ class GetExperimentFiles(generics.ListAPIView):
             file_data = file_serializer.data
 
             # Build the gate tree for the current file
-            gate_tree = GateModel.build_tree(file_data_id=file.id)
+            gate_tree = GateModel.build_tree(file_data_id=file.id, branch=branch)
 
             # Add the built tree to the file data
             file_data["gates"] = gate_tree

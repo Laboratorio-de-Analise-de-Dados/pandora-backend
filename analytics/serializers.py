@@ -4,6 +4,7 @@ from rest_framework import serializers
 from analytics.gate_author import author_display_name
 from analytics.gate_scope import PROPAGATING_SCOPES, SCOPE_CHOICES, SCOPE_FILE
 from analytics.models import (
+    AnalysisBranch,
     AnalysisCheckpoint,
     AnalysisResult,
     AnalysisRevision,
@@ -48,6 +49,12 @@ class GateSerializer(serializers.ModelSerializer):
     parent = serializers.PrimaryKeyRelatedField(
         queryset=GateModel.objects.all(), allow_null=True, required=False, default=None
     )
+    branch = serializers.PrimaryKeyRelatedField(
+        queryset=AnalysisBranch.objects.all(),
+        required=False,
+        allow_null=True,
+        default=None,  # unique-together exige default p/ não forçar required
+    )
     created_by_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -62,6 +69,7 @@ class GateSerializer(serializers.ModelSerializer):
             "file_data",
             "parent",
             "copied_from",
+            "branch",
             "color",
             "created_by",
             "created_by_name",
@@ -71,6 +79,24 @@ class GateSerializer(serializers.ModelSerializer):
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_created_by_name(self, obj):
         return gate_author_name(obj)
+
+    def validate(self, attrs):
+        parent = attrs.get("parent")
+        branch = attrs.get("branch")
+        file_data = attrs.get("file_data")
+        if parent is not None:
+            # Filho herda a branch do pai — nunca se mistura linhas numa árvore.
+            if branch is not None and branch.id != parent.branch_id:
+                raise serializers.ValidationError(
+                    {"branch": "O gate filho pertence à branch do pai."}
+                )
+            attrs["branch"] = parent.branch
+        elif branch is not None and file_data is not None:
+            if branch.experiment_id != file_data.experiment_id:
+                raise serializers.ValidationError(
+                    {"branch": "A branch pertence a outro experimento."}
+                )
+        return attrs
 
     def create(self, validated_data):
         file_data_instance = validated_data.get("file_data")
@@ -191,6 +217,7 @@ class ListGateSerializer(serializers.ModelSerializer):
             "plot_config",
             "analysis_result",
             "copied_from_id",
+            "branch_id",
             "color",
             "created_by",
             "created_by_name",
@@ -220,6 +247,7 @@ class AnalysisRevisionSerializer(serializers.ModelSerializer):
             "id",
             "action",
             "scope",
+            "branch",
             "target",
             "file_data",
             "summary",
@@ -310,6 +338,83 @@ class CheckpointPatchSerializer(serializers.Serializer):
     """PATCH .../checkpoints/<id>/ — só a mensagem é editável."""
 
     message = serializers.CharField(max_length=200, allow_blank=True)
+
+
+class AnalysisBranchSerializer(serializers.ModelSerializer):
+    """Linha de análise do experimento (BE-23)."""
+
+    created_by_name = serializers.SerializerMethodField()
+    gates_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AnalysisBranch
+        fields = [
+            "id",
+            "name",
+            "is_main",
+            "base_branch",
+            "created_by_name",
+            "gates_count",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_created_by_name(self, obj):
+        if not obj.created_by:
+            return None
+        return author_display_name(
+            obj.created_by.first_name,
+            obj.created_by.last_name,
+            obj.created_by.username,
+        )
+
+    def get_gates_count(self, obj):
+        return obj.gates.count()
+
+
+class BranchCreateSerializer(serializers.Serializer):
+    """POST .../branches/ — fork materializado da branch base."""
+
+    name = serializers.CharField(max_length=50)
+    base_branch_id = serializers.IntegerField(required=False, allow_null=True)
+
+
+class BranchRenameSerializer(serializers.Serializer):
+    """PATCH /analytics/branches/<id>/ — só o nome é editável."""
+
+    name = serializers.CharField(max_length=50)
+
+
+class BranchMergeSerializer(serializers.Serializer):
+    """POST /analytics/branches/<id>/merge/ — merge da branch na base.
+
+    ``resolutions`` mapeia a chave de cada conflito do diff
+    (``f:<gate_id>``, ``dt:<gate_id>``, ``ds:<gate_id>``) para
+    ``mine`` (fica a base), ``theirs`` (vale a branch) ou ``both``
+    (mantém a base e cria a versão da branch renomeada — só
+    ``modified_both``).
+    """
+
+    resolutions = serializers.DictField(
+        child=serializers.ChoiceField(choices=["mine", "theirs", "both"]),
+        required=False,
+        default=dict,
+    )
+    dry_run = serializers.BooleanField(default=False)
+
+    def validate(self, data):
+        for key in data["resolutions"]:
+            prefix = key.split(":", 1)[0]
+            if prefix not in ("f", "dt", "ds"):
+                raise serializers.ValidationError(
+                    {"resolutions": f'Chave de conflito inválida: "{key}".'}
+                )
+        for key, res in data["resolutions"].items():
+            if res == "both" and not key.startswith("f:"):
+                raise serializers.ValidationError(
+                    {"resolutions": '"both" só vale para conflitos de edição.'}
+                )
+        return data
 
 
 class CompensationMatrixSerializer(serializers.ModelSerializer):

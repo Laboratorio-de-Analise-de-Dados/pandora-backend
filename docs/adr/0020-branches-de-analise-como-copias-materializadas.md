@@ -1,6 +1,6 @@
 # ADR-0020 — Branches de análise como cópias materializadas de gates
 
-- **Status:** Proposto
+- **Status:** Aceito
 - **Data:** 2026-09-16
 - **Contexto do código:** `analytics/models.py` (`GateModel`,
   `AnalysisRevision`, `AnalysisCheckpoint`, `CompensationMatrix`),
@@ -32,29 +32,36 @@ experimentos é domínio do BE-19 (templates/cópia de análise), não deste
 ADR. Concretamente:
 
 - `AnalysisBranch(experiment, name, created_by, base_branch,
-  forked_at, head_revision)` — uma por linha de trabalho. Todo
+  fork_snapshot, is_main, active)` — uma por linha de trabalho. Todo
   experimento passa a ter a branch default `main` (migração cria e
-  associa gates/revisões/matrizes existentes).
+  associa gates/revisões existentes). `fork_snapshot` guarda o mapa do
+  fork: `{"pairs": {<gate_id_da_branch>: <gate_id_da_base>}, "base":
+  {<gate_id_da_base>: campos no fork}}` — é o "merge base" do diff.
 - `GateModel.branch` — fork materializa: copiar a árvore de cada amostra
-  para a branch nova, com `copied_from` apontando para o gate de origem
-  (o campo já existe — identidade entre branches sai **de graça** pela
-  cadeia de `copied_from` até o ancestral comum).
-- `AnalysisRevision.branch` — cada revisão pertence a uma branch; a
-  timeline filtrada por branch é o "log" daquela linha.
-- `CompensationMatrix.branch` — matriz aplicada é por branch (um
-  analista pode propor compensação diferente sem contaminar a main).
-- Leitura compensada/density/stats ganham `?branch=<id>` (default main);
-  a chave de cache passa a incluir branch + matriz.
+  para a branch nova. A identidade cross-branch usa **`forked_from`**
+  (FK nova para o gate de origem), não `copied_from`: edição de
+  geometria desfaz `copied_from` por decisão do ADR-0003, então ele não
+  sobreviveria como âncora de merge; `forked_from` é linhagem pura.
+- `AnalysisRevision.branch` — cada revisão pertence a uma branch
+  (`NULL` = ação experiment-wide, presente em todos os recortes); a
+  timeline filtrada por `?branch=` é o "log" daquela linha.
 - **Merge** = diff estrutural entre as árvores materializadas (não
-  replay de revisões): para cada gate da branch filha, casar pelo
-  ancestral `copied_from`; criado-só-na-filha aplica, deletado-só-na-
-  filha aplica, **editado nos dois lados desde o fork → conflito**
-  (mesma mecânica de drift que `plan_revert` já devolve). Resolução
-  humana por conflito: manter meu / manter dele / manter ambos (rename).
-  O merge grava revisões `action="merge"` na branch alvo — auditável e
-  revertível como qualquer outra operação.
-- `AnalysisResult` e caches são por branch — trocar de branch recalcula
-  (density cache por `(file, gate, branch, matrix)`), nada de invalidar
+  replay de revisões): para cada gate da branch filha, casar pelo par
+  do `fork_snapshot`/`forked_from`; criado-só-na-filha aplica,
+  deletado-só-na-filha aplica, **editado nos dois lados desde o fork →
+  conflito** (`f:` edit-vs-edit, `dt:` deletado-na-base, `ds:`
+  deletado-na-branch-editado-na-base). Resolução humana por conflito:
+  `mine` (fica a base), `theirs` (vale a branch), `both` (mantém a base
+  e cria a versão da branch renomeada — só edit-vs-edit). O merge grava
+  revisões padrão (create/update/delete) + um marco `action="merge"`
+  citando as constituintes — reverter o merge desfaz a cadeia em ordem
+  inversa.
+- `CompensationMatrix.branch` — **adiado**: a v1 mantém a matriz
+  aplicada experiment-wide (isolamento por branch é refinamento quando
+  a UI pedir — ver TRACKER).
+- `AnalysisResult` e caches são por branch — o resultado pertence ao
+  gate da branch (não é compartilhado entre linhas) e trocar de branch
+  (`?branch=` nas leituras, default main) nunca invalida nem muta
   resultado alheio.
 
 ## Alternativas consideradas
@@ -71,10 +78,11 @@ a analogia quebra no storage.
 ### B) Estado visível = snapshot materializado por branch (escolhida)
 
 Fork copia as árvores; cada branch é um workspace isolado e o merge é
-diff de árvores. Mais simples de raciocinar, reusa `copied_from` para
-identidade e o motor de conflito do revert. Custo: fork de experimento
-grande duplica N×M linhas de gate — aceitável (são JSONs pequenos) e
-explícito ("criar branch" é uma ação cara e auditada).
+diff de árvores. Mais simples de raciocinar: `forked_from` +
+`fork_snapshot` dão identidade estável e merge-base, e o motor de
+conflito reusa a mecânica de drift do revert. Custo: fork de
+experimento grande duplica N×M linhas de gate — aceitável (são JSONs
+pequenos) e explícito ("criar branch" é uma ação cara e auditada).
 
 ### C) Lock de edição / presença (OT/CRDT)
 

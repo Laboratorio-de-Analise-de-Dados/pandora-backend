@@ -22,11 +22,13 @@ ou alinhe com o responsável.
 | BE-18/17/08/20/21 | Histórico, checkpoints, metadados da listagem — implementados |
 | BE-22 | Compensação completa: `compensated` + `embedded` + `CompensationMatrix` + controles via subsample + `compute`/`from-header`/`apply`/`remove` + leitura compensada em density/stats/preview/list/gates (cache key com id da matriz) |
 | BE-19 (derivação) | `POST /experiment/<id>/derive-analysis/` (ADR-0021): match por `content_guid`/`file_name`, cópia de árvore + subsamples homônimos + compensação aplicada; revisões `derive`/`create` revertíveis |
+| BE-23 (branches) | ADR-0020 implementado: `AnalysisBranch` + `branch`/`forked_from` em gates/revisões, fork materializado, `GET/POST .../branches/`, `PATCH/DELETE /analytics/branches/<id>/`, `GET .../diff/`, `POST .../merge/` (mine/theirs/both, dry_run, revert em cadeia), `?branch=` na timeline e na árvore de `list/data` |
 
 ## Livres para pegar
 
 | Feature | Observação |
 |---|---|
 | FE: UI de "derivar análise" (BE-19) | Backend pronto — consumir `POST /experiment/<id>/derive-analysis/` no front |
+| FE: UI de branches (BE-23) | Backend pronto — seletor de branch (`?branch=` nas leituras), criar/renomear/arquivar, tela de diff + resolução de conflitos do merge |
 | BE-19 workspaces/templates (objeto persistido) | Visão no PRD — ADR-0021 escolheu snapshot sem template; reabrir só se o caso de uso pedir catálogo |
-| BE-23 análise colaborativa (branch/merge) | PRD de visão pronto — precisa de ADR (estado visível de branch, merge de árvores) |
+| BE-23: compensação por branch | v1 manteve matriz experiment-wide; `CompensationMatrix.branch` é o refinamento quando a UI pedir |
