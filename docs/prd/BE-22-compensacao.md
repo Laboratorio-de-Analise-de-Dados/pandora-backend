@@ -2,7 +2,11 @@
 
 **Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
 **Branch sugerida:** `feat/compensacao`
-**Status:** não iniciado.
+**Status:** parcial em `feat/analysis-checkpoints` — entregue a
+**sinalização** (`compensated` na listagem via headers `$SPILLOVER`/`$COMP`)
+e `GET /experiment/<id>/compensations/embedded` (leitura da matriz embutida).
+Pendente: `CompensationMatrix`, controles/subsamples, compute e apply
+(escopo 1, 3, 4, 5 e 6 abaixo).
 **ADRs:** [0018](../adr/0018-compensacao-matriz-versionada-por-experimento.md)
 (matriz versionada por experimento, aplicada na leitura) ·
 [0019](../adr/0019-controles-de-compensacao-como-subsamples.md)

@@ -288,6 +288,21 @@ def _annotate_list_meta(qs, user):
         preview_available=Exists(
             FileDataModel.objects.filter(experiment_id=OuterRef("pk"), active=True)
         ),
+        # BE-22 v1: "está compensado" = alguma amostra ativa traz matriz
+        # de spillover embutida nos headers FCS crus ($SPILLOVER/$COMP).
+        compensated=Exists(
+            FileDataModel.objects.filter(
+                experiment_id=OuterRef("pk"),
+                active=True,
+                headers__has_any_keys=[
+                    "$SPILLOVER",
+                    "$spillover",
+                    "$Spillover",
+                    "$COMP",
+                    "$comp",
+                ],
+            )
+        ),
     )
 
 
@@ -546,6 +561,46 @@ class ExperimentPreviewView(APIView):
         }
         set_cached_density(cache_key, payload)
         return Response(payload, status=status.HTTP_200_OK)
+
+
+class ExperimentEmbeddedCompensationView(APIView):
+    """GET /experiment/<id>/compensations/embedded — matriz de spillover
+    embutida nos headers FCS (BE-22 v1).
+
+    Devolve ``{channels, matrix, file_data_id, source}`` da primeira
+    amostra ativa com ``$SPILLOVER``/``$COMP`` parseável; 204 quando
+    nenhuma amostra traz a keyword. Persistir como CompensationMatrix e
+    aplicar na leitura são as próximas etapas do PRD.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name="EmbeddedCompensationResponse",
+                fields={
+                    "channels": serializers.ListField(),
+                    "matrix": serializers.ListField(),
+                    "file_data_id": serializers.IntegerField(),
+                    "source": serializers.CharField(),
+                },
+            ),
+            204: None,
+        }
+    )
+    def get(self, request, experiment_id):
+        from fcs_parser.services.compensation import (
+            experiment_embedded_compensation,
+        )
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        embedded = experiment_embedded_compensation(experiment)
+        if embedded is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(embedded, status=status.HTTP_200_OK)
 
 
 class ExperimentRestoreView(APIView):

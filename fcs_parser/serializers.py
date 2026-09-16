@@ -233,6 +233,7 @@ class ListExperimentSerializer(serializers.ModelSerializer):
     my_role = serializers.SerializerMethodField()
     progress = serializers.SerializerMethodField()
     preview_available = serializers.SerializerMethodField()
+    compensated = serializers.SerializerMethodField()
 
     class Meta:
         model = ExperimentModel
@@ -248,6 +249,9 @@ class ListExperimentSerializer(serializers.ModelSerializer):
 
     def get_preview_available(self, obj):
         return getattr(obj, "preview_available", False)
+
+    def get_compensated(self, obj):
+        return getattr(obj, "compensated", False)
 
 
 class CreateFileModelSerializer(serializers.ModelSerializer):

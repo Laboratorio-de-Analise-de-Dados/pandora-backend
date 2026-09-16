@@ -1385,3 +1385,86 @@ class ExperimentPreviewTestCase(TestCase):
         res = self.client.get(f"/experiment/{self.experiment.id}/preview")
 
         self.assertEqual(res.status_code, 404)
+
+
+class CompensationDetectionTestCase(TestCase):
+    """BE-22 v1: sinalização de compensação embutida nos headers FCS."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, status="done"
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="d" * 64,
+            experiment=self.experiment,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _file_data(self, headers):
+        return FileDataModel.objects.create(
+            headers=headers,
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+        )
+
+    def test_parse_spillover_formato_fcs3(self):
+        from fcs_parser.services.compensation import parse_spillover
+
+        # "n,ch1,...,chn,v11..vnn" row-major: 2 canais, identidade com
+        # 12% de FITC vazando no PE.
+        parsed = parse_spillover({"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"})
+
+        self.assertEqual(parsed["channels"], ["FITC-A", "PE-A"])
+        self.assertEqual(parsed["matrix"], [[1.0, 0.12], [0.03, 1.0]])
+
+    def test_parse_spillover_malformado_devolve_none(self):
+        from fcs_parser.services.compensation import parse_spillover
+
+        self.assertIsNone(parse_spillover(None))
+        self.assertIsNone(parse_spillover({}))
+        self.assertIsNone(parse_spillover({"$SPILLOVER": "abc"}))
+        self.assertIsNone(parse_spillover({"$SPILLOVER": "2,FITC,PE,1,0.1"}))
+
+    def test_listagem_sinaliza_compensated(self):
+        self._file_data({"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"})
+
+        res = self.client.get("/experiment/")
+
+        by_id = {e["id"]: e for e in res.data}
+        self.assertTrue(by_id[self.experiment.id]["compensated"])
+
+    def test_listagem_sem_spillover_nao_compensado(self):
+        self._file_data({"$PAR": "4"})
+
+        res = self.client.get("/experiment/")
+
+        by_id = {e["id"]: e for e in res.data}
+        self.assertFalse(by_id[self.experiment.id]["compensated"])
+
+    def test_embedded_devolve_matriz(self):
+        fd = self._file_data({"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"})
+
+        res = self.client.get(
+            f"/experiment/{self.experiment.id}/compensations/embedded"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["channels"], ["FITC-A", "PE-A"])
+        self.assertEqual(res.data["file_data_id"], fd.id)
+        self.assertEqual(res.data["source"], "fcs_header")
+
+    def test_embedded_204_sem_matriz(self):
+        self._file_data({"$PAR": "4"})
+
+        res = self.client.get(
+            f"/experiment/{self.experiment.id}/compensations/embedded"
+        )
+
+        self.assertEqual(res.status_code, 204)

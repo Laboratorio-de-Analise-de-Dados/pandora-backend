@@ -6,6 +6,7 @@ from .views import (
     ExperimentCompleteView,
     ExperimentCopyView,
     ExperimentDownloadView,
+    ExperimentEmbeddedCompensationView,
     ExperimentFileChunkView,
     ExperimentFileCompleteView,
     ExperimentFileInitView,
@@ -41,6 +42,10 @@ urlpatterns = [
     path("<int:experiment_id>/download", ExperimentDownloadView.as_view()),
     path("<int:experiment_id>/copy", ExperimentCopyView.as_view()),
     path("<int:experiment_id>/preview", ExperimentPreviewView.as_view()),
+    path(
+        "<int:experiment_id>/compensations/embedded",
+        ExperimentEmbeddedCompensationView.as_view(),
+    ),
     path("<int:experiment_id>/restore", ExperimentRestoreView.as_view()),
     path("list/data/<str:experiment_id>/", GetExperimentFiles.as_view()),
     path("file/<str:file_id>/list", ListFileParams.as_view()),
