@@ -1,6 +1,6 @@
 # ADR-0019 — Controles de compensação como subsamples marcados
 
-- **Status:** Proposto
+- **Status:** Aceito
 - **Data:** 2026-09-15
 - **Contexto do código:** `fcs_parser/models.py` (SubsampleModel —
   agrupamento por diretório do ZIP, `name` editável, soft delete),

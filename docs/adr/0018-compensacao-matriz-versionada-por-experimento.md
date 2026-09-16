@@ -1,6 +1,6 @@
 # ADR-0018 — Compensação como matriz versionada por experimento, aplicada na leitura
 
-- **Status:** Proposto
+- **Status:** Aceito
 - **Data:** 2026-09-15
 - **Contexto do código:** `fcs_parser/models.py` (ExperimentModel,
   FileDataModel.headers com keywords FCS crus), `utils/density.py`

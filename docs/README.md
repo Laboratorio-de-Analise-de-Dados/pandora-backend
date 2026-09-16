@@ -49,5 +49,6 @@ valor à pasta.
 | [0015](adr/0015-unicidade-de-titulo-entre-ativos.md) | Unicidade de título vale apenas entre experimentos ativos | Aceito |
 | [0016](adr/0016-gate-nao-avaliavel-sem-canal.md) | Canal ausente torna o gate não-avaliável e corta a linhagem na amostra | Aceito |
 | [0017](adr/0017-checkpoints-de-analise.md) | Checkpoints: marcos nomeados sobre o log; restore em cadeia atômico com `force` opt-in | Aceito |
-| [0018](adr/0018-compensacao-matriz-versionada-por-experimento.md) | Compensação: matriz versionada por experimento, aplicada na leitura (nunca no dado) | Proposto |
-| [0019](adr/0019-controles-de-compensacao-como-subsamples.md) | Controles de compensação como subsamples marcados (`control_type`/`control_channel`) | Proposto |
+| [0018](adr/0018-compensacao-matriz-versionada-por-experimento.md) | Compensação: matriz versionada por experimento, aplicada na leitura (nunca no dado) | Aceito |
+| [0019](adr/0019-controles-de-compensacao-como-subsamples.md) | Controles de compensação como subsamples marcados (`control_type`/`control_channel`) | Aceito |
+| [0020](adr/0020-branches-de-analise-como-copias-materializadas.md) | Branches de análise: cópias materializadas de gates + merge por diff de árvores | Proposto |
