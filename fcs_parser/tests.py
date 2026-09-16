@@ -2034,3 +2034,97 @@ class DeriveAnalysisApiTestCase(TestCase):
         res = self.client.post(f"/analytics/history/{create_rev.id}/revert/")
         self.assertEqual(res.status_code, 200)
         self.assertFalse(GateModel.objects.filter(file_data=self.tgt_fd).exists())
+
+
+class ExperimentCreateEmptyTestCase(TestCase):
+    """BE-24: POST /experiment/ cria experimento sem arquivo; description é
+    campo livre; values deixa de ser gravável via PATCH (derivado dos FCS)."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.outsider = User.objects.create_user(
+            username="fora", email="fora@pandora.test", password="senha-forte-123"
+        )
+        self.org = Organization.objects.create(name="Lab X", org_type="lab")
+        role = Role.objects.create(name="member")
+        Membership.objects.create(
+            user=self.owner, organization=self.org, role=role, status="active"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _create(self, **payload):
+        return self.client.post("/experiment/", payload, format="json")
+
+    def test_cria_experimento_pessoal_vazio(self):
+        res = self._create(title="rascunho", type="painel")
+
+        self.assertEqual(res.status_code, 201)
+        exp = ExperimentModel.objects.get(id=res.data["id"])
+        self.assertEqual(exp.status, "new")
+        self.assertEqual(exp.file_status, "pending")
+        self.assertIsNone(exp.organization_id)
+        self.assertEqual(exp.created_by, self.owner)
+
+    def test_cria_na_org_com_descricao(self):
+        res = self._create(
+            title="exp-lab",
+            type="painel",
+            description="Beads de referência do lote 42",
+            organizationId=self.org.id,
+        )
+
+        self.assertEqual(res.status_code, 201)
+        exp = ExperimentModel.objects.get(id=res.data["id"])
+        self.assertEqual(exp.organization_id, self.org.id)
+        self.assertEqual(exp.description, "Beads de referência do lote 42")
+
+    def test_titulo_duplicado_no_mesmo_contexto_e_400(self):
+        self._create(title="dup", type="t")
+
+        res = self._create(title="dup", type="t")
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_nao_membro_da_org_leva_403(self):
+        self.client.force_authenticate(self.outsider)
+
+        res = self._create(title="x", type="t", organizationId=self.org.id)
+
+        self.assertEqual(res.status_code, 403)
+
+    def test_patch_grava_description_e_ignora_values(self):
+        exp = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, values=["FSC-A"]
+        )
+
+        res = self.client.patch(
+            f"/experiment/{exp.id}/",
+            {"description": "nota nova", "values": ["HACK"]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        exp.refresh_from_db()
+        self.assertEqual(exp.description, "nota nova")
+        # values é derivado dos arquivos — PATCH não pode sobrescrever.
+        self.assertEqual(exp.values, ["FSC-A"])
+
+    def test_init_aceita_description(self):
+        res = self.client.post(
+            "/experiment/init/",
+            {
+                "title": "via-upload",
+                "type": "t",
+                "totalChunks": 1,
+                "fileName": "a.fcs",
+                "description": "criado já com upload",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        exp = ExperimentModel.objects.get(id=res.data["fileId"])
+        self.assertEqual(exp.description, "criado já com upload")

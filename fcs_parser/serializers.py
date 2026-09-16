@@ -13,6 +13,77 @@ def _extension_error_detail(exc: DjangoValidationError) -> str:
     return exc.messages[0]
 
 
+def validate_experiment_context(user, title, org_id):
+    """Unicidade de título no contexto + membership na organização.
+
+    Compartilhado entre ``ExperimentInitSerializer`` (criação via upload) e
+    ``ExperimentCreateSerializer`` (criação sem arquivo, BE-24).
+    """
+    if org_id is None:
+        if ExperimentModel.objects.filter(
+            title=title,
+            created_by=user,
+            organization__isnull=True,
+            active=True,
+        ).exists():
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        "Você já possui um experimento pessoal com este " "título."
+                    )
+                }
+            )
+        return
+
+    if not Organization.objects.filter(id=org_id).exists():
+        raise serializers.ValidationError({"detail": "Laboratório não encontrado."})
+    if (
+        not user.is_super_admin
+        and not user.memberships.filter(
+            organization_id=org_id, status="active"
+        ).exists()
+    ):
+        raise PermissionDenied(
+            "Você não tem permissão para criar experimentos neste " "laboratório."
+        )
+    if ExperimentModel.objects.filter(
+        title=title, created_by=user, organization_id=org_id, active=True
+    ).exists():
+        raise serializers.ValidationError(
+            {"detail": "Título já criado para esse laboratório."}
+        )
+
+
+class ExperimentCreateSerializer(serializers.Serializer):
+    """Entrada de POST /experiment/ — cria experimento sem arquivo (BE-24).
+
+    O experimento nasce ``status="new"``/``file_status="pending"`` (defaults
+    do modelo); as amostras chegam depois via ``/experiment/<id>/files/init``.
+    """
+
+    title = serializers.CharField()
+    type = serializers.CharField()
+    description = serializers.CharField(required=False, allow_blank=True, default="")
+    organizationId = serializers.IntegerField(required=False, allow_null=True)
+
+    def validate_title(self, value):
+        title = value.strip().replace(" ", "_")
+        if not title:
+            raise serializers.ValidationError("Título é obrigatório.")
+        return title
+
+    def validate_type(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Tipo é obrigatório.")
+        return value.strip()
+
+    def validate(self, data):
+        validate_experiment_context(
+            self.context["request"].user, data["title"], data.get("organizationId")
+        )
+        return data
+
+
 class ExperimentInitSerializer(serializers.Serializer):
     """Entrada de POST /experiment/init/ — cria o experimento reserva.
 
@@ -22,6 +93,7 @@ class ExperimentInitSerializer(serializers.Serializer):
 
     title = serializers.CharField()
     type = serializers.CharField()
+    description = serializers.CharField(required=False, allow_blank=True, default="")
     totalChunks = serializers.IntegerField(min_value=1)
     fileName = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     organizationId = serializers.IntegerField(required=False, allow_null=True)
@@ -47,42 +119,9 @@ class ExperimentInitSerializer(serializers.Serializer):
         return value
 
     def validate(self, data):
-        user = self.context["request"].user
-        org_id = data.get("organizationId")
-
-        if org_id is None:
-            if ExperimentModel.objects.filter(
-                title=data["title"],
-                created_by=user,
-                organization__isnull=True,
-                active=True,
-            ).exists():
-                raise serializers.ValidationError(
-                    {
-                        "detail": (
-                            "Você já possui um experimento pessoal com este " "título."
-                        )
-                    }
-                )
-            return data
-
-        if not Organization.objects.filter(id=org_id).exists():
-            raise serializers.ValidationError({"detail": "Laboratório não encontrado."})
-        if (
-            not user.is_super_admin
-            and not user.memberships.filter(
-                organization_id=org_id, status="active"
-            ).exists()
-        ):
-            raise PermissionDenied(
-                "Você não tem permissão para criar experimentos neste " "laboratório."
-            )
-        if ExperimentModel.objects.filter(
-            title=data["title"], created_by=user, organization_id=org_id, active=True
-        ).exists():
-            raise serializers.ValidationError(
-                {"detail": "Título já criado para esse laboratório."}
-            )
+        validate_experiment_context(
+            self.context["request"].user, data["title"], data.get("organizationId")
+        )
         return data
 
 
@@ -276,13 +315,16 @@ class ParamListDataSerializer(serializers.ModelSerializer):
 
 
 class UpdateExperimentSerializer(serializers.ModelSerializer):
-    """Escrita de experimento: só os campos que o usuário pode corrigir."""
+    """Escrita de experimento: só os campos que o usuário pode corrigir.
 
-    values = serializers.ListField(child=serializers.CharField(), required=False)
+    ``values`` (canais) ficou fora de propósito (BE-24): é derivado dos
+    arquivos — a extração sobrescreve a cada upload, então edição manual
+    só produziria dessincronia transitória.
+    """
 
     class Meta:
         model = ExperimentModel
-        fields = ["title", "type", "values"]
+        fields = ["title", "type", "description"]
 
     def validate_title(self, value):
         title = value.strip().replace(" ", "_")

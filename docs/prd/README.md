@@ -25,6 +25,7 @@
 | [BE-21](BE-21-metadados-visuais-listagem.md) | `my_role`, `progress` e preview/thumbnail na listagem de experimentos (dep. do FE-26) | Implementado em `feat/analysis-checkpoints` |
 | [BE-22](BE-22-compensacao.md) | Compensação: aceitar `$SPILLOVER` do FCS ou calcular de controles (subsamples) | Implementado em `feat/analysis-checkpoints` (ADR-0018/0019) |
 | [BE-23](BE-23-analise-colaborativa-branch-merge.md) | Análise colaborativa: branches de análise, merge e conflitos (visão git-like) | Visão — precisa de ADR antes |
+| [BE-24](BE-24-metadados-e-criacao-sem-arquivo.md) | Criar experimento sem arquivo (`POST /experiment/`), `description` opcional e `values` read-only | Implementado em `feat/analysis-checkpoints` |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na

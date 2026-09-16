@@ -36,6 +36,9 @@ class ExperimentModel(models.Model):
     id = models.BigAutoField(primary_key=True)
     title = models.CharField(max_length=50)
     type = models.CharField(max_length=100, null=True)
+    # Contexto livre do experimento (objetivo, painel, notas) — opcional,
+    # preenchido/alterado pelo usuário (BE-24).
+    description = models.TextField(blank=True, default="")
     values = ArrayField(models.TextField(), blank=True, default=list)
     active = models.BooleanField(default=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default="new")

@@ -68,6 +68,7 @@ from fcs_parser.services.derive_analysis import derive_analysis
 from fcs_parser.serializers import (
     ChunkUploadSerializer,
     ExperimentCompleteSerializer,
+    ExperimentCreateSerializer,
     ExperimentFileInitSerializer,
     ExperimentInitSerializer,
     ListExperimentSerializer,
@@ -141,6 +142,7 @@ class ExperimentInitView(generics.CreateAPIView):
             experiment = ExperimentModel.objects.create(
                 title=data["title"],
                 type=data["type"],
+                description=data.get("description", ""),
                 status="uploading",
                 file_status="uploading",
                 total_chunks=data["totalChunks"],
@@ -311,9 +313,8 @@ def _annotate_list_meta(qs, user):
     )
 
 
-class ExperimentListView(generics.ListAPIView):
+class ExperimentListView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = ListExperimentSerializer
 
     @extend_schema(
         parameters=[
@@ -327,6 +328,46 @@ class ExperimentListView(generics.ListAPIView):
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        request=ExperimentCreateSerializer,
+        responses={201: ListExperimentSerializer},
+    )
+    def post(self, request, *args, **kwargs):
+        """Cria experimento sem arquivo (BE-24).
+
+        Nasce ``status="new"``/``file_status="pending"``; as amostras chegam
+        depois via ``/experiment/<id>/files/init`` — a extração leva o
+        experimento a ``done`` sozinha.
+        """
+        return super().post(request, *args, **kwargs)
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return ExperimentCreateSerializer
+        return ListExperimentSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            return _invalid(serializer)
+        data = serializer.validated_data
+        try:
+            experiment = ExperimentModel.objects.create(
+                title=data["title"],
+                type=data["type"],
+                description=data.get("description", ""),
+                organization_id=data.get("organizationId"),
+                created_by=request.user,
+            )
+        except IntegrityError:
+            return Response(
+                {"detail": "Título já criado para esse laboratório."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            ListExperimentSerializer(experiment).data, status=status.HTTP_201_CREATED
+        )
 
     def get_queryset(self):
         include_inactive = self.request.query_params.get("include_inactive") == "true"
