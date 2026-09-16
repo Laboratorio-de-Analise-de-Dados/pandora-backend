@@ -53,3 +53,4 @@ valor à pasta.
 | [0019](adr/0019-controles-de-compensacao-como-subsamples.md) | Controles de compensação como subsamples marcados (`control_type`/`control_channel`) | Aceito |
 | [0020](adr/0020-branches-de-analise-como-copias-materializadas.md) | Branches de análise: cópias materializadas de gates + merge por diff de árvores | Proposto |
 | [0021](adr/0021-derivar-analise-entre-experimentos-por-snapshot.md) | Derivar análise entre experimentos: snapshot com match por guid/nome, sem vínculo vivo | Proposto |
+| [0022](adr/0022-experiment-type-vocabulario-controlado.md) | `experiment_type` como vocabulário controlado + checkpoint em gates geradas pelo Juvia | Proposto |
