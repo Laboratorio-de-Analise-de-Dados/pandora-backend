@@ -1468,3 +1468,319 @@ class CompensationDetectionTestCase(TestCase):
         )
 
         self.assertEqual(res.status_code, 204)
+
+
+class CompensationControlsTestCase(TestCase):
+    """BE-22: subsamples como controles + endpoints de matriz (ADR-0019)."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp",
+            type="t",
+            created_by=self.owner,
+            status="done",
+            values=["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="e" * 64,
+            experiment=self.experiment,
+        )
+        self.subsample = SubsampleModel.objects.create(
+            experiment=self.experiment, name="controles"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _file(self, name, data):
+        return FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name=name,
+            file=self.file_model,
+            data_set=data,
+        )
+
+    def _mark(self, subsample, **fields):
+        return self.client.patch(
+            f"/experiment/{self.experiment.id}/subsamples/{subsample.id}/",
+            fields,
+            format="json",
+        )
+
+    def test_single_stain_exige_canal_fluorescente(self):
+        res = self._mark(
+            self.subsample,
+            control_type="single_stain",
+            control_channel="FSC-A",
+        )
+        self.assertEqual(res.status_code, 400)
+
+        res = self._mark(
+            self.subsample,
+            control_type="single_stain",
+            control_channel="FITC-A",
+        )
+        self.assertEqual(res.status_code, 200)
+
+    def test_canal_de_controle_e_exclusivo(self):
+        self._mark(
+            self.subsample,
+            control_type="single_stain",
+            control_channel="FITC-A",
+        )
+        outro = SubsampleModel.objects.create(experiment=self.experiment, name="outro")
+        res = self._mark(outro, control_type="single_stain", control_channel="FITC-A")
+        self.assertEqual(res.status_code, 400)
+
+    def test_unstained_unico_por_experimento(self):
+        self._mark(self.subsample, control_type="unstained")
+        outro = SubsampleModel.objects.create(experiment=self.experiment, name="neg2")
+        res = self._mark(outro, control_type="unstained")
+        self.assertEqual(res.status_code, 400)
+
+    def test_compute_deriva_dos_subsamples_marcados(self):
+        # neg: basal 10/10; FITC: 1000/130 (12% spill em PE); PE: 40/1000.
+        neg = self._file("neg.fcs", {"FITC-A": [10, 10, 10], "PE-A": [10, 10, 10]})
+        fitc = self._file(
+            "fitc.fcs", {"FITC-A": [1000, 1000, 1000], "PE-A": [130, 130, 130]}
+        )
+        pe = self._file("pe.fcs", {"FITC-A": [40, 40, 40], "PE-A": [1000, 1000, 1000]})
+        sub_neg = self.subsample
+        sub_fitc = SubsampleModel.objects.create(
+            experiment=self.experiment, name="fitc"
+        )
+        sub_pe = SubsampleModel.objects.create(experiment=self.experiment, name="pe")
+        self._mark(sub_neg, control_type="unstained")
+        self._mark(sub_fitc, control_type="single_stain", control_channel="FITC-A")
+        self._mark(sub_pe, control_type="single_stain", control_channel="PE-A")
+        neg.subsample = sub_neg
+        neg.save(update_fields=["subsample"])
+        fitc.subsample = sub_fitc
+        fitc.save(update_fields=["subsample"])
+        pe.subsample = sub_pe
+        pe.save(update_fields=["subsample"])
+
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/compute",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["source"], "computed")
+        self.assertEqual(res.data["channels"], ["FITC-A", "PE-A"])
+        m = res.data["matrix"]
+        # S[PE][FITC] = (130-10)/(1000-10) ≈ 0.1212
+        self.assertAlmostEqual(m[1][0], 120 / 990, places=3)
+        # S[FITC][PE] = (40-10)/(1000-10) ≈ 0.0303
+        self.assertAlmostEqual(m[0][1], 30 / 990, places=3)
+
+    def test_compute_sem_controles_da_400(self):
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/compute",
+            {},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("negativo", res.data["detail"])
+
+    def test_compute_com_overrides(self):
+        neg = self._file("neg.fcs", {"FITC-A": [10], "PE-A": [10]})
+        fitc = self._file("fitc.fcs", {"FITC-A": [1000], "PE-A": [130]})
+        pe = self._file("pe.fcs", {"FITC-A": [40], "PE-A": [1000]})
+
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/compute",
+            {
+                "negative": [neg.id],
+                "controls": {"FITC-A": [fitc.id], "PE-A": [pe.id]},
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["channels"], ["FITC-A", "PE-A"])
+
+    def test_from_header_materializa_matriz(self):
+        self._file("a1.fcs", {}).headers  # sem spillover → 409 primeiro
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/from-header",
+            {},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 409)
+
+        FileDataModel.objects.create(
+            headers={"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"},
+            experiment=self.experiment,
+            file_name="a2.fcs",
+            file=self.file_model,
+        )
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/from-header",
+            {},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["source"], "fcs_header")
+
+    def test_apply_remove_gravam_revisao(self):
+        from analytics.models import AnalysisRevision, CompensationMatrix
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            name="m1",
+            channels=["FITC-A", "PE-A"],
+            matrix=[[1.0, 0.12], [0.03, 1.0]],
+            source=CompensationMatrix.SOURCE_FCS_HEADER,
+        )
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/{matrix.id}/apply"
+        )
+        self.assertEqual(res.status_code, 200)
+        matrix.refresh_from_db()
+        self.assertTrue(matrix.is_applied)
+
+        rev = AnalysisRevision.objects.filter(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_COMPENSATION_APPLY,
+        ).get()
+        self.assertEqual(rev.target_id, matrix.id)
+
+        res = self.client.post(f"/experiment/{self.experiment.id}/compensations/remove")
+        self.assertEqual(res.status_code, 200)
+        matrix.refresh_from_db()
+        self.assertFalse(matrix.is_applied)
+        self.assertTrue(
+            AnalysisRevision.objects.filter(
+                experiment=self.experiment,
+                action=AnalysisRevision.ACTION_COMPENSATION_REMOVE,
+            ).exists()
+        )
+
+    def test_apply_troca_matriz_anterior(self):
+        from analytics.models import CompensationMatrix
+
+        m1 = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+        )
+        m2 = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+        )
+        self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/{m1.id}/apply"
+        )
+        self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/{m2.id}/apply"
+        )
+        m1.refresh_from_db()
+        m2.refresh_from_db()
+        self.assertFalse(m1.is_applied)
+        self.assertTrue(m2.is_applied)
+
+    def test_delete_matriz_aplicada_desliga_e_descarta(self):
+        from analytics.models import CompensationMatrix
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+            is_applied=True,
+        )
+        res = self.client.delete(f"/analytics/compensations/{matrix.id}/")
+        self.assertEqual(res.status_code, 204)
+        matrix.refresh_from_db()
+        self.assertFalse(matrix.active)
+        self.assertFalse(matrix.is_applied)
+
+    def test_density_reflete_compensacao_aplicada(self):
+        from analytics.models import CompensationMatrix
+
+        fd = self._file(
+            "a1.fcs",
+            {"FITC-A": [1000, 1000], "PE-A": [130, 130]},
+        )
+        # Spill do canal PE no detector FITC (S[FITC][PE] = 0.5): a
+        # compensação desloca FITC, que é o eixo do histograma do teste.
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A", "PE-A"],
+            matrix=[[1.0, 0.5], [0.0, 1.0]],
+            source="manual",
+        )
+        url = (
+            f"/experiment/file/{fd.id}/density"
+            "?x=FITC-A&y=PE-A&mode=histogram&bins=4&xscale=linear"
+            "&xmin=0&xmax=2000"
+        )
+        raw = self.client.get(url)
+        self.assertEqual(raw.status_code, 200)
+
+        self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/{matrix.id}/apply"
+        )
+        comp = self.client.get(url)
+        self.assertEqual(comp.status_code, 200)
+        # Histograma compensado difere do cru (PE puxado para baixo).
+        self.assertNotEqual(raw.data["counts"], comp.data["counts"])
+
+    def test_revert_do_apply_desliga_compensacao(self):
+        from analytics.models import AnalysisRevision, CompensationMatrix
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+        )
+        self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/{matrix.id}/apply"
+        )
+        rev = AnalysisRevision.objects.filter(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_COMPENSATION_APPLY,
+        ).get()
+
+        res = self.client.post(
+            f"/analytics/history/{rev.id}/revert/", {}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        matrix.refresh_from_db()
+        self.assertFalse(matrix.is_applied)
+
+    def test_revert_do_remove_religa_compensacao(self):
+        from analytics.models import AnalysisRevision, CompensationMatrix
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+            is_applied=True,
+        )
+        self.client.post(f"/experiment/{self.experiment.id}/compensations/remove")
+        rev = AnalysisRevision.objects.filter(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_COMPENSATION_REMOVE,
+        ).get()
+
+        res = self.client.post(
+            f"/analytics/history/{rev.id}/revert/", {}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        matrix.refresh_from_db()
+        self.assertTrue(matrix.is_applied)

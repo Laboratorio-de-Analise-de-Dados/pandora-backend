@@ -5,6 +5,7 @@ from .views import (
     CheckpointDetailView,
     CheckpointListCreateView,
     CheckpointRestoreView,
+    CompensationDetailView,
     CreateGateView,
     DeleteGateBatchView,
     ExperimentHistoryView,
@@ -65,5 +66,10 @@ urlpatterns = [
         "checkpoints/<int:pk>/restore/",
         CheckpointRestoreView.as_view(),
         name="checkpoint-restore",
+    ),
+    path(
+        "compensations/<int:pk>/",
+        CompensationDetailView.as_view(),
+        name="compensation-detail",
     ),
 ]

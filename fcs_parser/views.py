@@ -59,6 +59,10 @@ from fcs_parser.permissions import (
     require_can_edit_file_data,
     uploads_visible_to,
 )
+from fcs_parser.services.compensation import (
+    applied_compensation,
+    apply_compensation,
+)
 from fcs_parser.services.copy_experiment import copy_experiment
 from fcs_parser.serializers import (
     ChunkUploadSerializer,
@@ -523,6 +527,10 @@ class ExperimentPreviewView(APIView):
 
         x_scale = default_scale(x_param)
         y_scale = default_scale(y_param)
+        # Preview reflete a análise real: com compensação aplicada, a
+        # thumbnail mostra o dado compensado (BE-22) — e a matriz entra na
+        # chave para não servir thumbnail crua como compensada.
+        applied = applied_compensation(experiment)
         cache_key = density_cache_key(
             "preview",
             file_data.id,
@@ -537,11 +545,14 @@ class ExperimentPreviewView(APIView):
             DEFAULT_COFACTOR,
             0,
         )
+        cache_key += f":comp{applied.id if applied else 0}"
         cached = get_cached_density(cache_key)
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
 
         dataset = normalize_columns(file_data.get_dataframe())
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
         result = compute_density(
             dataset,
             x_param,
@@ -601,6 +612,175 @@ class ExperimentEmbeddedCompensationView(APIView):
         if embedded is None:
             return Response(status=status.HTTP_204_NO_CONTENT)
         return Response(embedded, status=status.HTTP_200_OK)
+
+
+class ExperimentCompensationListView(generics.ListAPIView):
+    """GET /experiment/<id>/compensations/ — matrizes do experimento (BE-22)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        from analytics.serializers import CompensationMatrixSerializer
+
+        return CompensationMatrixSerializer
+
+    def get_queryset(self):
+        from analytics.models import CompensationMatrix
+
+        experiment = get_object_or_404(
+            experiments_visible_to(self.request.user),
+            id=self.kwargs["experiment_id"],
+        )
+        return CompensationMatrix.objects.filter(
+            experiment=experiment, active=True
+        ).order_by("-created_at")
+
+
+class ExperimentCompensationFromHeaderView(APIView):
+    """POST .../compensations/from-header — materializa a matriz embutida."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=None, responses={201: None, 409: None})
+    def post(self, request, experiment_id):
+        from analytics.models import CompensationMatrix
+        from analytics.serializers import CompensationMatrixSerializer
+        from fcs_parser.services.compensation import (
+            experiment_embedded_compensation,
+        )
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+
+        embedded = experiment_embedded_compensation(experiment)
+        if embedded is None:
+            return Response(
+                {"detail": "Nenhuma amostra ativa traz $SPILLOVER/$COMP."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        matrix = CompensationMatrix.objects.create(
+            experiment=experiment,
+            name=request.data.get("name", "") or "Matriz do arquivo",
+            channels=embedded["channels"],
+            matrix=embedded["matrix"],
+            source=CompensationMatrix.SOURCE_FCS_HEADER,
+            created_by=request.user,
+        )
+        return Response(
+            CompensationMatrixSerializer(matrix).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ExperimentCompensationComputeView(APIView):
+    """POST .../compensations/compute — calcula a matriz dos controles.
+
+    Sem payload, deriva canal→controle dos subsamples marcados
+    (ADR-0019). ``negative``/``controls`` no payload são overrides de
+    file_data_ids. Erros de domínio viram 400 com a mensagem explicável.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, experiment_id):
+        from analytics.models import CompensationMatrix
+        from analytics.serializers import (
+            CompensationComputeSerializer,
+            CompensationMatrixSerializer,
+        )
+        from fcs_parser.services.compensation import (
+            compute_spillover_matrix,
+            experiment_controls,
+        )
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+
+        payload = CompensationComputeSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+
+        unstained, stains = experiment_controls(experiment)
+        if "negative" in payload.validated_data:
+            unstained = payload.validated_data["negative"]
+        if "controls" in payload.validated_data:
+            stains = {
+                channel: ids
+                for channel, ids in payload.validated_data["controls"].items()
+            }
+
+        # Overrides apontam para amostras do próprio experimento.
+        referenced = list(unstained) + [i for ids in stains.values() for i in ids]
+        valid_ids = set(
+            FileDataModel.objects.filter(
+                experiment=experiment, id__in=referenced, active=True
+            ).values_list("id", flat=True)
+        )
+        invalid = sorted(set(referenced) - valid_ids)
+        if invalid:
+            return Response(
+                {"detail": f"Amostras de controle inválidas: {invalid}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            computed = compute_spillover_matrix(unstained, stains)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=experiment,
+            name=payload.validated_data.get("name") or "Calculada de controles",
+            channels=computed["channels"],
+            matrix=computed["matrix"],
+            source=CompensationMatrix.SOURCE_COMPUTED,
+            created_by=request.user,
+        )
+        return Response(
+            CompensationMatrixSerializer(matrix).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ExperimentCompensationApplyView(APIView):
+    """POST .../compensations/<matrix_id>/apply — torna a matriz a ativa."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=None, responses={200: None, 404: None})
+    def post(self, request, experiment_id, matrix_id):
+        from analytics.models import CompensationMatrix
+        from fcs_parser.services.compensation import set_applied_compensation
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+        matrix = get_object_or_404(
+            CompensationMatrix, id=matrix_id, experiment=experiment, active=True
+        )
+        set_applied_compensation(experiment, matrix, request.user)
+        return Response({"is_applied": True}, status=status.HTTP_200_OK)
+
+
+class ExperimentCompensationRemoveView(APIView):
+    """POST .../compensations/remove — desliga a compensação aplicada."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=None, responses={200: None})
+    def post(self, request, experiment_id):
+        from fcs_parser.services.compensation import set_applied_compensation
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+        set_applied_compensation(experiment, None, request.user)
+        return Response({"is_applied": False}, status=status.HTTP_200_OK)
 
 
 class ExperimentRestoreView(APIView):
@@ -779,6 +959,12 @@ class SubsampleListCreateView(generics.ListCreateAPIView):
             experiments_visible_to(self.request.user),
             id=self.kwargs["experiment_id"],
         )
+
+    def get_serializer_context(self):
+        # O serializer valida control_channel contra os canais do experimento.
+        ctx = super().get_serializer_context()
+        ctx["experiment"] = self.get_experiment()
+        return ctx
 
     def get_queryset(self):
         queryset = SubsampleModel.objects.filter(
@@ -1036,6 +1222,11 @@ class ListFileParams(generics.ListAPIView):
                 {"detail": INACTIVE_FILE_DETAIL}, status=status.HTTP_409_CONFLICT
             )
         dataset = normalize_columns(file_data.get_dataframe())
+        # BE-22: a tabela de eventos mostra o mesmo espaço que o usuário
+        # vê/gateia — com compensação ativa, os valores já vêm corrigidos.
+        applied = applied_compensation(file_data.experiment)
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
         dataset = dataset.head(limit)
         file_data.data_set = json.loads(dataset.to_json(orient="records"))
         serializer = self.serializer_class(file_data)
@@ -1175,11 +1366,17 @@ class FileDensityView(APIView):
         if error:
             return error
 
+        # BE-22: a matriz aplicada entra na chave de cache — densidade
+        # compensada nunca é servida como se fosse crua.
+        applied = applied_compensation(file_data.experiment)
+        cache_key += f":comp{applied.id if applied else 0}"
         cached = get_cached_density(cache_key)
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
 
         dataset = normalize_columns(file_data.get_dataframe())
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
 
         base = {
             "mode": mode,
@@ -1306,6 +1503,9 @@ class FileStatsView(APIView):
         if error:
             return error
         dataset = normalize_columns(file_data.get_dataframe())
+        applied = applied_compensation(file_data.experiment)
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
 
         if dataset.empty:
             return Response(

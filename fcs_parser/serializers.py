@@ -161,6 +161,8 @@ class SubsampleSerializer(serializers.ModelSerializer):
             "active",
             "created_at",
             "files_count",
+            "control_type",
+            "control_channel",
         ]
         read_only_fields = ["id", "source_path", "active", "created_at"]
 
@@ -172,6 +174,70 @@ class SubsampleSerializer(serializers.ModelSerializer):
         if not name:
             raise serializers.ValidationError("Nome do subsample é obrigatório.")
         return name
+
+    def validate(self, attrs):
+        """Validação de controle de compensação (BE-22, ADR-0019)."""
+        control_type = attrs.get(
+            "control_type", getattr(self.instance, "control_type", None)
+        )
+        control_channel = attrs.get(
+            "control_channel", getattr(self.instance, "control_channel", "")
+        )
+        if not control_type:
+            attrs["control_channel"] = ""
+            return attrs
+
+        experiment = (
+            self.instance.experiment
+            if self.instance is not None
+            else self.context["experiment"]
+        )
+        siblings = SubsampleModel.objects.filter(
+            experiment=experiment, active=True, control_type__isnull=False
+        )
+        if self.instance is not None:
+            siblings = siblings.exclude(pk=self.instance.pk)
+
+        if control_type == SubsampleModel.CONTROL_UNSTAINED:
+            if siblings.filter(control_type=SubsampleModel.CONTROL_UNSTAINED).exists():
+                raise serializers.ValidationError(
+                    {
+                        "control_type": "Já existe um controle negativo neste experimento."
+                    }
+                )
+            attrs["control_channel"] = ""
+            return attrs
+
+        # single_stain: canal obrigatório, fluorescente e exclusivo.
+        channel = (control_channel or "").strip()
+        if not channel:
+            raise serializers.ValidationError(
+                {"control_channel": "Informe o canal que este controle cora."}
+            )
+        from fcs_parser.services.compensation import fluorescent_channels
+        from utils.density import normalize_column_name
+
+        valid = {normalize_column_name(c) for c in fluorescent_channels(experiment)}
+        if normalize_column_name(channel) not in valid:
+            raise serializers.ValidationError(
+                {
+                    "control_channel": (
+                        f"'{channel}' não é um canal fluorescente do experimento."
+                    )
+                }
+            )
+        clash = siblings.filter(
+            control_type=SubsampleModel.CONTROL_SINGLE_STAIN
+        ).exclude(control_channel="")
+        if any(
+            normalize_column_name(s.control_channel) == normalize_column_name(channel)
+            for s in clash
+        ):
+            raise serializers.ValidationError(
+                {"control_channel": f"Já existe um controle para '{channel}'."}
+            )
+        attrs["control_channel"] = channel
+        return attrs
 
 
 class ListFileDataSerializer(serializers.ModelSerializer):

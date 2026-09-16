@@ -3,6 +3,11 @@ from django.urls import path
 from .views import (
     DisableFileDataView,
     EnableFileDataView,
+    ExperimentCompensationApplyView,
+    ExperimentCompensationComputeView,
+    ExperimentCompensationFromHeaderView,
+    ExperimentCompensationListView,
+    ExperimentCompensationRemoveView,
     ExperimentCompleteView,
     ExperimentCopyView,
     ExperimentDownloadView,
@@ -45,6 +50,26 @@ urlpatterns = [
     path(
         "<int:experiment_id>/compensations/embedded",
         ExperimentEmbeddedCompensationView.as_view(),
+    ),
+    path(
+        "<int:experiment_id>/compensations/",
+        ExperimentCompensationListView.as_view(),
+    ),
+    path(
+        "<int:experiment_id>/compensations/from-header",
+        ExperimentCompensationFromHeaderView.as_view(),
+    ),
+    path(
+        "<int:experiment_id>/compensations/compute",
+        ExperimentCompensationComputeView.as_view(),
+    ),
+    path(
+        "<int:experiment_id>/compensations/<int:matrix_id>/apply",
+        ExperimentCompensationApplyView.as_view(),
+    ),
+    path(
+        "<int:experiment_id>/compensations/remove",
+        ExperimentCompensationRemoveView.as_view(),
     ),
     path("<int:experiment_id>/restore", ExperimentRestoreView.as_view()),
     path("list/data/<str:experiment_id>/", GetExperimentFiles.as_view()),

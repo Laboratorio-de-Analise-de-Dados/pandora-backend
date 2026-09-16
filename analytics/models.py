@@ -180,11 +180,13 @@ class AnalysisRevision(models.Model):
     TARGET_SUBSAMPLE = "subsample"
     TARGET_FILE = "file"
     TARGET_EXPERIMENT = "experiment"
+    TARGET_COMPENSATION = "compensation"
     TARGET_CHOICES = [
         (TARGET_GATE, "Gate"),
         (TARGET_SUBSAMPLE, "Subsample"),
         (TARGET_FILE, "Amostra"),
         (TARGET_EXPERIMENT, "Experimento"),
+        (TARGET_COMPENSATION, "Compensação"),
     ]
 
     ACTION_CREATE = "create"
@@ -198,6 +200,8 @@ class AnalysisRevision(models.Model):
     ACTION_MOVE_SUBSAMPLE = "move_subsample"
     ACTION_REVERT = "revert"
     ACTION_RESTORE = "restore"
+    ACTION_COMPENSATION_APPLY = "compensation_apply"
+    ACTION_COMPENSATION_REMOVE = "compensation_remove"
     ACTION_CHOICES = [
         (ACTION_CREATE, "Criação"),
         (ACTION_UPDATE_GEOMETRY, "Geometria"),
@@ -210,6 +214,8 @@ class AnalysisRevision(models.Model):
         (ACTION_MOVE_SUBSAMPLE, "Mover de subsample"),
         (ACTION_REVERT, "Reversão"),
         (ACTION_RESTORE, "Restauração de ponto"),
+        (ACTION_COMPENSATION_APPLY, "Aplicar compensação"),
+        (ACTION_COMPENSATION_REMOVE, "Remover compensação"),
     ]
 
     SCOPE_CHOICES = [
@@ -293,3 +299,61 @@ class AnalysisCheckpoint(models.Model):
     def __str__(self) -> str:
         label = self.message or f"#{self.revision_id or 0}"
         return f"Checkpoint {self.id} – {label}"
+
+
+class CompensationMatrix(models.Model):
+    """Matriz de spillover de um experimento (BE-22, ADR-0018).
+
+    ``matrix`` guarda S N×N (fração do fluorócromo j detectada no canal i,
+    row-major) e ``channels`` a ordem dos eixos — ambos em JSON. O dado
+    bruto nunca é reescrito: a aplicação acontece na leitura como
+    ``S⁻¹ × eventos`` (ver ``fcs_parser/services/compensation.py``).
+
+    ``is_applied`` marca a matriz ativa do experimento — invariante de
+    "no máximo uma" vive no banco (UniqueConstraint condicional).
+    ``active=False`` é o descarte (soft delete, ADR-0005).
+    """
+
+    SOURCE_FCS_HEADER = "fcs_header"
+    SOURCE_COMPUTED = "computed"
+    SOURCE_MANUAL = "manual"
+    SOURCE_CHOICES = [
+        (SOURCE_FCS_HEADER, "Embutida no FCS"),
+        (SOURCE_COMPUTED, "Calculada de controles"),
+        (SOURCE_MANUAL, "Manual"),
+    ]
+
+    class Meta:
+        db_table = "compensation_matrix"
+        indexes = [models.Index(fields=["experiment", "-created_at"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["experiment"],
+                condition=models.Q(is_applied=True),
+                name="unique_applied_compensation_per_experiment",
+            )
+        ]
+
+    experiment = models.ForeignKey(
+        ExperimentModel,
+        on_delete=models.CASCADE,
+        related_name="compensations",
+    )
+    name = models.CharField(max_length=256, blank=True, default="")
+    channels = models.JSONField(default=list)
+    matrix = models.JSONField(default=list)
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    is_applied = models.BooleanField(default=False)
+    active = models.BooleanField(default=True, db_index=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_compensations",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        label = self.name or self.get_source_display()
+        return f"Compensation {self.id} – {label}"

@@ -35,6 +35,8 @@ REVERSIBLE_ACTIONS = {
     AnalysisRevision.ACTION_DISABLE,
     AnalysisRevision.ACTION_ENABLE,
     AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
+    AnalysisRevision.ACTION_COMPENSATION_APPLY,
+    AnalysisRevision.ACTION_COMPENSATION_REMOVE,
     AnalysisRevision.ACTION_REVERT,
     AnalysisRevision.ACTION_RESTORE,
 }
@@ -452,12 +454,64 @@ def plan_revert(
     if revision.action == AnalysisRevision.ACTION_APPLY:
         return _plan_apply_revert(revision, pending_recreate=pending_recreate)
     if revision.action in (
+        AnalysisRevision.ACTION_COMPENSATION_APPLY,
+        AnalysisRevision.ACTION_COMPENSATION_REMOVE,
+    ):
+        return _plan_compensation_revert(revision, force=force)
+    if revision.action in (
         AnalysisRevision.ACTION_DISABLE,
         AnalysisRevision.ACTION_ENABLE,
         AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
     ):
         return _plan_target_fields_revert(revision, force=force)
     return {"kind": "none", "changes": [], "conflicts": []}
+
+
+def _plan_compensation_revert(revision: AnalysisRevision, force: bool = False) -> dict:
+    """Reverter um apply/remove = devolver a matriz aplicada ao `before`.
+
+    Drift: a matriz aplicada hoje difere do `after` da revisão → conflito,
+    a menos que `force`. Estrutural: a matriz do `before` descartada
+    bloqueia mesmo sob force (não há o que religar).
+    """
+    from analytics.models import CompensationMatrix
+
+    def _comp(payload):
+        return (
+            (payload.get("targets") or {})
+            .get(str(revision.experiment_id), {})
+            .get("compensation")
+        )
+
+    set_to = _comp(revision.payload_before)
+    after = _comp(revision.payload_after)
+    conflicts = []
+    if set_to is not None:
+        matrix = CompensationMatrix.objects.filter(pk=set_to).first()
+        if matrix is None or not matrix.active:
+            conflicts.append(
+                {
+                    "target_id": set_to,
+                    "detail": "A matriz de compensação foi descartada.",
+                }
+            )
+    current = CompensationMatrix.objects.filter(
+        experiment=revision.experiment, is_applied=True
+    ).first()
+    current_id = current.id if current else None
+    if not force and current_id != after:
+        conflicts.append(
+            {
+                "target_id": revision.target_id,
+                "detail": "A compensação aplicada mudou depois desta revisão.",
+            }
+        )
+    return {
+        "kind": "compensation",
+        "set_to": set_to,
+        "changes": [{"compensation": set_to, "target_id": revision.target_id}],
+        "conflicts": conflicts,
+    }
 
 
 def _plan_create_inactivate_revert(revision: AnalysisRevision):
@@ -593,6 +647,26 @@ def _apply_plan(
                 if update_fields:
                     gate.save(update_fields=update_fields)
             applied.append(change)
+
+    elif kind == "compensation":
+        from analytics.models import CompensationMatrix
+        from fcs_parser.services.compensation import (
+            _switch_applied,
+            refresh_analysis_views,
+        )
+
+        set_to = plan.get("set_to")
+        matrix = (
+            CompensationMatrix.objects.filter(pk=set_to, active=True).first()
+            if set_to is not None
+            else None
+        )
+        if set_to is not None and matrix is None:
+            skipped.append({"compensation": set_to})
+        else:
+            _switch_applied(revision.experiment, matrix)
+            refresh_analysis_views(revision.experiment)
+            applied.append({"compensation": set_to})
 
     elif kind == "target_fields":
         for change in plan["changes"]:

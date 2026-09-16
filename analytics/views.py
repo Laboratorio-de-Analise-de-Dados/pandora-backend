@@ -15,6 +15,10 @@ from fcs_parser.permissions import (
     file_data_visible_to,
     require_can_edit_file_data,
 )
+from fcs_parser.services.compensation import (
+    applied_compensation,
+    apply_compensation,
+)
 from analytics.permissions import gates_visible_to, require_can_edit_gate
 from analytics.gate_scope import (
     PROPAGATING_SCOPES,
@@ -444,6 +448,11 @@ class GetGateDataView(generics.ListAPIView):
         dataset = file_data_instance.get_dataframe()
 
         dataset = normalize_columns(dataset)
+        # BE-22: gates avaliam no espaço exibido — com compensação aplicada,
+        # os eventos já vêm multiplicados por S⁻¹.
+        applied = applied_compensation(file_data_instance.experiment)
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
         columns = set(dataset.columns)
 
         for gate_in_path in gate_path:
@@ -590,6 +599,9 @@ class GateDensityView(APIView):
 
         gate = get_object_or_404(gates_visible_to(request.user), pk=gate_id)
 
+        # BE-22: a matriz aplicada entra na chave de cache.
+        applied = applied_compensation(gate.file_data.experiment)
+
         cache_key = density_cache_key(
             "gate",
             gate.file_data_id,
@@ -608,6 +620,7 @@ class GateDensityView(APIView):
             cache_key += f":xr{x_range[0]}:{x_range[1]}"
         if y_range:
             cache_key += f":yr{y_range[0]}:{y_range[1]}"
+        cache_key += f":comp{applied.id if applied else 0}"
         cached = get_cached_density(cache_key)
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
@@ -620,6 +633,8 @@ class GateDensityView(APIView):
 
         file_data = gate_path[0].file_data
         dataset = normalize_columns(file_data.get_dataframe())
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
         columns = set(dataset.columns)
 
         for g in gate_path:
@@ -1571,3 +1586,54 @@ class HistoryStateView(APIView):
             experiment__in=experiments_visible_to(request.user),
         )
         return Response(state_at_revision(revision.experiment, revision))
+
+
+class CompensationDetailView(APIView):
+    """PATCH/DELETE /analytics/compensations/<id>/ — renomear/descartar (BE-22).
+
+    DELETE é soft delete (active=false). Se a matriz estiver aplicada,
+    desliga primeiro — equivale a um remove (revisão + recálculo).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_matrix(self, request, pk):
+        from analytics.models import CompensationMatrix
+        from fcs_parser.permissions import experiments_visible_to
+
+        return get_object_or_404(
+            CompensationMatrix.objects.select_related("experiment"),
+            id=pk,
+            experiment__in=experiments_visible_to(request.user),
+        )
+
+    def patch(self, request, pk):
+        from analytics.serializers import CompensationMatrixSerializer
+        from fcs_parser.permissions import can_edit_experiment
+
+        matrix = self._get_matrix(request, pk)
+        if not can_edit_experiment(request.user, matrix.experiment):
+            raise PermissionDenied("Editar compensação exige permissão de escrita.")
+        name = request.data.get("name")
+        if name is None:
+            return Response(
+                {"detail": "Só 'name' é editável."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        matrix.name = str(name).strip()[:256]
+        matrix.save(update_fields=["name"])
+        return Response(CompensationMatrixSerializer(matrix).data)
+
+    def delete(self, request, pk):
+        from fcs_parser.permissions import can_edit_experiment
+        from fcs_parser.services.compensation import set_applied_compensation
+
+        matrix = self._get_matrix(request, pk)
+        if not can_edit_experiment(request.user, matrix.experiment):
+            raise PermissionDenied("Descartar compensação exige permissão de escrita.")
+        if matrix.is_applied:
+            set_applied_compensation(matrix.experiment, None, request.user)
+        matrix.is_applied = False
+        matrix.active = False
+        matrix.save(update_fields=["is_applied", "active"])
+        return Response(status=status.HTTP_204_NO_CONTENT)

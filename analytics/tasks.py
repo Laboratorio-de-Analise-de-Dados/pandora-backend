@@ -132,6 +132,10 @@ def recalculate_gate_analysis(gate_id: int):
       root gates).
     - **% of Total (Grandparent)**: count / total de eventos do arquivo.
     """
+    from fcs_parser.services.compensation import (
+        applied_compensation,
+        apply_compensation,
+    )
     from utils.density import (
         apply_gate_filter,
         missing_gate_channels,
@@ -152,6 +156,12 @@ def recalculate_gate_analysis(gate_id: int):
             return
 
         dataset = normalize_columns(fcs_data_df)
+        # BE-22: estatísticas refletem o espaço exibido — com compensação
+        # aplicada, os eventos já vêm multiplicados por S⁻¹.
+        applied = applied_compensation(gate.file_data.experiment)
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
+        compensated_full = dataset
         total_events_in_file = len(dataset)
         all_channel_names = list(dataset.columns)
 
@@ -190,7 +200,7 @@ def recalculate_gate_analysis(gate_id: int):
             gated_data_df = dataset
 
             if parent_gated_data_df is None:
-                parent_gated_data_df = normalize_columns(fcs_data_df)
+                parent_gated_data_df = compensated_full
 
             new_analysis_results = calculate_cytometry_metrics(
                 gated_data_df,

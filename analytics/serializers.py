@@ -7,6 +7,7 @@ from analytics.models import (
     AnalysisCheckpoint,
     AnalysisResult,
     AnalysisRevision,
+    CompensationMatrix,
     DashboardModel,
     GateModel,
 )
@@ -308,3 +309,43 @@ class CheckpointPatchSerializer(serializers.Serializer):
     """PATCH .../checkpoints/<id>/ — só a mensagem é editável."""
 
     message = serializers.CharField(max_length=200, allow_blank=True)
+
+
+class CompensationMatrixSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CompensationMatrix
+        fields = [
+            "id",
+            "name",
+            "channels",
+            "matrix",
+            "source",
+            "is_applied",
+            "created_by_name",
+            "created_at",
+        ]
+
+    def get_created_by_name(self, obj):
+        author = obj.created_by
+        if not author:
+            return None
+        return author_display_name(author.first_name, author.last_name, author.username)
+
+
+class CompensationComputeSerializer(serializers.Serializer):
+    """Override explícito do mapeamento canal→controle (ADR-0019).
+
+    Sem payload, o compute deriva dos subsamples marcados; quando
+    ``controls``/``negative`` vêm, substituem a descoberta.
+    """
+
+    name = serializers.CharField(required=False, allow_blank=True, max_length=256)
+    negative = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False
+    )
+    controls = serializers.DictField(
+        child=serializers.ListField(child=serializers.IntegerField(min_value=1)),
+        required=False,
+    )

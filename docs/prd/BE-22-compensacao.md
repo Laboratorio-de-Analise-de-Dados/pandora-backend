@@ -2,11 +2,11 @@
 
 **Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
 **Branch sugerida:** `feat/compensacao`
-**Status:** parcial em `feat/analysis-checkpoints` — entregue a
-**sinalização** (`compensated` na listagem via headers `$SPILLOVER`/`$COMP`)
-e `GET /experiment/<id>/compensations/embedded` (leitura da matriz embutida).
-Pendente: `CompensationMatrix`, controles/subsamples, compute e apply
-(escopo 1, 3, 4, 5 e 6 abaixo).
+**Status:** implementado em `feat/analysis-checkpoints` — escopo 1–6
+entregue. `CompensationMatrix` vive em `analytics/`; a matriz ativa é a
+flag `is_applied` na própria matriz (UniqueConstraint condicional — uma
+por experimento). Overrides do compute usam `{"negative": [ids],
+"controls": {"CANAL": [ids]}}` (listas de `file_data_id`, não singular).
 **ADRs:** [0018](../adr/0018-compensacao-matriz-versionada-por-experimento.md)
 (matriz versionada por experimento, aplicada na leitura) ·
 [0019](../adr/0019-controles-de-compensacao-como-subsamples.md)
@@ -114,18 +114,19 @@ FileBasedCache serviria dado compensado como cru.
 
 ## Critérios de aceite
 
-- [ ] `GET .../compensations/embedded` devolve a matriz `$SPILLOVER` de um
+- [x] `GET .../compensations/embedded` devolve a matriz `$SPILLOVER` de um
       FCS que a tem; 204 quando não tem.
-- [ ] `from-header` cria `CompensationMatrix(source="fcs_header")`
+- [x] `from-header` cria `CompensationMatrix(source="fcs_header")`
       idêntica à embutida.
-- [ ] `compute` com controles marcados gera matriz cujos coeficientes
+- [x] `compute` com controles marcados gera matriz cujos coeficientes
       batem com dataset sintético de spillover conhecido.
-- [ ] 400 nomeando o conflito: canal sem controle, canal com dois
+- [x] 400 nomeando o conflito: canal sem controle, canal com dois
       single_stains, `control_channel` não fluorescente, denominador ~0.
-- [ ] Apply/remove viram revisões na timeline e são revertíveis.
-- [ ] Densidade/estats mudam ao aplicar e voltam ao remover (cache
-      invalidado corretamente).
-- [ ] Escopo `experiments_visible_to` na leitura, `can_edit_experiment`
+- [x] Apply/remove viram revisões na timeline (`compensation_apply`/
+      `compensation_remove`, target `compensation`) e são revertíveis.
+- [x] Densidade/estats mudam ao aplicar e voltam ao remover (matriz entra
+      na chave de cache + `invalidate_density` + recálculo de gates).
+- [x] Escopo `experiments_visible_to` na leitura, `can_edit_experiment`
       na escrita; delete é soft.
 
 ## Fora de escopo
