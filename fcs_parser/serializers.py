@@ -243,6 +243,9 @@ class SubsampleSerializer(serializers.ModelSerializer):
 class ListFileDataSerializer(serializers.ModelSerializer):
 
     gates = ListGateSerializer(many=True, read_only=True)
+    # BE-22: a amostra traz $SPILLOVER/$COMP nos headers? O front usa para
+    # marcar o arquivo com um indicador de compensação disponível.
+    has_embedded_compensation = serializers.SerializerMethodField()
 
     class Meta:
         model = FileDataModel
@@ -254,8 +257,14 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "gates",
             "active",
             "deactivated_at",
+            "has_embedded_compensation",
         ]
         read_only_fields = ["id", "source_path", "active", "deactivated_at"]
+
+    def get_has_embedded_compensation(self, obj) -> bool:
+        from fcs_parser.services.compensation import parse_spillover
+
+        return parse_spillover(obj.headers) is not None
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):

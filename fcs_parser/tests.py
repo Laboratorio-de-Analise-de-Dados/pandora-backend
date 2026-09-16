@@ -1784,3 +1784,33 @@ class CompensationControlsTestCase(TestCase):
         self.assertEqual(res.status_code, 200)
         matrix.refresh_from_db()
         self.assertTrue(matrix.is_applied)
+
+    def test_file_list_sinaliza_compensacao_embutida(self):
+        fd = self._file("a1.fcs", {})
+        fd.headers = {"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"}
+        fd.save(update_fields=["headers"])
+
+        res = self.client.get(
+            f"/experiment/list/data/{self.experiment.id}/"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        entry = next(f for f in res.data if f["id"] == fd.id)
+        self.assertTrue(entry["has_embedded_compensation"])
+
+    def test_from_header_com_apply_ja_ativa(self):
+        FileDataModel.objects.create(
+            headers={"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"},
+            experiment=self.experiment,
+            file_name="a2.fcs",
+            file=self.file_model,
+        )
+
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/from-header",
+            {"apply": True},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(res.data["is_applied"])

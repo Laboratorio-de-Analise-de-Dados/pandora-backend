@@ -23,7 +23,8 @@
 | [BE-19](BE-19-workspaces-templates-analise.md) | Workspaces/templates: estratégia reutilizável entre experimentos | Visão (exige ADR próprio) |
 | [BE-20](BE-20-checkpoints-de-analise.md) | Checkpoints: salvar ponto nomeado e restaurar o experimento até ele | Implementado em `feat/analysis-checkpoints` (ADR-0017 Aceito) |
 | [BE-21](BE-21-metadados-visuais-listagem.md) | `my_role`, `progress` e preview/thumbnail na listagem de experimentos (dep. do FE-26) | Implementado em `feat/analysis-checkpoints` |
-| [BE-22](BE-22-compensacao.md) | Compensação: aceitar `$SPILLOVER` do FCS ou calcular de controles (subsamples) | Não iniciado (ADR-0018/0019 Propostos) |
+| [BE-22](BE-22-compensacao.md) | Compensação: aceitar `$SPILLOVER` do FCS ou calcular de controles (subsamples) | Implementado em `feat/analysis-checkpoints` (ADR-0018/0019) |
+| [BE-23](BE-23-analise-colaborativa-branch-merge.md) | Análise colaborativa: branches de análise, merge e conflitos (visão git-like) | Visão — precisa de ADR antes |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na

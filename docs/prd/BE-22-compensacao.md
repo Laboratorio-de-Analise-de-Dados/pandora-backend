@@ -42,7 +42,11 @@ detalhe de implementação, invariante no banco).
   encontrada (canais + valores), ou 204 se nenhuma amostra a tem.
 - `POST /experiment/<id>/compensations/from-header` — materializa a matriz
   embutida como `CompensationMatrix(source="fcs_header")`. 409 se a
-  amostra não tiver a keyword.
+  amostra não tiver a keyword. `{"apply": true}` materializa **e já aplica**
+  em um passo — "usar a compensação da aquisição" direto.
+- Sinalização por amostra: `has_embedded_compensation` sai em cada item de
+  `GET /experiment/list/data/<id>/` — o front marca o arquivo que traz
+  matriz própria (ícone/indicador na árvore de amostras).
 - Parse da keyword: `$SPILLOVER` é `n,ch1,...,chn,v11..vnn` (valores em
   row-major); validar que `n` bate com a quantidade de canais listados.
 

@@ -668,6 +668,15 @@ class ExperimentCompensationFromHeaderView(APIView):
             source=CompensationMatrix.SOURCE_FCS_HEADER,
             created_by=request.user,
         )
+        # apply=true: materializa e já aplica — "usar a compensação que
+        # veio da aquisição" em um passo só.
+        if request.data.get("apply"):
+            from fcs_parser.services.compensation import (
+                set_applied_compensation,
+            )
+
+            set_applied_compensation(experiment, matrix, request.user)
+            matrix.refresh_from_db()
         return Response(
             CompensationMatrixSerializer(matrix).data,
             status=status.HTTP_201_CREATED,
