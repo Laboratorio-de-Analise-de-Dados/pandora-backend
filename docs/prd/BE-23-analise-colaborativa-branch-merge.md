@@ -49,10 +49,20 @@ propostas e convergir depois.
 
 ## Decisões em aberto
 
-1. Branch como linhagem de revisões × gates marcados por branch — qual é o
-   estado "visível" de uma branch? (Provavelmente: snapshot materializado,
-   igual o `state/` do histórico, porém gravável.)
-2. O que acontece com `AnalysisResult`/`active` ao trocar de branch —
-   recalcular ou cachear por branch?
+1. ~~Estado "visível" da branch~~ — **resolvido no ADR-0020**: cópias
+   materializadas de gates; branch não é por usuário e não é criada
+   automaticamente (explícita, como `git checkout -b`).
+2. ~~`AnalysisResult`/`active` por branch~~ — **resolvido no ADR-0020**:
+   cache/recalc por `(file, gate, branch, matrix)`; trocar de branch não
+   toca resultado de outra.
 3. Analisador não-humano (Juvia) pode virar "autor de branch" no futuro —
    o modelo de revisão com `user` nullable já comporta.
+
+## Limite de escopo (registrado 2026-09-16)
+
+"Dois experimentos iguais (mesma aquisição/painel) que deveriam convergir"
+**não** é caso deste PRD — é portabilidade de estratégia entre
+experimentos, domínio do **BE-19** (templates/cópia de análise; a dedup
+por `content_guid`/`sha256` do ADR-0012/0013 já identifica amostras
+idênticas). Este PRD cobre apenas linhas paralelas **dentro** de um
+experimento.

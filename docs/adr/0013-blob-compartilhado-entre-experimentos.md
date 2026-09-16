@@ -1,6 +1,6 @@
 # ADR-0013 — Blob físico compartilhado entre experimentos
 
-- **Status:** Proposto
+- **Status:** Aceito
 - **Data:** 2026-09-13
 - **Contexto do código:** `fcs_parser/models.py` (`FileModel.experiment`
   OneToOne, `FileDataModel.file`), rotinas de limpeza/retenção

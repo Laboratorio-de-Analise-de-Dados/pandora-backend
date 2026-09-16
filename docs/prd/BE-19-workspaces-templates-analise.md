@@ -4,6 +4,21 @@
 **Status:** não iniciado — PRD de visão; exige ADR próprio antes de implementar.
 **ADRs relacionados:** [0003](../adr/0003-linhagem-de-gates-por-copied-from.md) (linhagem por `copied_from`), [0006](../adr/0006-identidade-de-amostra-e-subsample.md), [0008](../adr/0008-historico-append-only-de-analise.md), [0016](../adr/0016-gate-nao-avaliavel-sem-canal.md).
 
+## Caso de uso concreto (registro da discussão de 16/09)
+
+O gatilho real: **dois experimentos com a mesma aquisição/painel** no mesmo
+workspace (org ou pessoal). O usuário quer "mergear as análises" ou "criar
+uma análise a partir da recebida". Isso **não** é branch (BE-23 cobre
+linhas paralelas dentro de um experimento); aqui o caminho é:
+
+- **Mesmos tubos subidos duas vezes** → dedup por `content_guid`/`sha256`
+  (ADR-0012/0013) já identifica; a operação certa talvez seja juntar as
+  amostras num experimento só, não mergear análises.
+- **Experimentos distintos, mesmo painel** → copiar/instanciar a árvore de
+  gates de A em B casando amostras (por `content_guid`, `file_name` ou
+  `source_path` do subsample) e canais por nome — é a instanciação de
+  template abaixo, na forma mais simples.
+
 ## Visão (registro da discussão de 14/09)
 
 Workspace é a evolução do conceito de subsample: uma forma de **abstrair a

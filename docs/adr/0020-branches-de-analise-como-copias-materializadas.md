@@ -19,7 +19,17 @@ visível de uma branch**.
 ## Decisão
 
 Branch = **cópia materializada das árvores de gates**, não linhagem de
-revisões. Concretamente:
+revisões.
+
+**Escopo e propriedade:** branch é uma linha de trabalho nomeada dentro
+de **um** experimento — não é presa a usuário (qualquer editor commita
+nela) e não é criada automaticamente por editor (linhas paralelas só
+existem por ação explícita; dois editores na mesma branch produzem
+revisões sequenciais na mesma linha, como hoje). O cenário "dois
+experimentos com a mesma aquisição/painel" **não** é caso de branch —
+as amostras são `file_data` distintos; portabilidade de estratégia entre
+experimentos é domínio do BE-19 (templates/cópia de análise), não deste
+ADR. Concretamente:
 
 - `AnalysisBranch(experiment, name, created_by, base_branch,
   forked_at, head_revision)` — uma por linha de trabalho. Todo
