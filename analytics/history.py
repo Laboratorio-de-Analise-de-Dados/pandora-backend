@@ -79,6 +79,26 @@ def gate_subtree_snapshots(gate: GateModel) -> dict:
     return snapshots
 
 
+def _infer_file_data_id(target_type, target_id, payload_before, payload_after):
+    """A amostra que a revisão toca, ou None quando é experiment-wide.
+
+    Gates vêm dos snapshots do payload (`file_data_id` gravado no
+    snapshot) — funciona mesmo quando o gate já foi deletado. Fallback:
+    o gate ainda vivo no banco. Revisões de subsample/compensação/
+    experimento ficam NULL e aparecem em todo recorte por amostra.
+    """
+    if target_type == AnalysisRevision.TARGET_FILE:
+        return target_id
+    if target_type == AnalysisRevision.TARGET_GATE:
+        for payload in (payload_after, payload_before):
+            for snap in ((payload or {}).get("gates") or {}).values():
+                if isinstance(snap, dict) and snap.get("file_data_id"):
+                    return snap["file_data_id"]
+        gate = GateModel.objects.filter(pk=target_id).only("file_data_id").first()
+        return gate.file_data_id if gate else None
+    return None
+
+
 def record_revision(
     *,
     experiment,
@@ -92,7 +112,13 @@ def record_revision(
     affected_ids=None,
     summary,
     reverts=None,
+    file_data=None,
 ) -> AnalysisRevision:
+    file_data_id = (
+        getattr(file_data, "id", file_data)
+        if file_data is not None
+        else _infer_file_data_id(target_type, target_id, payload_before, payload_after)
+    )
     return AnalysisRevision.objects.create(
         experiment=experiment,
         action=action,
@@ -105,6 +131,7 @@ def record_revision(
         affected_ids=affected_ids or [],
         summary=summary,
         reverts=reverts,
+        file_data_id=file_data_id,
     )
 
 

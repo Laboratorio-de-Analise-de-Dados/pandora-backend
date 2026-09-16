@@ -221,6 +221,7 @@ class AnalysisRevisionSerializer(serializers.ModelSerializer):
             "action",
             "scope",
             "target",
+            "file_data",
             "summary",
             "author",
             "affected_ids",

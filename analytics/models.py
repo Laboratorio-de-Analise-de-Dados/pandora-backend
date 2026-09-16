@@ -247,6 +247,16 @@ class AnalysisRevision(models.Model):
         related_name="analysis_revisions",
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    # Amostra que a revisão toca — NULL = ação experiment-wide
+    # (compensação, subsample, restore) que afeta todas as amostras e
+    # aparece em qualquer recorte `?file=` da timeline.
+    file_data = models.ForeignKey(
+        "fcs_parser.FileDataModel",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_revisions",
+    )
     reverts = models.ForeignKey(
         "self",
         null=True,

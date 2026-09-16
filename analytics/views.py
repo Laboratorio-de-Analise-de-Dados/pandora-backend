@@ -4,6 +4,7 @@ from collections import deque
 
 import pandas as pd
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from fcs_parser.serializers import ParamListDataSerializer
@@ -1276,6 +1277,12 @@ class ExperimentHistoryView(generics.ListAPIView):
         user_id = self.request.query_params.get("user")
         if user_id and user_id.isdigit():
             qs = qs.filter(user_id=int(user_id))
+        # ?file=<file_data_id> recorta a timeline pelo que toca a amostra:
+        # revisões da amostra + as experiment-wide (file_data NULL —
+        # compensação, restore etc. afetam todas as amostras).
+        file_id = self.request.query_params.get("file")
+        if file_id and file_id.isdigit():
+            qs = qs.filter(Q(file_data_id=int(file_id)) | Q(file_data__isnull=True))
         cursor = self.request.query_params.get("cursor")
         if cursor and cursor.isdigit():
             qs = qs.filter(id__lt=int(cursor))

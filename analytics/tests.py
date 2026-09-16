@@ -1028,3 +1028,53 @@ class AnalysisCheckpointTestCase(GateFixtureMixin, TestCase):
         self.assertEqual(res.status_code, 200)
         self.source.refresh_from_db()
         self.assertEqual(self.source.name, "CD8+")
+
+
+class HistoryFileFilterTestCase(GateFixtureMixin, TestCase):
+    """?file=<file_data_id> recorta a timeline pela amostra (FE-27)."""
+
+    def _history(self, **params):
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        url = f"/analytics/experiment/{self.experiment.id}/history/"
+        return self.client.get(f"{url}?{qs}" if qs else url)
+
+    def test_filtro_por_amostra(self):
+        self._patch_gate(self.source, name="P1x")  # file_a
+        self._patch_gate(self.copy_b, name="P1y")  # file_b
+        from analytics.models import CompensationMatrix
+        from fcs_parser.services.compensation import set_applied_compensation
+
+        m = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+        )
+        set_applied_compensation(self.experiment, m, self.user)  # exp-wide
+
+        res = self._history(file=self.file_a.id)
+        self.assertEqual(res.status_code, 200)
+        actions = [(r["action"], r["file_data"]) for r in res.data["results"]]
+        # gate do file_a + compensação (file_data None) entram no recorte
+        self.assertIn(("rename", self.file_a.id), actions)
+        self.assertIn(("compensation_apply", None), actions)
+        # gate do file_b fica de fora
+        self.assertNotIn(("rename", self.file_b.id), actions)
+
+    def test_sem_filtro_devolve_tudo(self):
+        self._patch_gate(self.source, name="P1x")
+        self._patch_gate(self.copy_b, name="P1y")
+        res = self._history()
+        self.assertEqual(res.status_code, 200)
+        self.assertGreaterEqual(len(res.data["results"]), 2)
+
+    def test_gate_deletado_mantem_vinculo_a_amostra(self):
+        gid = self.source.id
+        res_del = self._delete_batch(
+            source_gate_ids=[gid], scope="file", recursive=True
+        )
+        self.assertEqual(res_del.status_code, 200)
+        res = self._history(file=self.file_a.id)
+        deletes = [r for r in res.data["results"] if r["action"] == "delete"]
+        self.assertTrue(deletes)
+        self.assertEqual(deletes[0]["file_data"], self.file_a.id)
