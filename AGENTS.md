@@ -13,6 +13,8 @@ cp .env.example .env   # preencher SECRET_KEY e DATABASE_*
 # desenvolvimento (Docker recomendado — sobe API + Postgres)
 docker network create pandora_net   # apenas na primeira vez
 docker compose up --build           # API em http://localhost:8085 (WEB_PORT)
+docker compose --profile juvia up --build  # idem + Juvia (precisa do clone
+                                    # ../juvia-project); Juvia em http://localhost:8001
 
 # local sem Docker (precisa só de Postgres rodando)
 python manage.py migrate
