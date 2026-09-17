@@ -469,6 +469,82 @@ class SocialLoginFlowTests(APITestCase):
         self.assertEqual(params["email"], "other@x.com")
         self.assertIn("token", params)
 
+    def test_link_mode_email_match_offers_merge(self):
+        """Identidade livre, mas o email já é de outra conta ativa (legada,
+        sem SocialAccount) → merge em vez de deixar a conta órfã."""
+        user = User.objects.create_user(
+            username="pmoro", email="pmoro@fiocruz.br", password="x"
+        )
+        legacy = User.objects.create_user(
+            username="legacy", email="dup@x.com", password="x"
+        )
+        link_state = make_link_state(user.id)
+        with patch(
+            "accounts.views.google_fetch_identity",
+            return_value={"sub": "sub-free", "email": "dup@x.com", "name": "D"},
+        ):
+            response = self.client.get(
+                reverse("google_auth_callback"),
+                {"code": "code", "state": link_state},
+            )
+
+        params = _callback_params(response.url)
+        self.assertEqual(params["merge_notice"], "1")
+        self.assertEqual(params["email"], "dup@x.com")
+        # O vínculo já foi criado na conta atual — o merge migra o resto.
+        self.assertTrue(
+            SocialAccount.objects.filter(
+                user=user, provider_user_id="sub-free"
+            ).exists()
+        )
+
+    def test_link_mode_reclaims_identity_of_merged_account(self):
+        user = User.objects.create_user(
+            username="pmoro", email="pmoro@fiocruz.br", password="x"
+        )
+        canonical = User.objects.create_user(
+            username="canon", email="canon@x.com", password="x"
+        )
+        dead = User.objects.create_user(
+            username="dead",
+            email="dead@x.com",
+            password="x",
+        )
+        dead.is_active = False
+        dead.merged_into = canonical
+        dead.save()
+        orphan = SocialAccount.objects.create(
+            user=dead,
+            provider="google",
+            provider_user_id="sub-dead",
+            email="dead@x.com",
+        )
+        link_state = make_link_state(user.id)
+        with patch(
+            "accounts.views.google_fetch_identity",
+            return_value={"sub": "sub-dead", "email": "dead@x.com", "name": "D"},
+        ):
+            response = self.client.get(
+                reverse("google_auth_callback"),
+                {"code": "code", "state": link_state},
+            )
+
+        self.assertIn("/profile?linked=google", response.url)
+        orphan.refresh_from_db()
+        self.assertEqual(orphan.user, user)
+        self.assertTrue(orphan.active)
+
+    def test_callback_without_state_is_rejected(self):
+        with patch(
+            "accounts.views.google_fetch_identity",
+            return_value={"sub": "s", "email": "e@x.com", "name": "E"},
+        ):
+            response = self.client.get(
+                reverse("google_auth_callback"), {"code": "code"}
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(User.objects.filter(email="e@x.com").exists())
+
     def test_link_init_requires_authentication(self):
         response = self.client.get(reverse("google_auth_link_init"))
         self.assertEqual(response.status_code, 401)

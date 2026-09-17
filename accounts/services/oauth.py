@@ -6,6 +6,10 @@ from django.conf import settings
 from django.core import signing
 from django.utils import timezone
 
+# Sem timeout o worker fica pendurado se o IdP travar — o usuário vê o
+# callback carregando para sempre e só o F5 destrava.
+OAUTH_HTTP_TIMEOUT = (5, 20)  # connect, read (segundos)
+
 
 def decode_claims(id_token):
     """Extrai claims do id_token sem verificar assinatura.
@@ -40,6 +44,7 @@ def microsoft_fetch_identity(code):
             "redirect_uri": settings.MICROSOFT_REDIRECT_URI,
         },
         headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=OAUTH_HTTP_TIMEOUT,
     )
     token_response.raise_for_status()
     tokens = token_response.json()
@@ -49,6 +54,7 @@ def microsoft_fetch_identity(code):
         "https://graph.microsoft.com/v1.0/me",
         params={"$select": "id,displayName,mail,userPrincipalName,otherMails"},
         headers={"Authorization": f"Bearer {tokens.get('access_token')}"},
+        timeout=OAUTH_HTTP_TIMEOUT,
     )
     graph_response.raise_for_status()
     profile = graph_response.json()
@@ -76,6 +82,7 @@ def google_fetch_identity(code):
             "redirect_uri": settings.GOOGLE_REDIRECT_URI,
         },
         headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=OAUTH_HTTP_TIMEOUT,
     )
     token_response.raise_for_status()
     tokens = token_response.json()
@@ -85,6 +92,7 @@ def google_fetch_identity(code):
         "https://www.googleapis.com/oauth2/v1/userinfo",
         params={"alt": "json"},
         headers={"Authorization": f"Bearer {tokens.get('access_token')}"},
+        timeout=OAUTH_HTTP_TIMEOUT,
     )
     userinfo_response.raise_for_status()
     profile = userinfo_response.json()

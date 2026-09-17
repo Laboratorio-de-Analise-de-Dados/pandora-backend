@@ -544,6 +544,20 @@ def _redirect_link_notice(provider, provider_user_id, email, user):
     return redirect(f"{settings.FRONTEND_URL}/auth/callback?{params}")
 
 
+def _redirect_merge_notice(provider, provider_user_id, absorbed):
+    """Avisa o front que a identidade pertence a outra conta (BE-30)."""
+    token = make_merge_token(provider, provider_user_id, absorbed.id)
+    params = urllib.parse.urlencode(
+        {
+            "merge_notice": "1",
+            "provider": provider,
+            "email": absorbed.email,
+            "token": token,
+        }
+    )
+    return redirect(f"{settings.FRONTEND_URL}/profile?{params}")
+
+
 def _link_identity_to_user(request, user, provider, provider_user_id, email):
     """Modo link (perfil): vincula a identidade ao usuário da sessão."""
     if not provider_user_id:
@@ -554,19 +568,19 @@ def _link_identity_to_user(request, user, provider, provider_user_id, email):
         provider=provider, provider_user_id=provider_user_id
     ).first()
     if existing and existing.user_id != user.id:
-        # A identidade já pertence a outra conta → o front oferece merge
-        # (BE-30) em vez de um erro seco.
-        token = make_merge_token(provider, provider_user_id, existing.user_id)
-        params = urllib.parse.urlencode(
-            {
-                "merge_notice": "1",
-                "provider": provider,
-                "email": existing.user.email,
-                "token": token,
-            }
-        )
-        return redirect(f"{settings.FRONTEND_URL}/profile?{params}")
-    if existing:
+        owner = existing.user
+        if owner.is_active and not owner.merged_into_id:
+            # A identidade já pertence a outra conta → o front oferece
+            # merge (BE-30) em vez de um erro seco.
+            return _redirect_merge_notice(provider, provider_user_id, owner)
+        # Conta absorvida/desativada — a identidade está livre e vai para
+        # quem provou controle dela agora.
+        existing.user = user
+        existing.active = True
+        existing.unlinked_at = None
+        existing.email = email
+        existing.save(update_fields=["user", "active", "unlinked_at", "email"])
+    elif existing:
         if not existing.active or existing.email != email:
             existing.active = True
             existing.unlinked_at = None
@@ -587,6 +601,13 @@ def _link_identity_to_user(request, user, provider, provider_user_id, email):
         summary=f"Vinculou {provider} ({email})",
         provider_email=email,
     )
+    # Conta legada sem SocialAccount com o mesmo email do IdP → oferece
+    # merge em vez de deixar a outra conta órfã em silêncio.
+    others = list(
+        User.objects.filter(email__iexact=email, is_active=True).exclude(pk=user.pk)[:2]
+    )
+    if len(others) == 1:
+        return _redirect_merge_notice(provider, provider_user_id, others[0])
     return redirect(f"{settings.FRONTEND_URL}/profile?linked={provider}")
 
 
@@ -708,7 +729,7 @@ class MicrosoftAuthCallbackView(APIView):
         stored_state = request.session.get("microsoft_auth_state")
         link_payload = read_link_state(state)
 
-        if not code or (link_payload is None and state != stored_state):
+        if not code or not state or (link_payload is None and state != stored_state):
             return Response(
                 {"detail": "Requisição inválida ou state mismatch."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -785,7 +806,7 @@ class GoogleAuthCallbackView(APIView):
         stored_state = request.session.get("google_auth_state")
         link_payload = read_link_state(state)
 
-        if not code or (link_payload is None and state != stored_state):
+        if not code or not state or (link_payload is None and state != stored_state):
             return Response(
                 {"detail": "Requisição inválida ou state mismatch."},
                 status=status.HTTP_400_BAD_REQUEST,
