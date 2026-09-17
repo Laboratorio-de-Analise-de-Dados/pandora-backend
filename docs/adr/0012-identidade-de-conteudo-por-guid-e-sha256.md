@@ -1,6 +1,6 @@
 # ADR-0012 — Identidade de conteúdo por `guid` (amostra) e `sha256` (blob)
 
-- **Status:** Proposto — substitui parcialmente ADR-0006
+- **Status:** Aceito — substitui parcialmente ADR-0006
 - **Data:** 2026-09-13
 - **Contexto do código:** `fcs_parser/models.py` (`FileModel`,
   `FileDataModel`), `fcs_parser/services/process_fcs.py`,

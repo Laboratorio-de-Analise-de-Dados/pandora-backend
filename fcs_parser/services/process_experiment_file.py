@@ -50,9 +50,7 @@ def _content_guid(headers: dict | None) -> str | None:
     return str(guid) if guid not in (None, "") else None
 
 
-def assemble_chunks(
-    upload_key: str, total_chunks: int, extension: str = ".zip"
-) -> str:
+def assemble_chunks(upload_key: str, total_chunks: int, extension: str = ".zip") -> str:
     """Concatenate uploaded chunks into the final file (.zip or .fcs).
 
     ``upload_key`` namespacing: experiment id no fluxo de criação,
@@ -333,7 +331,13 @@ def extract_fcs_from_zip(upload: "FileModel", file_name: str) -> str | None:
     or ``None`` if the ZIP or entry is not found.
     The caller is responsible for cleaning up the file after use.
     """
-    zip_path = getattr(getattr(upload, "file", None), "path", None)
+    # `.path` de um FileField sem arquivo levanta ValueError — trata como
+    # "ZIP ausente" em vez de derrubar o rebuild.
+    try:
+        file_field = getattr(upload, "file", None)
+        zip_path = file_field.path if file_field else None
+    except ValueError:
+        zip_path = None
     if not zip_path or not os.path.exists(zip_path):
         return None
 

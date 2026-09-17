@@ -1,8 +1,10 @@
 # ADR-0008 — Histórico da análise como log append-only de eventos
 
-- **Status:** Proposto
+- **Status:** Aceito
 - **Data:** 2026-09-13
-- **Contexto do código:** a implementar; ver `prd/BE-08-historico-rollback.md`
+- **Contexto do código:** `analytics/models.py` (`AnalysisRevision`),
+  `analytics/history.py`, endpoints `GET .../history/` e
+  `POST .../history/<id>/revert/`; ver `prd/BE-08-historico-rollback.md`
 
 ## Contexto
 

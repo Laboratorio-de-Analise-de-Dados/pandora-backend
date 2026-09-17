@@ -17,7 +17,12 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from accounts.models import Membership, Organization, Role, User
-from analytics.models import AnalysisResult, DashboardModel, GateModel
+from analytics.models import (
+    AnalysisResult,
+    AnalysisRevision,
+    DashboardModel,
+    GateModel,
+)
 from fcs_parser.models import (
     ExperimentModel,
     FileDataModel,
@@ -219,16 +224,12 @@ class SubsampleApiTestCase(TestCase):
         self.assertEqual(criado.created_by, self.owner)
 
     def test_duplicated_subsample_name_is_rejected(self):
-        response = self.client.post(
-            self.list_url(), {"name": "tempo_1"}, format="json"
-        )
+        response = self.client.post(self.list_url(), {"name": "tempo_1"}, format="json")
 
         self.assertEqual(response.status_code, 400)
 
     def test_client_renames_subsample(self):
-        response = self.client.patch(
-            self.detail_url(), {"name": "24h"}, format="json"
-        )
+        response = self.client.patch(self.detail_url(), {"name": "24h"}, format="json")
 
         self.assertEqual(response.status_code, 200)
         self.subsample.refresh_from_db()
@@ -284,21 +285,24 @@ class SubsampleApiTestCase(TestCase):
         self.assertEqual(self.file_data.subsample_id, self.subsample.id)
 
     def test_user_without_access_cannot_change_subsamples(self):
+        # Outsider recebe 404 (não enxerga o experimento), não 403.
         self.client.force_authenticate(self.stranger)
 
         self.assertEqual(
             self.client.post(self.list_url(), {"name": "x"}, format="json").status_code,
-            403,
+            404,
         )
         self.assertEqual(
-            self.client.patch(self.detail_url(), {"name": "x"}, format="json").status_code,
-            403,
+            self.client.patch(
+                self.detail_url(), {"name": "x"}, format="json"
+            ).status_code,
+            404,
         )
         self.assertEqual(
             self.client.patch(
                 self.move_url(), {"subsample": None}, format="json"
             ).status_code,
-            403,
+            404,
         )
 
 
@@ -367,9 +371,7 @@ class RepairSourcePathTestCase(TestCase):
         legacy.refresh_from_db()
         self.assertEqual(legacy.source_path, "")
         self.assertTrue(legacy.active)
-        self.assertEqual(
-            sorted(report.ambiguous), ["tempo_1/a1.fcs", "tempo_2/a1.fcs"]
-        )
+        self.assertEqual(sorted(report.ambiguous), ["tempo_1/a1.fcs", "tempo_2/a1.fcs"])
         self.assertEqual(report.recreated, [])
 
     @patch("fcs_parser.services.repair_source_path.readfcs.view")
@@ -389,9 +391,7 @@ class RepairSourcePathTestCase(TestCase):
         self.assertEqual(
             [f.source_path for f in recreated], ["tempo_1/a1.fcs", "tempo_2/a1.fcs"]
         )
-        self.assertEqual(
-            [f.subsample.name for f in recreated], ["tempo_1", "tempo_2"]
-        )
+        self.assertEqual([f.subsample.name for f in recreated], ["tempo_1", "tempo_2"])
         self.assertEqual(recreated[0].headers, {"$TOT": "10"})
 
     def test_rows_already_matching_the_zip_are_left_alone(self):
@@ -595,7 +595,10 @@ class ExperimentCopyApiTestCase(TestCase):
         self.assertEqual(res.status_code, 403)
 
         Membership.objects.create(
-            user=self.owner, organization=self.org, role=self.member_role, status="active"
+            user=self.owner,
+            organization=self.org,
+            role=self.member_role,
+            status="active",
         )
         res = self._copy(organization_id=self.org.id)
         self.assertEqual(res.status_code, 201)
@@ -606,7 +609,10 @@ class ExperimentCopyApiTestCase(TestCase):
         self.source.organization = self.org
         self.source.save(update_fields=["organization"])
         Membership.objects.create(
-            user=self.stranger, organization=self.org, role=self.member_role, status="active"
+            user=self.stranger,
+            organization=self.org,
+            role=self.member_role,
+            status="active",
         )
         res = self._copy(user=self.stranger)
         self.assertEqual(res.status_code, 201)
@@ -640,10 +646,16 @@ class ExperimentMoveApiTestCase(TestCase):
                 user=user, organization=self.org, role=role, status="active"
             )
         Membership.objects.create(
-            user=self.owner, organization=self.other_org, role=member_role, status="active"
+            user=self.owner,
+            organization=self.other_org,
+            role=member_role,
+            status="active",
         )
         Membership.objects.create(
-            user=self.member, organization=self.other_org, role=member_role, status="active"
+            user=self.member,
+            organization=self.other_org,
+            role=member_role,
+            status="active",
         )
 
         self.experiment = ExperimentModel.objects.create(
@@ -654,7 +666,9 @@ class ExperimentMoveApiTestCase(TestCase):
     def _patch(self, user, **payload):
         client = APIClient()
         client.force_authenticate(user)
-        return client.patch(f"/experiment/{self.experiment.id}/", payload, format="json")
+        return client.patch(
+            f"/experiment/{self.experiment.id}/", payload, format="json"
+        )
 
     def test_owner_moves_experiment_to_other_org(self):
         res = self._patch(self.owner, organization_id=self.other_org.id)
@@ -662,7 +676,9 @@ class ExperimentMoveApiTestCase(TestCase):
         self.assertEqual(res.status_code, 200)
         self.experiment.refresh_from_db()
         self.assertEqual(self.experiment.organization_id, self.other_org.id)
-        self.assertEqual(FileModel.objects.filter(experiment=self.experiment).count(), 1)
+        self.assertEqual(
+            FileModel.objects.filter(experiment=self.experiment).count(), 1
+        )
 
     def test_org_admin_moves_experiment(self):
         res = self._patch(self.admin, organization_id=None)
@@ -684,6 +700,27 @@ class ExperimentMoveApiTestCase(TestCase):
         # pode mover; o destino é a org onde ele já está. Caso real de rejeição:
         res = self._patch(self.owner, organization_id=999)
         self.assertEqual(res.status_code, 400)
+
+    def test_move_permite_mesmo_titulo_de_experimento_inativo(self):
+        # BE-16: título único só vale entre ativos — inativo não bloqueia.
+        ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, active=False
+        )
+
+        res = self._patch(self.owner, organization_id=None)
+
+        self.assertEqual(res.status_code, 200)
+        self.experiment.refresh_from_db()
+        self.assertIsNone(self.experiment.organization_id)
+
+    def test_move_rejeita_mesmo_titulo_de_experimento_ativo(self):
+        ExperimentModel.objects.create(title="exp", type="t", created_by=self.owner)
+
+        res = self._patch(self.owner, organization_id=None)
+
+        self.assertEqual(res.status_code, 400)
+        self.experiment.refresh_from_db()
+        self.assertEqual(self.experiment.organization_id, self.org.id)
 
 
 class FileHashCheckApiTestCase(TestCase):
@@ -790,6 +827,8 @@ class ExperimentFilesApiTestCase(TestCase):
         self.assertFalse(upload.file)
 
     def test_init_requires_edit_permission(self):
+        # `other` não é membro/dono: outsider recebe 404 (não enxerga o
+        # experimento), coerente com o restante da política de acesso.
         client = APIClient()
         client.force_authenticate(self.other)
         res = client.post(
@@ -797,7 +836,7 @@ class ExperimentFilesApiTestCase(TestCase):
             {"fileName": "novo.zip", "totalChunks": 1},
             format="json",
         )
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 404)
 
     @patch("fcs_parser.views.extract_metadata_from_zip")
     def test_complete_wraps_standalone_fcs_into_zip(self, mock_extract):
@@ -848,9 +887,7 @@ class ExperimentFilesApiTestCase(TestCase):
     @patch("fcs_parser.services.process_experiment_file.readfcs")
     def test_same_sample_allowed_in_another_experiment(self, mock_readfcs):
         mock_readfcs.view.return_value = ({}, None)
-        mock_readfcs.ReadFCS.return_value.channels = pd.DataFrame(
-            {"PnN": ["FL1"]}
-        )
+        mock_readfcs.ReadFCS.return_value.channels = pd.DataFrame({"PnN": ["FL1"]})
         payload = b"same-bytes"
         sha = hashlib.sha256(payload).hexdigest()
 
@@ -863,9 +900,7 @@ class ExperimentFilesApiTestCase(TestCase):
             file_name="a1.fcs",
             source_path="a1.fcs",
             content_sha256=sha,
-            file=FileModel.objects.create(
-                file_name="x.zip", experiment=other_exp
-            ),
+            file=FileModel.objects.create(file_name="x.zip", experiment=other_exp),
         )
 
         file_id = self._upload("novo.zip", self._zip_bytes({"a1.fcs": payload}))
@@ -914,3 +949,1182 @@ class ExperimentFilesApiTestCase(TestCase):
             names = sorted(zf.namelist())
             self.assertEqual(names, ["a2.fcs", "tempo_1/a1.fcs"])
             self.assertEqual(zf.read("tempo_1/a1.fcs"), b"conteudo-a1")
+
+
+class ScopedAccessTestCase(TestCase):
+    """ADR-0014: todo lookup por id passa por queryset escopado.
+
+    Quem está fora do experimento recebe 404 (não 200 com dados, não 403
+    vazando existência) em qualquer endpoint de amostra/upload/experimento.
+    """
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.outsider = User.objects.create_user(
+            username="fora", email="fora@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="tipo", created_by=self.owner
+        )
+        self.upload = FileModel.objects.create(
+            file_name="amostras.zip", experiment=self.experiment
+        )
+        self.file_data = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            source_path="a1.fcs",
+            file=self.upload,
+        )
+        self.client = APIClient()
+
+    def test_outsider_lista_arquivos_vazia(self):
+        self.client.force_authenticate(self.outsider)
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data, [])
+
+    def test_outsider_404_nas_leituras_de_amostra(self):
+        self.client.force_authenticate(self.outsider)
+        urls = [
+            f"/experiment/file/{self.file_data.id}/list",
+            f"/experiment/file/{self.file_data.id}/headers",
+            f"/experiment/file/{self.file_data.id}/stats",
+            f"/experiment/file/{self.file_data.id}/density?x=FSC-A&y=SSC-A",
+        ]
+        for url in urls:
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_outsider_404_nas_escritas_de_amostra(self):
+        self.client.force_authenticate(self.outsider)
+        urls = [
+            f"/experiment/file/{self.file_data.id}/disable",
+            f"/experiment/file/{self.file_data.id}/enable",
+            f"/experiment/file/{self.file_data.id}/recompute",
+            f"/experiment/file/{self.upload.id}/process",
+        ]
+        for url in urls:
+            with self.subTest(url=url):
+                self.assertEqual(self.client.post(url).status_code, 404)
+
+    def test_outsider_nao_envia_chunks(self):
+        self.client.force_authenticate(self.outsider)
+        chunk = SimpleUploadedFile("c.part", b"data")
+
+        res = self.client.post(
+            "/experiment/upload-chunk/",
+            {
+                "fileId": self.experiment.id,
+                "chunkIndex": 0,
+                "chunk": chunk,
+            },
+        )
+        self.assertEqual(res.status_code, 404)
+
+        chunk = SimpleUploadedFile("c.part", b"data")
+        res = self.client.post(
+            "/experiment/files/upload-chunk/",
+            {"fileId": self.upload.id, "chunkIndex": 0, "chunk": chunk},
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_outsider_404_no_download_e_detalhe(self):
+        self.client.force_authenticate(self.outsider)
+        self.assertEqual(
+            self.client.get(f"/experiment/{self.experiment.id}/").status_code, 404
+        )
+        self.assertEqual(
+            self.client.get(f"/experiment/{self.experiment.id}/download").status_code,
+            404,
+        )
+
+    def test_anonimo_recebe_401(self):
+        res = self.client.get(f"/experiment/file/{self.file_data.id}/headers")
+        self.assertEqual(res.status_code, 401)
+
+    def test_dono_segue_acessando(self):
+        self.client.force_authenticate(self.owner)
+        res = self.client.get(f"/experiment/file/{self.file_data.id}/headers")
+        self.assertEqual(res.status_code, 200)
+
+
+class ExperimentDeleteTestCase(TestCase):
+    """ADR-0005: DELETE /experiment/<id>/ inativa, nunca apaga a linha."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.member = User.objects.create_user(
+            username="membro", email="membro@pandora.test", password="senha-forte-123"
+        )
+        self.outsider = User.objects.create_user(
+            username="fora", email="fora@pandora.test", password="senha-forte-123"
+        )
+        self.org = Organization.objects.create(name="Lab", org_type="lab")
+        role_member = Role.objects.create(name=Role.MEMBER)
+        Membership.objects.create(
+            user=self.member,
+            organization=self.org,
+            role=role_member,
+            status="active",
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="tipo", created_by=self.owner, organization=self.org
+        )
+        self.upload = FileModel.objects.create(
+            file_name="a.zip", experiment=self.experiment
+        )
+        self.file_data = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            source_path="a1.fcs",
+            file=self.upload,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def test_delete_inativa_em_vez_de_apagar(self):
+        res = self.client.delete(f"/experiment/{self.experiment.id}/")
+
+        self.assertEqual(res.status_code, 204)
+        self.experiment.refresh_from_db()
+        self.assertFalse(self.experiment.active)
+        self.assertTrue(ExperimentModel.objects.filter(id=self.experiment.id).exists())
+
+    def test_inativo_sai_da_listagem_mas_volta_com_include_inactive(self):
+        self.experiment.active = False
+        self.experiment.save(update_fields=["active"])
+
+        res = self.client.get("/experiment/")
+        ids = [e["id"] for e in res.data]
+        self.assertNotIn(self.experiment.id, ids)
+
+        res = self.client.get("/experiment/?include_inactive=true")
+        ids = [e["id"] for e in res.data]
+        self.assertIn(self.experiment.id, ids)
+
+    def test_amostras_de_experimento_inativo_ficam_invisiveis(self):
+        self.experiment.active = False
+        self.experiment.save(update_fields=["active"])
+
+        res = self.client.get(f"/experiment/file/{self.file_data.id}/headers")
+        self.assertEqual(res.status_code, 404)
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+        self.assertEqual(res.data, [])
+
+    def test_membro_sem_papel_admin_nao_inativa(self):
+        # O membro enxerga o experimento do lab, mas inativar exige dono/admin.
+        self.client.force_authenticate(self.member)
+        res = self.client.delete(f"/experiment/{self.experiment.id}/")
+
+        self.assertEqual(res.status_code, 403)
+        self.experiment.refresh_from_db()
+        self.assertTrue(self.experiment.active)
+
+    def test_outsider_nao_alcanca_o_delete(self):
+        self.client.force_authenticate(self.outsider)
+        res = self.client.delete(f"/experiment/{self.experiment.id}/")
+
+        self.assertEqual(res.status_code, 404)
+
+
+class ExperimentRestoreTestCase(TestCase):
+    """POST /experiment/<id>/restore é o caminho de volta do soft-delete."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.member = User.objects.create_user(
+            username="membro", email="membro@pandora.test", password="senha-forte-123"
+        )
+        self.outsider = User.objects.create_user(
+            username="fora", email="fora@pandora.test", password="senha-forte-123"
+        )
+        self.org = Organization.objects.create(name="Lab", org_type="lab")
+        role_member = Role.objects.create(name=Role.MEMBER)
+        Membership.objects.create(
+            user=self.member,
+            organization=self.org,
+            role=role_member,
+            status="active",
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp",
+            type="tipo",
+            created_by=self.owner,
+            organization=self.org,
+            active=False,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def test_restore_reativa_e_devolve_para_a_listagem(self):
+        res = self.client.post(f"/experiment/{self.experiment.id}/restore")
+
+        self.assertEqual(res.status_code, 200)
+        self.experiment.refresh_from_db()
+        self.assertTrue(self.experiment.active)
+        self.assertTrue(res.data["active"])
+
+        res = self.client.get("/experiment/")
+        ids = [e["id"] for e in res.data]
+        self.assertIn(self.experiment.id, ids)
+
+    def test_restore_em_ativo_e_idempotente(self):
+        self.experiment.active = True
+        self.experiment.save(update_fields=["active"])
+
+        res = self.client.post(f"/experiment/{self.experiment.id}/restore")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["active"])
+
+    def test_membro_sem_papel_admin_nao_reativa(self):
+        self.client.force_authenticate(self.member)
+        res = self.client.post(f"/experiment/{self.experiment.id}/restore")
+
+        self.assertEqual(res.status_code, 403)
+        self.experiment.refresh_from_db()
+        self.assertFalse(self.experiment.active)
+
+    def test_outsider_recebe_404_no_restore(self):
+        self.client.force_authenticate(self.outsider)
+        res = self.client.post(f"/experiment/{self.experiment.id}/restore")
+
+        self.assertEqual(res.status_code, 404)
+
+    def test_restore_com_titulo_ativo_duplicado_retorna_409(self):
+        # BE-16: reativar sobre título já usado por ativo é conflito, não 500.
+        ExperimentModel.objects.create(
+            title="exp",
+            type="tipo",
+            created_by=self.owner,
+            organization=self.org,
+        )
+
+        res = self.client.post(f"/experiment/{self.experiment.id}/restore")
+
+        self.assertEqual(res.status_code, 409)
+        self.experiment.refresh_from_db()
+        self.assertFalse(self.experiment.active)
+
+
+class ExperimentListCreatedByNameTestCase(TestCase):
+    """BE-17: a listagem expõe o username do criador para o card do front."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="ana.souza",
+            email="ana@pandora.test",
+            password="senha-forte-123",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_listagem_devolve_username_do_criador(self):
+        ExperimentModel.objects.create(title="exp", type="tipo", created_by=self.user)
+
+        res = self.client.get("/experiment/")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data[0]["created_by_name"], "ana.souza")
+
+    def test_experimento_sem_criador_devolve_none(self):
+        # Super admin enxerga experimentos sem criador (ex.: legados/SET_NULL).
+        self.user.is_superuser = True
+        self.user.save(update_fields=["is_superuser"])
+        ExperimentModel.objects.create(title="exp", type="tipo")
+
+        res = self.client.get("/experiment/")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.data[0]["created_by_name"])
+
+
+class ExperimentListMetaTestCase(TestCase):
+    """BE-21: my_role, progress e preview_available na listagem."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.org = Organization.objects.create(name="Lab X", org_type="lab")
+        self.member_role = Role.objects.create(name="member")
+
+        self.personal = ExperimentModel.objects.create(
+            title="pessoal", type="t", created_by=self.owner, status="done"
+        )
+        self.org_exp = ExperimentModel.objects.create(
+            title="org",
+            type="t",
+            organization=self.org,
+            status="uploading",
+            total_chunks=4,
+            received_chunks=[1, 2],
+        )
+        Membership.objects.create(
+            user=self.owner,
+            organization=self.org,
+            role=self.member_role,
+            status="active",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def test_my_role_owner_no_pessoal_e_membership_na_org(self):
+        res = self.client.get("/experiment/")
+
+        self.assertEqual(res.status_code, 200)
+        by_id = {e["id"]: e for e in res.data}
+        self.assertEqual(by_id[self.personal.id]["my_role"], "owner")
+        self.assertEqual(by_id[self.org_exp.id]["my_role"], "member")
+
+    def test_progress_reflete_chunks_do_upload(self):
+        res = self.client.get("/experiment/")
+
+        by_id = {e["id"]: e for e in res.data}
+        self.assertEqual(by_id[self.org_exp.id]["progress"], 50)
+        # Fora de `uploading` (ou sem total) o progresso não se aplica.
+        self.assertIsNone(by_id[self.personal.id]["progress"])
+
+    def test_preview_available_com_amostra_ativa(self):
+        file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="b" * 64,
+            experiment=self.personal,
+        )
+        FileDataModel.objects.create(
+            headers={},
+            experiment=self.personal,
+            file_name="a1.fcs",
+            file=file_model,
+        )
+
+        res = self.client.get("/experiment/")
+
+        by_id = {e["id"]: e for e in res.data}
+        self.assertTrue(by_id[self.personal.id]["preview_available"])
+        self.assertFalse(by_id[self.org_exp.id]["preview_available"])
+
+
+class ExperimentPreviewTestCase(TestCase):
+    """BE-21: GET /experiment/<id>/preview — histograma 2D de baixa resolução."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp",
+            type="t",
+            created_by=self.owner,
+            status="done",
+            values=["FSC-A", "SSC-A"],
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="c" * 64,
+            experiment=self.experiment,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _file_data(self, **kwargs):
+        return FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+            **kwargs,
+        )
+
+    def test_preview_devolve_histograma_2d(self):
+        self._file_data(
+            data_set={
+                "FSC-A": [1, 2, 3, 4, 5] * 20,
+                "SSC-A": [5, 4, 3, 2, 1] * 20,
+            }
+        )
+
+        res = self.client.get(f"/experiment/{self.experiment.id}/preview")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data["histogram"]), 48)
+        self.assertEqual(res.data["x_label"], "FSC-A")
+        self.assertEqual(
+            res.data["file_data_id"], self.experiment.filedatamodel_set.get().id
+        )
+
+    def test_preview_204_enquanto_nao_processado(self):
+        self.experiment.status = "processing"
+        self.experiment.save(update_fields=["status"])
+        self._file_data(data_set={"FSC-A": [1], "SSC-A": [2]})
+
+        res = self.client.get(f"/experiment/{self.experiment.id}/preview")
+
+        self.assertEqual(res.status_code, 204)
+
+    def test_preview_404_sem_amostra_ativa(self):
+        self._file_data(active=False, data_set={"FSC-A": [1], "SSC-A": [2]})
+
+        res = self.client.get(f"/experiment/{self.experiment.id}/preview")
+
+        self.assertEqual(res.status_code, 404)
+
+    def test_preview_escopado_ao_usuario(self):
+        self._file_data(data_set={"FSC-A": [1], "SSC-A": [2]})
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.get(f"/experiment/{self.experiment.id}/preview")
+
+        self.assertEqual(res.status_code, 404)
+
+
+class CompensationDetectionTestCase(TestCase):
+    """BE-22 v1: sinalização de compensação embutida nos headers FCS."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, status="done"
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="d" * 64,
+            experiment=self.experiment,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _file_data(self, headers):
+        return FileDataModel.objects.create(
+            headers=headers,
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+        )
+
+    def test_parse_spillover_formato_fcs3(self):
+        from fcs_parser.services.compensation import parse_spillover
+
+        # "n,ch1,...,chn,v11..vnn" row-major: 2 canais, identidade com
+        # 12% de FITC vazando no PE.
+        parsed = parse_spillover({"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"})
+
+        self.assertEqual(parsed["channels"], ["FITC-A", "PE-A"])
+        self.assertEqual(parsed["matrix"], [[1.0, 0.12], [0.03, 1.0]])
+
+    def test_parse_spillover_malformado_devolve_none(self):
+        from fcs_parser.services.compensation import parse_spillover
+
+        self.assertIsNone(parse_spillover(None))
+        self.assertIsNone(parse_spillover({}))
+        self.assertIsNone(parse_spillover({"$SPILLOVER": "abc"}))
+        self.assertIsNone(parse_spillover({"$SPILLOVER": "2,FITC,PE,1,0.1"}))
+
+    def test_listagem_sinaliza_compensated(self):
+        self._file_data({"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"})
+
+        res = self.client.get("/experiment/")
+
+        by_id = {e["id"]: e for e in res.data}
+        self.assertTrue(by_id[self.experiment.id]["compensated"])
+
+    def test_listagem_sem_spillover_nao_compensado(self):
+        self._file_data({"$PAR": "4"})
+
+        res = self.client.get("/experiment/")
+
+        by_id = {e["id"]: e for e in res.data}
+        self.assertFalse(by_id[self.experiment.id]["compensated"])
+
+    def test_embedded_devolve_matriz(self):
+        fd = self._file_data({"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"})
+
+        res = self.client.get(
+            f"/experiment/{self.experiment.id}/compensations/embedded"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["channels"], ["FITC-A", "PE-A"])
+        self.assertEqual(res.data["file_data_id"], fd.id)
+        self.assertEqual(res.data["source"], "fcs_header")
+
+    def test_embedded_204_sem_matriz(self):
+        self._file_data({"$PAR": "4"})
+
+        res = self.client.get(
+            f"/experiment/{self.experiment.id}/compensations/embedded"
+        )
+
+        self.assertEqual(res.status_code, 204)
+
+
+class CompensationControlsTestCase(TestCase):
+    """BE-22: subsamples como controles + endpoints de matriz (ADR-0019)."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp",
+            type="t",
+            created_by=self.owner,
+            status="done",
+            values=["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="e" * 64,
+            experiment=self.experiment,
+        )
+        self.subsample = SubsampleModel.objects.create(
+            experiment=self.experiment, name="controles"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _file(self, name, data):
+        return FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name=name,
+            file=self.file_model,
+            data_set=data,
+        )
+
+    def _mark(self, subsample, **fields):
+        return self.client.patch(
+            f"/experiment/{self.experiment.id}/subsamples/{subsample.id}/",
+            fields,
+            format="json",
+        )
+
+    def test_single_stain_exige_canal_fluorescente(self):
+        res = self._mark(
+            self.subsample,
+            control_type="single_stain",
+            control_channel="FSC-A",
+        )
+        self.assertEqual(res.status_code, 400)
+
+        res = self._mark(
+            self.subsample,
+            control_type="single_stain",
+            control_channel="FITC-A",
+        )
+        self.assertEqual(res.status_code, 200)
+
+    def test_canal_de_controle_e_exclusivo(self):
+        self._mark(
+            self.subsample,
+            control_type="single_stain",
+            control_channel="FITC-A",
+        )
+        outro = SubsampleModel.objects.create(experiment=self.experiment, name="outro")
+        res = self._mark(outro, control_type="single_stain", control_channel="FITC-A")
+        self.assertEqual(res.status_code, 400)
+
+    def test_unstained_unico_por_experimento(self):
+        self._mark(self.subsample, control_type="unstained")
+        outro = SubsampleModel.objects.create(experiment=self.experiment, name="neg2")
+        res = self._mark(outro, control_type="unstained")
+        self.assertEqual(res.status_code, 400)
+
+    def test_compute_deriva_dos_subsamples_marcados(self):
+        # neg: basal 10/10; FITC: 1000/130 (12% spill em PE); PE: 40/1000.
+        neg = self._file("neg.fcs", {"FITC-A": [10, 10, 10], "PE-A": [10, 10, 10]})
+        fitc = self._file(
+            "fitc.fcs", {"FITC-A": [1000, 1000, 1000], "PE-A": [130, 130, 130]}
+        )
+        pe = self._file("pe.fcs", {"FITC-A": [40, 40, 40], "PE-A": [1000, 1000, 1000]})
+        sub_neg = self.subsample
+        sub_fitc = SubsampleModel.objects.create(
+            experiment=self.experiment, name="fitc"
+        )
+        sub_pe = SubsampleModel.objects.create(experiment=self.experiment, name="pe")
+        self._mark(sub_neg, control_type="unstained")
+        self._mark(sub_fitc, control_type="single_stain", control_channel="FITC-A")
+        self._mark(sub_pe, control_type="single_stain", control_channel="PE-A")
+        neg.subsample = sub_neg
+        neg.save(update_fields=["subsample"])
+        fitc.subsample = sub_fitc
+        fitc.save(update_fields=["subsample"])
+        pe.subsample = sub_pe
+        pe.save(update_fields=["subsample"])
+
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/compute",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["source"], "computed")
+        self.assertEqual(res.data["channels"], ["FITC-A", "PE-A"])
+        m = res.data["matrix"]
+        # S[PE][FITC] = (130-10)/(1000-10) ≈ 0.1212
+        self.assertAlmostEqual(m[1][0], 120 / 990, places=3)
+        # S[FITC][PE] = (40-10)/(1000-10) ≈ 0.0303
+        self.assertAlmostEqual(m[0][1], 30 / 990, places=3)
+
+    def test_compute_sem_controles_da_400(self):
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/compute",
+            {},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("negativo", res.data["detail"])
+
+    def test_compute_com_overrides(self):
+        neg = self._file("neg.fcs", {"FITC-A": [10], "PE-A": [10]})
+        fitc = self._file("fitc.fcs", {"FITC-A": [1000], "PE-A": [130]})
+        pe = self._file("pe.fcs", {"FITC-A": [40], "PE-A": [1000]})
+
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/compute",
+            {
+                "negative": [neg.id],
+                "controls": {"FITC-A": [fitc.id], "PE-A": [pe.id]},
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["channels"], ["FITC-A", "PE-A"])
+
+    def test_from_header_materializa_matriz(self):
+        self._file("a1.fcs", {}).headers  # sem spillover → 409 primeiro
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/from-header",
+            {},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 409)
+
+        FileDataModel.objects.create(
+            headers={"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"},
+            experiment=self.experiment,
+            file_name="a2.fcs",
+            file=self.file_model,
+        )
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/from-header",
+            {},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["source"], "fcs_header")
+
+    def test_apply_remove_gravam_revisao(self):
+        from analytics.models import AnalysisRevision, CompensationMatrix
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            name="m1",
+            channels=["FITC-A", "PE-A"],
+            matrix=[[1.0, 0.12], [0.03, 1.0]],
+            source=CompensationMatrix.SOURCE_FCS_HEADER,
+        )
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/{matrix.id}/apply"
+        )
+        self.assertEqual(res.status_code, 200)
+        matrix.refresh_from_db()
+        self.assertTrue(matrix.is_applied)
+
+        rev = AnalysisRevision.objects.filter(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_COMPENSATION_APPLY,
+        ).get()
+        self.assertEqual(rev.target_id, matrix.id)
+
+        res = self.client.post(f"/experiment/{self.experiment.id}/compensations/remove")
+        self.assertEqual(res.status_code, 200)
+        matrix.refresh_from_db()
+        self.assertFalse(matrix.is_applied)
+        self.assertTrue(
+            AnalysisRevision.objects.filter(
+                experiment=self.experiment,
+                action=AnalysisRevision.ACTION_COMPENSATION_REMOVE,
+            ).exists()
+        )
+
+    def test_apply_troca_matriz_anterior(self):
+        from analytics.models import CompensationMatrix
+
+        m1 = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+        )
+        m2 = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+        )
+        self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/{m1.id}/apply"
+        )
+        self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/{m2.id}/apply"
+        )
+        m1.refresh_from_db()
+        m2.refresh_from_db()
+        self.assertFalse(m1.is_applied)
+        self.assertTrue(m2.is_applied)
+
+    def test_delete_matriz_aplicada_desliga_e_descarta(self):
+        from analytics.models import CompensationMatrix
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+            is_applied=True,
+        )
+        res = self.client.delete(f"/analytics/compensations/{matrix.id}/")
+        self.assertEqual(res.status_code, 204)
+        matrix.refresh_from_db()
+        self.assertFalse(matrix.active)
+        self.assertFalse(matrix.is_applied)
+
+    def test_density_reflete_compensacao_aplicada(self):
+        from analytics.models import CompensationMatrix
+
+        fd = self._file(
+            "a1.fcs",
+            {"FITC-A": [1000, 1000], "PE-A": [130, 130]},
+        )
+        # Spill do canal PE no detector FITC (S[FITC][PE] = 0.5): a
+        # compensação desloca FITC, que é o eixo do histograma do teste.
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A", "PE-A"],
+            matrix=[[1.0, 0.5], [0.0, 1.0]],
+            source="manual",
+        )
+        url = (
+            f"/experiment/file/{fd.id}/density"
+            "?x=FITC-A&y=PE-A&mode=histogram&bins=4&xscale=linear"
+            "&xmin=0&xmax=2000"
+        )
+        raw = self.client.get(url)
+        self.assertEqual(raw.status_code, 200)
+
+        self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/{matrix.id}/apply"
+        )
+        comp = self.client.get(url)
+        self.assertEqual(comp.status_code, 200)
+        # Histograma compensado difere do cru (PE puxado para baixo).
+        self.assertNotEqual(raw.data["counts"], comp.data["counts"])
+
+    def test_revert_do_apply_desliga_compensacao(self):
+        from analytics.models import AnalysisRevision, CompensationMatrix
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+        )
+        self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/{matrix.id}/apply"
+        )
+        rev = AnalysisRevision.objects.filter(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_COMPENSATION_APPLY,
+        ).get()
+
+        res = self.client.post(
+            f"/analytics/history/{rev.id}/revert/", {}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        matrix.refresh_from_db()
+        self.assertFalse(matrix.is_applied)
+
+    def test_revert_do_remove_religa_compensacao(self):
+        from analytics.models import AnalysisRevision, CompensationMatrix
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+            is_applied=True,
+        )
+        self.client.post(f"/experiment/{self.experiment.id}/compensations/remove")
+        rev = AnalysisRevision.objects.filter(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_COMPENSATION_REMOVE,
+        ).get()
+
+        res = self.client.post(
+            f"/analytics/history/{rev.id}/revert/", {}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        matrix.refresh_from_db()
+        self.assertTrue(matrix.is_applied)
+
+    def test_file_list_sinaliza_compensacao_embutida(self):
+        fd = self._file("a1.fcs", {})
+        fd.headers = {"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"}
+        fd.save(update_fields=["headers"])
+
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+
+        self.assertEqual(res.status_code, 200)
+        entry = next(f for f in res.data if f["id"] == fd.id)
+        self.assertTrue(entry["has_embedded_compensation"])
+
+    def test_from_header_com_apply_ja_ativa(self):
+        FileDataModel.objects.create(
+            headers={"$SPILLOVER": "2,FITC-A,PE-A,1,0.12,0.03,1"},
+            experiment=self.experiment,
+            file_name="a2.fcs",
+            file=self.file_model,
+        )
+
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/from-header",
+            {"apply": True},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(res.data["is_applied"])
+
+
+class DeriveAnalysisApiTestCase(TestCase):
+    """BE-19/ADR-0021: derivar a estratégia de um experimento em outro —
+    match por content_guid (fallback file_name), snapshot sem copied_from."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.other = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+
+        self.source = ExperimentModel.objects.create(
+            title="origem", type="t", created_by=self.owner, status="done"
+        )
+        self.target = ExperimentModel.objects.create(
+            title="alvo", type="t", created_by=self.owner, status="done"
+        )
+        src_fm = FileModel.objects.create(
+            file_name="o.zip",
+            file="o.zip",
+            sha256="s" * 64,
+            experiment=self.source,
+        )
+        tgt_fm = FileModel.objects.create(
+            file_name="t.zip",
+            file="t.zip",
+            sha256="t" * 64,
+            experiment=self.target,
+        )
+        self.src_sub = SubsampleModel.objects.create(
+            experiment=self.source, name="tempo_1", source_path="tempo_1"
+        )
+        self.src_fd = FileDataModel.objects.create(
+            headers={"guid": "g-shared"},
+            content_guid="g-shared",
+            experiment=self.source,
+            file_name="a1.fcs",
+            subsample=self.src_sub,
+            file=src_fm,
+        )
+        self.tgt_fd = FileDataModel.objects.create(
+            headers={"guid": "g-shared"},
+            content_guid="g-shared",
+            experiment=self.target,
+            file_name="a1.fcs",
+            file=tgt_fm,
+        )
+        self.tgt_extra = FileDataModel.objects.create(
+            headers={"guid": "g-solo"},
+            content_guid="g-solo",
+            experiment=self.target,
+            file_name="solo.fcs",
+            file=tgt_fm,
+        )
+        dash = DashboardModel.objects.create(
+            file_data=self.src_fd, name="dash", dashboard_config={}
+        )
+        self.src_gate = GateModel.objects.create(
+            file_data=self.src_fd,
+            name="P1",
+            gate_coordinates={"x": [1, 2], "y": [3, 4]},
+            dashboard=dash,
+            created_by=self.owner,
+        )
+        self.src_child = GateModel.objects.create(
+            file_data=self.src_fd,
+            name="P2",
+            gate_coordinates={},
+            dashboard=dash,
+            parent=self.src_gate,
+            created_by=self.owner,
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _derive(self, **payload):
+        payload.setdefault("source_experiment_id", self.source.id)
+        return self.client.post(
+            f"/experiment/{self.target.id}/derive-analysis",
+            payload,
+            format="json",
+        )
+
+    def test_derive_copias_arvore_subsample_e_revisoes(self):
+        res = self._derive()
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["matched_files"], 1)
+        self.assertEqual(res.data["created_gates"], 2)
+        self.assertEqual(
+            [f["file_name"] for f in res.data["unmatched_target_files"]],
+            ["solo.fcs"],
+        )
+
+        tgt_gates = GateModel.objects.filter(file_data=self.tgt_fd)
+        self.assertEqual(tgt_gates.count(), 2)
+        root = tgt_gates.get(parent__isnull=True)
+        self.assertEqual(root.name, "P1")
+        self.assertIsNone(root.copied_from_id)  # cross-experimento: sem família
+        self.assertEqual(root.children.get().name, "P2")
+
+        # Amostra alvo encaixada em subsample homônimo criado no alvo.
+        self.tgt_fd.refresh_from_db()
+        self.assertEqual(self.tgt_fd.subsample.name, "tempo_1")
+        self.assertNotEqual(self.tgt_fd.subsample_id, self.src_sub.id)
+
+        # Revisões: create por amostra + derive no experimento + move_subsample.
+        revs = AnalysisRevision.objects.filter(experiment=self.target)
+        actions = set(revs.values_list("action", flat=True))
+        self.assertIn("create", actions)
+        self.assertIn("derive", actions)
+        self.assertIn("move_subsample", actions)
+
+    def test_derive_pula_amostra_que_ja_tem_gates(self):
+        dash = DashboardModel.objects.create(
+            file_data=self.tgt_fd, name="d", dashboard_config={}
+        )
+        GateModel.objects.create(
+            file_data=self.tgt_fd,
+            name="existente",
+            gate_coordinates={},
+            dashboard=dash,
+        )
+
+        res = self._derive()
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["matched_files"], 0)
+        self.assertEqual(len(res.data["skipped_files"]), 1)
+        self.assertEqual(GateModel.objects.filter(file_data=self.tgt_fd).count(), 1)
+
+    def test_derive_casa_por_file_name_quando_guid_diverge(self):
+        self.tgt_fd.content_guid = "outro-guid"
+        self.tgt_fd.save(update_fields=["content_guid"])
+
+        res = self._derive()
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["matched_files"], 1)
+        self.assertEqual(GateModel.objects.filter(file_data=self.tgt_fd).count(), 2)
+
+    def test_derive_sem_match_reporta_sem_criar_nada(self):
+        self.tgt_fd.delete()
+        self.tgt_extra.delete()
+
+        res = self._derive()
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["matched_files"], 0)
+        self.assertEqual(len(res.data["unmatched_source_files"]), 1)
+        self.assertFalse(
+            AnalysisRevision.objects.filter(
+                experiment=self.target, action="derive"
+            ).exists()
+        )
+
+    def test_derive_exige_edicao_e_alvo_diferente(self):
+        res = self._derive(source_experiment_id=self.target.id)
+        self.assertEqual(res.status_code, 400)
+
+        # Estranho não enxerga o alvo → 404.
+        client = APIClient()
+        client.force_authenticate(self.other)
+        res = client.post(
+            f"/experiment/{self.target.id}/derive-analysis",
+            {"source_experiment_id": self.source.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 404)
+
+        # Origem de outro usuário, visível só para ele → 404 para o dono.
+        foreign = ExperimentModel.objects.create(
+            title="alheio", type="t", created_by=self.other, status="done"
+        )
+        res = self._derive(source_experiment_id=foreign.id)
+        self.assertEqual(res.status_code, 404)
+
+    def test_derive_copia_compensacao_aplicada(self):
+        from analytics.models import CompensationMatrix
+
+        CompensationMatrix.objects.create(
+            experiment=self.source,
+            name="orig",
+            channels=["A", "B"],
+            matrix=[[1, 0.1], [0, 1]],
+            source="computed",
+            is_applied=True,
+            created_by=self.owner,
+        )
+
+        res = self._derive()
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["compensation_applied"])
+        m = CompensationMatrix.objects.get(experiment=self.target)
+        self.assertTrue(m.is_applied)
+        self.assertEqual(m.name, "orig")
+        self.assertTrue(
+            AnalysisRevision.objects.filter(
+                experiment=self.target, action="compensation_apply"
+            ).exists()
+        )
+
+    def test_revert_da_derivacao_remove_gates_copiados(self):
+        res = self._derive()
+        self.assertEqual(res.status_code, 200)
+
+        create_rev = AnalysisRevision.objects.get(
+            experiment=self.target, action="create"
+        )
+        res = self.client.post(f"/analytics/history/{create_rev.id}/revert/")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(GateModel.objects.filter(file_data=self.tgt_fd).exists())
+
+
+class ExperimentCreateEmptyTestCase(TestCase):
+    """BE-24: POST /experiment/ cria experimento sem arquivo; description é
+    campo livre; values deixa de ser gravável via PATCH (derivado dos FCS)."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.outsider = User.objects.create_user(
+            username="fora", email="fora@pandora.test", password="senha-forte-123"
+        )
+        self.org = Organization.objects.create(name="Lab X", org_type="lab")
+        role = Role.objects.create(name="member")
+        Membership.objects.create(
+            user=self.owner, organization=self.org, role=role, status="active"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _create(self, **payload):
+        return self.client.post("/experiment/", payload, format="json")
+
+    def test_cria_experimento_pessoal_vazio(self):
+        res = self._create(title="rascunho", type="painel")
+
+        self.assertEqual(res.status_code, 201)
+        exp = ExperimentModel.objects.get(id=res.data["id"])
+        self.assertEqual(exp.status, "new")
+        self.assertEqual(exp.file_status, "pending")
+        self.assertIsNone(exp.organization_id)
+        self.assertEqual(exp.created_by, self.owner)
+
+    def test_cria_na_org_com_descricao(self):
+        res = self._create(
+            title="exp-lab",
+            type="painel",
+            description="Beads de referência do lote 42",
+            organizationId=self.org.id,
+        )
+
+        self.assertEqual(res.status_code, 201)
+        exp = ExperimentModel.objects.get(id=res.data["id"])
+        self.assertEqual(exp.organization_id, self.org.id)
+        self.assertEqual(exp.description, "Beads de referência do lote 42")
+
+    def test_titulo_duplicado_no_mesmo_contexto_e_400(self):
+        self._create(title="dup", type="t")
+
+        res = self._create(title="dup", type="t")
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_nao_membro_da_org_leva_403(self):
+        self.client.force_authenticate(self.outsider)
+
+        res = self._create(title="x", type="t", organizationId=self.org.id)
+
+        self.assertEqual(res.status_code, 403)
+
+    def test_patch_grava_description_e_ignora_values(self):
+        exp = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, values=["FSC-A"]
+        )
+
+        res = self.client.patch(
+            f"/experiment/{exp.id}/",
+            {"description": "nota nova", "values": ["HACK"]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        exp.refresh_from_db()
+        self.assertEqual(exp.description, "nota nova")
+        # values é derivado dos arquivos — PATCH não pode sobrescrever.
+        self.assertEqual(exp.values, ["FSC-A"])
+
+    def test_init_aceita_description(self):
+        res = self.client.post(
+            "/experiment/init/",
+            {
+                "title": "via-upload",
+                "type": "t",
+                "totalChunks": 1,
+                "fileName": "a.fcs",
+                "description": "criado já com upload",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        exp = ExperimentModel.objects.get(id=res.data["fileId"])
+        self.assertEqual(exp.description, "criado já com upload")

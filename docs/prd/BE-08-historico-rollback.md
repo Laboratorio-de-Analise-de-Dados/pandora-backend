@@ -2,7 +2,7 @@
 
 **Repo:** pandora-backend (+ front) · **Item do doc:** — (pedido em 12/09, ampliado em 13/09) · **Tipo:** feature · **Base:** `main`
 **Branch sugerida:** `feat/analysis-history`
-**Status:** não iniciado — depende de BE-07 parte 2.
+**Status:** backend implementado em `fix/gate-density-missing-channel`; painel de histórico do front é MR à parte.
 **ADR:** [0008](../adr/0008-historico-append-only-de-analise.md) (Proposto)
 
 ## Problema

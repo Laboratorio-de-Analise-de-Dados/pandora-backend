@@ -1,6 +1,10 @@
-__pycache__
-venv
+__pycache__/
+*.py[cod]
+venv/
+.venv/
 .env
 db.sqlite3
 /assets
 /storage
+/uploads/
+/staticfiles/

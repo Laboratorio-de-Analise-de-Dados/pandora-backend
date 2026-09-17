@@ -69,6 +69,10 @@ def gates_in_experiment_scope(
         id__in=copy_family_ids(gate),
         file_data__experiment_id=gate.file_data.experiment_id,
         file_data__active=True,
+        # A família de cópias nunca cruza branches (BE-23): `copied_from`
+        # pode apontar para outra linha via fork, mas a propagação fica
+        # restrita à branch do gate de origem.
+        branch_id=gate.branch_id,
     )
     if scope == SCOPE_SUBSAMPLE:
         queryset = queryset.filter(file_data__subsample_id=gate.file_data.subsample_id)

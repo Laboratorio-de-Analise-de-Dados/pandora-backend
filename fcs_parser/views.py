@@ -8,11 +8,21 @@ import zipfile
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.db.models import (
+    Case,
+    CharField,
+    Exists,
+    OuterRef,
+    Subquery,
+    Value,
+    When,
+)
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from accounts.models import Organization
-from analytics.models import GateModel
+from accounts.models import Membership, Organization
+from analytics.history import record_revision
+from analytics.models import AnalysisRevision, GateModel
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework.response import Response
 from rest_framework import status
@@ -43,11 +53,24 @@ from fcs_parser.permissions import (
     can_edit_experiment,
     can_move_experiment,
     experiments_visible_to,
+    file_data_visible_to,
     is_org_member,
+    require_can_edit_experiment,
+    require_can_edit_file_data,
+    uploads_visible_to,
+)
+from fcs_parser.services.compensation import (
+    applied_compensation,
+    apply_compensation,
 )
 from fcs_parser.services.copy_experiment import copy_experiment
+from fcs_parser.services.derive_analysis import derive_analysis
 from fcs_parser.serializers import (
-    ExperimentSerializer,
+    ChunkUploadSerializer,
+    ExperimentCompleteSerializer,
+    ExperimentCreateSerializer,
+    ExperimentFileInitSerializer,
+    ExperimentInitSerializer,
     ListExperimentSerializer,
     ListFileDataSerializer,
     ParamListDataSerializer,
@@ -67,9 +90,29 @@ logger = logging.getLogger(__name__)
 INACTIVE_FILE_DETAIL = "Amostra desabilitada. Reative-a para continuar a análise."
 
 
-def get_active_file_data_or_error(file_id):
-    """Busca um FileData ativo. Devolve (file_data, None) ou (None, Response)."""
-    file_data = get_object_or_404(FileDataModel, id=file_id)
+def _first_error(errors) -> str:
+    """Achata ``serializer.errors`` na primeira mensagem.
+
+    Preserva o contrato ``{"detail": "<mensagem>"}`` dos endpoints antigos
+    agora que a validação mora no serializer (ADR-0009).
+    """
+    if isinstance(errors, dict):
+        return _first_error(next(iter(errors.values())))
+    if isinstance(errors, (list, tuple)):
+        return _first_error(errors[0])
+    return str(errors)
+
+
+def _invalid(serializer) -> Response:
+    return Response(
+        {"detail": _first_error(serializer.errors)},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def get_active_file_data_or_error(user, file_id):
+    """Busca um FileData ativo e visível. (file_data, None) ou (None, Response)."""
+    file_data = get_object_or_404(file_data_visible_to(user), id=file_id)
     if not file_data.active:
         return None, Response(
             {"detail": INACTIVE_FILE_DETAIL}, status=status.HTTP_409_CONFLICT
@@ -81,106 +124,29 @@ class ExperimentInitView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        request=inline_serializer(
-            name="ExperimentInitRequest",
-            fields={
-                "title": serializers.CharField(),
-                "type": serializers.CharField(),
-                "totalChunks": serializers.IntegerField(),
-                "fileName": serializers.CharField(required=False),
-                "organizationId": serializers.IntegerField(
-                    required=False, allow_null=True
-                ),
-            },
-        ),
+        request=ExperimentInitSerializer,
         responses=inline_serializer(
             name="ExperimentInitResponse",
             fields={"fileId": serializers.CharField()},
         ),
     )
     def post(self, request):
-        raw_title = request.data.get("title")
-        if not isinstance(raw_title, str) or not raw_title.strip():
-            return Response(
-                {"detail": "Título é obrigatório."}, status=status.HTTP_400_BAD_REQUEST
-            )
-        title = raw_title.strip().replace(" ", "_")
+        serializer = ExperimentInitSerializer(
+            data=request.data, context={"request": request}
+        )
+        if not serializer.is_valid():
+            return _invalid(serializer)
 
-        experiment_type = request.data.get("type")
-        if not experiment_type:
-            return Response(
-                {"detail": "Tipo é obrigatório."}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        total = request.data.get("totalChunks")
-
-        # `fileName` é opcional para não quebrar clientes antigos, que só
-        # enviavam ZIP.
-        raw_file_name = request.data.get("fileName")
-        if raw_file_name not in (None, ""):
-            try:
-                experiment_file_extension(raw_file_name)
-            except DjangoValidationError as exc:
-                return Response(
-                    {"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST
-                )
-
-        raw_org_id = request.data.get("organizationId")
-        if raw_org_id in (None, ""):
-            organization_id = None
-            if ExperimentModel.objects.filter(
-                title=title, created_by=request.user, organization__isnull=True
-            ).exists():
-                return Response(
-                    {
-                        "detail": "Você já possui um experimento pessoal com este título."
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        else:
-            try:
-                organization_id = int(raw_org_id)
-            except (TypeError, ValueError):
-                return Response(
-                    {"detail": "organizationId inválido."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            if not Organization.objects.filter(id=organization_id).exists():
-                return Response(
-                    {"detail": "Laboratório não encontrado."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            if (
-                not request.user.is_super_admin
-                and not request.user.memberships.filter(
-                    organization_id=organization_id, status="active"
-                ).exists()
-            ):
-                return Response(
-                    {
-                        "detail": "Você não tem permissão para criar experimentos neste laboratório."
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
-            if ExperimentModel.objects.filter(
-                title=title, created_by=request.user, organization_id=organization_id
-            ).exists():
-                return Response(
-                    {"detail": "Título já criado para esse laboratório."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
+        data = serializer.validated_data
         try:
             experiment = ExperimentModel.objects.create(
-                title=title,
-                type=experiment_type,
+                title=data["title"],
+                type=data["type"],
+                description=data.get("description", ""),
                 status="uploading",
                 file_status="uploading",
-                total_chunks=total,
-                organization_id=organization_id,
+                total_chunks=data["totalChunks"],
+                organization_id=data.get("organizationId"),
                 created_by=request.user,
             )
         except IntegrityError:
@@ -196,25 +162,23 @@ class UploadChunkView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        request=inline_serializer(
-            name="UploadChunkRequest",
-            fields={
-                "fileId": serializers.CharField(),
-                "chunkIndex": serializers.IntegerField(),
-                "chunk": serializers.FileField(),
-            },
-        ),
+        request=ChunkUploadSerializer,
         responses=inline_serializer(
             name="StatusResponse",
             fields={"status": serializers.CharField()},
         ),
     )
     def post(self, request):
-        file_id = request.data["fileId"]
-        chunk_index = int(request.data["chunkIndex"])
-        chunk = request.FILES["chunk"]
+        serializer = ChunkUploadSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _invalid(serializer)
 
-        experiment = ExperimentModel.objects.get(id=file_id)
+        file_id = serializer.validated_data["fileId"]
+        chunk_index = serializer.validated_data["chunkIndex"]
+        chunk = serializer.validated_data["chunk"]
+
+        experiment = get_object_or_404(experiments_visible_to(request.user), id=file_id)
+        require_can_edit_experiment(request.user, experiment)
 
         chunk_dir = os.path.join(settings.MEDIA_ROOT, "chunks")
         os.makedirs(chunk_dir, exist_ok=True)
@@ -234,33 +198,29 @@ class ExperimentCompleteView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        request=inline_serializer(
-            name="ExperimentCompleteRequest",
-            fields={
-                "fileId": serializers.CharField(),
-                "fileName": serializers.CharField(required=False),
-            },
-        ),
+        request=ExperimentCompleteSerializer,
         responses=inline_serializer(
             name="ExperimentCompleteResponse",
             fields={"status": serializers.CharField()},
         ),
     )
     def post(self, request):
-        file_id = request.data["fileId"]
-        raw_file_name = request.data.get("fileName")
-        try:
-            extension = (
-                experiment_file_extension(raw_file_name)
-                if raw_file_name not in (None, "")
-                else ".zip"
-            )
-        except DjangoValidationError as exc:
-            return Response(
-                {"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST
-            )
+        serializer = ExperimentCompleteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _invalid(serializer)
 
-        experiment = ExperimentModel.objects.get(id=file_id)
+        file_id = serializer.validated_data["fileId"]
+        raw_file_name = serializer.validated_data.get("fileName")
+        # `fileName` é opcional para não quebrar clientes antigos, que só
+        # enviavam ZIP.
+        extension = (
+            experiment_file_extension(raw_file_name)
+            if raw_file_name not in (None, "")
+            else ".zip"
+        )
+
+        experiment = get_object_or_404(experiments_visible_to(request.user), id=file_id)
+        require_can_edit_experiment(request.user, experiment)
 
         final_path = assemble_chunks(
             str(experiment.id), experiment.total_chunks, extension
@@ -313,12 +273,110 @@ class ExperimentCompleteView(generics.CreateAPIView):
         return Response({"status": "done"})
 
 
-class ExperimentListView(generics.ListAPIView):
+def _annotate_list_meta(qs, user):
+    """BE-21: anota `my_role` e `preview_available` sem N+1.
+
+    `my_role`: "owner" em experimento pessoal do próprio usuário; em
+    experimento de organização, o `role.name` da Membership ativa (o papel
+    efetivo sobre o experimento é o papel na org — ADR-0003). Nulo quando
+    nenhum dos dois se aplica (ex.: super admin vendo experimento alheio).
+    """
+    role_sq = Membership.objects.filter(
+        user=user,
+        organization_id=OuterRef("organization_id"),
+        status="active",
+    ).values("role__name")[:1]
+    return qs.annotate(
+        my_role=Case(
+            When(organization__isnull=True, created_by=user, then=Value("owner")),
+            default=Subquery(role_sq, output_field=CharField()),
+            output_field=CharField(),
+        ),
+        preview_available=Exists(
+            FileDataModel.objects.filter(experiment_id=OuterRef("pk"), active=True)
+        ),
+        # BE-22 v1: "está compensado" = alguma amostra ativa traz matriz
+        # de spillover embutida nos headers FCS crus ($SPILLOVER/$COMP).
+        compensated=Exists(
+            FileDataModel.objects.filter(
+                experiment_id=OuterRef("pk"),
+                active=True,
+                headers__has_any_keys=[
+                    "$SPILLOVER",
+                    "$spillover",
+                    "$Spillover",
+                    "$COMP",
+                    "$comp",
+                ],
+            )
+        ),
+    )
+
+
+class ExperimentListView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = ListExperimentSerializer
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="include_inactive",
+                type=bool,
+                required=False,
+                description="Inclui experimentos inativados na listagem (default: false)",
+            )
+        ]
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        request=ExperimentCreateSerializer,
+        responses={201: ListExperimentSerializer},
+    )
+    def post(self, request, *args, **kwargs):
+        """Cria experimento sem arquivo (BE-24).
+
+        Nasce ``status="new"``/``file_status="pending"``; as amostras chegam
+        depois via ``/experiment/<id>/files/init`` — a extração leva o
+        experimento a ``done`` sozinha.
+        """
+        return super().post(request, *args, **kwargs)
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return ExperimentCreateSerializer
+        return ListExperimentSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            return _invalid(serializer)
+        data = serializer.validated_data
+        try:
+            experiment = ExperimentModel.objects.create(
+                title=data["title"],
+                type=data["type"],
+                description=data.get("description", ""),
+                organization_id=data.get("organizationId"),
+                created_by=request.user,
+            )
+        except IntegrityError:
+            return Response(
+                {"detail": "Título já criado para esse laboratório."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            ListExperimentSerializer(experiment).data, status=status.HTTP_201_CREATED
+        )
 
     def get_queryset(self):
-        return experiments_visible_to(self.request.user)
+        include_inactive = self.request.query_params.get("include_inactive") == "true"
+        return _annotate_list_meta(
+            experiments_visible_to(
+                self.request.user, include_inactive=include_inactive
+            ),
+            self.request.user,
+        )
 
 
 class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
@@ -329,7 +387,9 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
     http_method_names = ["get", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
-        return experiments_visible_to(self.request.user)
+        return _annotate_list_meta(
+            experiments_visible_to(self.request.user), self.request.user
+        )
 
     def get_serializer_class(self):
         if self.request.method == "PATCH":
@@ -353,9 +413,7 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
         """
         if not can_move_experiment(request.user, experiment):
             return None, Response(
-                {
-                    "detail": "Mover exige ser o dono ou admin na origem do experimento."
-                },
+                {"detail": "Mover exige ser o dono ou admin na origem do experimento."},
                 status=status.HTTP_403_FORBIDDEN,
             )
         raw = request.data.get("organization_id")
@@ -387,6 +445,20 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
             organization_id, error = self._resolve_move(request, experiment)
             if error:
                 return error
+            clash = ExperimentModel.objects.filter(
+                title=experiment.title,
+                created_by_id=experiment.created_by_id,
+                organization_id=organization_id,
+                active=True,
+            ).exclude(id=experiment.id)
+            if clash.exists():
+                return Response(
+                    {
+                        "detail": "Já existe um experimento ativo com este "
+                        "título no destino."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         elif not self.can_write(experiment):
             return Response(
                 {"detail": "Você não tem permissão para editar este experimento."},
@@ -406,13 +478,423 @@ class RetrieveDeleteExperimentView(generics.RetrieveUpdateDestroyAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        experiment.refresh_from_db()
+        # Reanota sem re-escopar: mover para contexto pessoal pode tirar o
+        # experimento do experiments_visible_to do próprio editor (admin de
+        # org movendo para fora da org).
+        experiment = _annotate_list_meta(
+            ExperimentModel.objects.filter(pk=experiment.pk), request.user
+        ).get()
         return Response(
             ListExperimentSerializer(experiment).data, status=status.HTTP_200_OK
         )
 
     def perform_destroy(self, instance):
-        return instance.delete()
+        # ADR-0005: DELETE é arquivamento — o experimento sai das listagens
+        # (experiments_visible_to filtra active) mas os dados permanecem.
+        # Exige dono ou admin na origem: inativar muda o que os outros veem.
+        if not can_move_experiment(self.request.user, instance):
+            raise PermissionDenied(
+                "Excluir exige ser o dono ou admin na origem do experimento."
+            )
+        if instance.active:
+            instance.active = False
+            instance.save(update_fields=["active"])
+            record_revision(
+                experiment=instance,
+                action=AnalysisRevision.ACTION_DISABLE,
+                target_type=AnalysisRevision.TARGET_EXPERIMENT,
+                target_id=instance.id,
+                user=self.request.user,
+                payload_before={"targets": {str(instance.id): {"active": True}}},
+                payload_after={"targets": {str(instance.id): {"active": False}}},
+                affected_ids=[instance.id],
+                summary=f'desativou o experimento "{instance.title}"',
+            )
+
+
+# Resolução do thumbnail do card de experimento (BE-21) — baixa o suficiente
+# para uma resposta JSON pequena e cacheável.
+PREVIEW_BINS = 48
+
+
+class ExperimentPreviewView(APIView):
+    """GET /experiment/<id>/preview — histograma 2D de baixa resolução.
+
+    Miniatura do plot (FSC-A × SSC-A, ou os dois primeiros canais de
+    `experiment.values`) da primeira amostra ativa. O front renderiza num
+    <canvas> com a colorscale do tema; payload segue o formato de
+    `compute_density`. 204 enquanto o experimento não tem dado pronto;
+    404 quando não há amostra ativa.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name="ExperimentPreviewResponse",
+                fields={
+                    "file_data_id": serializers.IntegerField(),
+                    "histogram": serializers.ListField(),
+                    "x_edges": serializers.ListField(),
+                    "y_edges": serializers.ListField(),
+                    "x_label": serializers.CharField(),
+                    "y_label": serializers.CharField(),
+                },
+            ),
+            204: None,
+            404: None,
+        }
+    )
+    def get(self, request, experiment_id):
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        if experiment.status != "done":
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        file_data = (
+            FileDataModel.objects.filter(experiment=experiment, active=True)
+            .order_by("id")
+            .first()
+        )
+        if file_data is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        channels = [v for v in (experiment.values or []) if v]
+        if len(channels) >= 2:
+            x_param, y_param = channels[0], channels[1]
+        else:
+            x_param, y_param = "FSC-A", "SSC-A"
+
+        x_scale = default_scale(x_param)
+        y_scale = default_scale(y_param)
+        # Preview reflete a análise real: com compensação aplicada, a
+        # thumbnail mostra o dado compensado (BE-22) — e a matriz entra na
+        # chave para não servir thumbnail crua como compensada.
+        applied = applied_compensation(experiment)
+        cache_key = density_cache_key(
+            "preview",
+            file_data.id,
+            experiment.id,
+            x_param,
+            y_param,
+            "heatmap",
+            PREVIEW_BINS,
+            0,
+            x_scale,
+            y_scale,
+            DEFAULT_COFACTOR,
+            0,
+        )
+        cache_key += f":comp{applied.id if applied else 0}"
+        cached = get_cached_density(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        dataset = normalize_columns(file_data.get_dataframe())
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
+        result = compute_density(
+            dataset,
+            x_param,
+            y_param,
+            PREVIEW_BINS,
+            x_scale,
+            y_scale,
+        )
+        if result is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        payload = {
+            "file_data_id": file_data.id,
+            "x_label": x_param,
+            "y_label": y_param,
+            **result,
+        }
+        set_cached_density(cache_key, payload)
+        return Response(payload, status=status.HTTP_200_OK)
+
+
+class ExperimentEmbeddedCompensationView(APIView):
+    """GET /experiment/<id>/compensations/embedded — matriz de spillover
+    embutida nos headers FCS (BE-22 v1).
+
+    Devolve ``{channels, matrix, file_data_id, source}`` da primeira
+    amostra ativa com ``$SPILLOVER``/``$COMP`` parseável; 204 quando
+    nenhuma amostra traz a keyword. Persistir como CompensationMatrix e
+    aplicar na leitura são as próximas etapas do PRD.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name="EmbeddedCompensationResponse",
+                fields={
+                    "channels": serializers.ListField(),
+                    "matrix": serializers.ListField(),
+                    "file_data_id": serializers.IntegerField(),
+                    "source": serializers.CharField(),
+                },
+            ),
+            204: None,
+        }
+    )
+    def get(self, request, experiment_id):
+        from fcs_parser.services.compensation import (
+            experiment_embedded_compensation,
+        )
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        embedded = experiment_embedded_compensation(experiment)
+        if embedded is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(embedded, status=status.HTTP_200_OK)
+
+
+class ExperimentCompensationListView(generics.ListAPIView):
+    """GET /experiment/<id>/compensations/ — matrizes do experimento (BE-22)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        from analytics.serializers import CompensationMatrixSerializer
+
+        return CompensationMatrixSerializer
+
+    def get_queryset(self):
+        from analytics.models import CompensationMatrix
+
+        experiment = get_object_or_404(
+            experiments_visible_to(self.request.user),
+            id=self.kwargs["experiment_id"],
+        )
+        return CompensationMatrix.objects.filter(
+            experiment=experiment, active=True
+        ).order_by("-created_at")
+
+
+class ExperimentCompensationFromHeaderView(APIView):
+    """POST .../compensations/from-header — materializa a matriz embutida."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=None, responses={201: None, 409: None})
+    def post(self, request, experiment_id):
+        from analytics.models import CompensationMatrix
+        from analytics.serializers import CompensationMatrixSerializer
+        from fcs_parser.services.compensation import (
+            experiment_embedded_compensation,
+        )
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+
+        embedded = experiment_embedded_compensation(experiment)
+        if embedded is None:
+            return Response(
+                {"detail": "Nenhuma amostra ativa traz $SPILLOVER/$COMP."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        matrix = CompensationMatrix.objects.create(
+            experiment=experiment,
+            name=request.data.get("name", "") or "Matriz do arquivo",
+            channels=embedded["channels"],
+            matrix=embedded["matrix"],
+            source=CompensationMatrix.SOURCE_FCS_HEADER,
+            created_by=request.user,
+        )
+        # apply=true: materializa e já aplica — "usar a compensação que
+        # veio da aquisição" em um passo só.
+        if request.data.get("apply"):
+            from fcs_parser.services.compensation import (
+                set_applied_compensation,
+            )
+
+            set_applied_compensation(experiment, matrix, request.user)
+            matrix.refresh_from_db()
+        return Response(
+            CompensationMatrixSerializer(matrix).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ExperimentCompensationComputeView(APIView):
+    """POST .../compensations/compute — calcula a matriz dos controles.
+
+    Sem payload, deriva canal→controle dos subsamples marcados
+    (ADR-0019). ``negative``/``controls`` no payload são overrides de
+    file_data_ids. Erros de domínio viram 400 com a mensagem explicável.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, experiment_id):
+        from analytics.models import CompensationMatrix
+        from analytics.serializers import (
+            CompensationComputeSerializer,
+            CompensationMatrixSerializer,
+        )
+        from fcs_parser.services.compensation import (
+            compute_spillover_matrix,
+            experiment_controls,
+        )
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+
+        payload = CompensationComputeSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+
+        unstained, stains = experiment_controls(experiment)
+        if "negative" in payload.validated_data:
+            unstained = payload.validated_data["negative"]
+        if "controls" in payload.validated_data:
+            stains = {
+                channel: ids
+                for channel, ids in payload.validated_data["controls"].items()
+            }
+
+        # Overrides apontam para amostras do próprio experimento.
+        referenced = list(unstained) + [i for ids in stains.values() for i in ids]
+        valid_ids = set(
+            FileDataModel.objects.filter(
+                experiment=experiment, id__in=referenced, active=True
+            ).values_list("id", flat=True)
+        )
+        invalid = sorted(set(referenced) - valid_ids)
+        if invalid:
+            return Response(
+                {"detail": f"Amostras de controle inválidas: {invalid}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            computed = compute_spillover_matrix(unstained, stains)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=experiment,
+            name=payload.validated_data.get("name") or "Calculada de controles",
+            channels=computed["channels"],
+            matrix=computed["matrix"],
+            source=CompensationMatrix.SOURCE_COMPUTED,
+            created_by=request.user,
+        )
+        return Response(
+            CompensationMatrixSerializer(matrix).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ExperimentCompensationApplyView(APIView):
+    """POST .../compensations/<matrix_id>/apply — torna a matriz a ativa."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=None, responses={200: None, 404: None})
+    def post(self, request, experiment_id, matrix_id):
+        from analytics.models import CompensationMatrix
+        from fcs_parser.services.compensation import set_applied_compensation
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+        matrix = get_object_or_404(
+            CompensationMatrix, id=matrix_id, experiment=experiment, active=True
+        )
+        set_applied_compensation(experiment, matrix, request.user)
+        return Response({"is_applied": True}, status=status.HTTP_200_OK)
+
+
+class ExperimentCompensationRemoveView(APIView):
+    """POST .../compensations/remove — desliga a compensação aplicada."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=None, responses={200: None})
+    def post(self, request, experiment_id):
+        from fcs_parser.services.compensation import set_applied_compensation
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+        set_applied_compensation(experiment, None, request.user)
+        return Response({"is_applied": False}, status=status.HTTP_200_OK)
+
+
+class ExperimentRestoreView(APIView):
+    """POST /experiment/<experiment_id>/restore — reativa um experimento.
+
+    O DELETE é arquivamento (active=False); este endpoint é o caminho de
+    volta. Exige a mesma permissão da inativação: dono ou admin na origem.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=None, responses=ListExperimentSerializer)
+    def post(self, request, experiment_id):
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user, include_inactive=True),
+            id=experiment_id,
+        )
+        if not can_move_experiment(request.user, experiment):
+            raise PermissionDenied(
+                "Reativar exige ser o dono ou admin na origem do experimento."
+            )
+        if not experiment.active:
+            # Título é único só entre ativos (ADR-0015): reativar pode colidir
+            # com um ativo que reocupou o título — conflito, não 500.
+            clash = ExperimentModel.objects.filter(
+                title=experiment.title,
+                created_by_id=experiment.created_by_id,
+                organization_id=experiment.organization_id,
+                active=True,
+            ).exists()
+            if clash:
+                return Response(
+                    {
+                        "detail": "Já existe um experimento ativo com este título "
+                        "neste contexto."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            experiment.active = True
+            try:
+                experiment.save(update_fields=["active"])
+            except IntegrityError:
+                return Response(
+                    {
+                        "detail": "Já existe um experimento ativo com este título "
+                        "neste contexto."
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            record_revision(
+                experiment=experiment,
+                action=AnalysisRevision.ACTION_ENABLE,
+                target_type=AnalysisRevision.TARGET_EXPERIMENT,
+                target_id=experiment.id,
+                user=request.user,
+                payload_before={"targets": {str(experiment.id): {"active": False}}},
+                payload_after={"targets": {str(experiment.id): {"active": True}}},
+                affected_ids=[experiment.id],
+                summary=f'reativou o experimento "{experiment.title}"',
+            )
+        return Response(
+            ListExperimentSerializer(experiment).data, status=status.HTTP_200_OK
+        )
 
 
 class DisableFileDataView(APIView):
@@ -438,13 +920,10 @@ class DisableFileDataView(APIView):
     )
     def post(self, request, file_id):
         file_data = get_object_or_404(
-            FileDataModel.objects.select_related("experiment"), id=file_id
+            file_data_visible_to(request.user).select_related("experiment"),
+            id=file_id,
         )
-        if not can_edit_experiment(request.user, file_data.experiment):
-            return Response(
-                {"detail": "Você não tem permissão para alterar este experimento."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        require_can_edit_file_data(request.user, file_data)
 
         if file_data.active:
             file_data.active = False
@@ -452,6 +931,17 @@ class DisableFileDataView(APIView):
             file_data.deactivated_by = request.user
             file_data.save(update_fields=["active", "deactivated_at", "deactivated_by"])
             invalidate_density(file_data.id)
+            record_revision(
+                experiment=file_data.experiment,
+                action=AnalysisRevision.ACTION_DISABLE,
+                target_type=AnalysisRevision.TARGET_FILE,
+                target_id=file_data.id,
+                user=request.user,
+                payload_before={"targets": {str(file_data.id): {"active": True}}},
+                payload_after={"targets": {str(file_data.id): {"active": False}}},
+                affected_ids=[file_data.id],
+                summary=f'desabilitou a amostra "{file_data.file_name}"',
+            )
 
         return Response(
             {
@@ -472,19 +962,27 @@ class EnableFileDataView(APIView):
     @extend_schema(request=None, responses=None)
     def post(self, request, file_id):
         file_data = get_object_or_404(
-            FileDataModel.objects.select_related("experiment"), id=file_id
+            file_data_visible_to(request.user).select_related("experiment"),
+            id=file_id,
         )
-        if not can_edit_experiment(request.user, file_data.experiment):
-            return Response(
-                {"detail": "Você não tem permissão para alterar este experimento."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        require_can_edit_file_data(request.user, file_data)
 
         if not file_data.active:
             file_data.active = True
             file_data.deactivated_at = None
             file_data.deactivated_by = None
             file_data.save(update_fields=["active", "deactivated_at", "deactivated_by"])
+            record_revision(
+                experiment=file_data.experiment,
+                action=AnalysisRevision.ACTION_ENABLE,
+                target_type=AnalysisRevision.TARGET_FILE,
+                target_id=file_data.id,
+                user=request.user,
+                payload_before={"targets": {str(file_data.id): {"active": False}}},
+                payload_after={"targets": {str(file_data.id): {"active": True}}},
+                affected_ids=[file_data.id],
+                summary=f'reativou a amostra "{file_data.file_name}"',
+            )
 
         return Response(
             {
@@ -509,12 +1007,20 @@ class SubsampleListCreateView(generics.ListCreateAPIView):
 
     def get_experiment(self):
         return get_object_or_404(
-            ExperimentModel, id=self.kwargs["experiment_id"]
+            experiments_visible_to(self.request.user),
+            id=self.kwargs["experiment_id"],
         )
+
+    def get_serializer_context(self):
+        # O serializer valida control_channel contra os canais do experimento.
+        ctx = super().get_serializer_context()
+        ctx["experiment"] = self.get_experiment()
+        return ctx
 
     def get_queryset(self):
         queryset = SubsampleModel.objects.filter(
-            experiment_id=self.kwargs["experiment_id"]
+            experiment__in=experiments_visible_to(self.request.user),
+            experiment_id=self.kwargs["experiment_id"],
         ).prefetch_related("files")
         if self.request.query_params.get("include_inactive") != "true":
             queryset = queryset.filter(active=True)
@@ -522,20 +1028,28 @@ class SubsampleListCreateView(generics.ListCreateAPIView):
 
     def create(self, request, *args, **kwargs):
         experiment = self.get_experiment()
-        if not can_edit_experiment(request.user, experiment):
-            return Response(
-                {"detail": "Você não tem permissão para alterar este experimento."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        require_can_edit_experiment(request.user, experiment)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            serializer.save(experiment=experiment, created_by=request.user)
+            subsample = serializer.save(experiment=experiment, created_by=request.user)
         except IntegrityError:
             return Response(
                 {"name": "Já existe um subsample com esse nome neste experimento."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        record_revision(
+            experiment=experiment,
+            action=AnalysisRevision.ACTION_CREATE,
+            target_type=AnalysisRevision.TARGET_SUBSAMPLE,
+            target_id=subsample.id,
+            user=request.user,
+            payload_after={
+                "targets": {str(subsample.id): {"name": subsample.name, "active": True}}
+            },
+            affected_ids=[subsample.id],
+            summary=f'criou o subsample "{subsample.name}"',
+        )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -551,30 +1065,65 @@ class SubsampleDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return SubsampleModel.objects.filter(
-            experiment_id=self.kwargs["experiment_id"]
+            experiment__in=experiments_visible_to(self.request.user),
+            experiment_id=self.kwargs["experiment_id"],
         ).select_related("experiment")
 
     def check_can_edit(self, subsample):
-        if not can_edit_experiment(self.request.user, subsample.experiment):
-            raise PermissionDenied(
-                "Você não tem permissão para alterar este experimento."
-            )
+        require_can_edit_experiment(self.request.user, subsample.experiment)
 
     def perform_update(self, serializer):
         self.check_can_edit(serializer.instance)
+        old_name = serializer.instance.name
         try:
-            serializer.save()
+            subsample = serializer.save()
         except IntegrityError:
             raise serializers.ValidationError(
                 {"name": "Já existe um subsample com esse nome neste experimento."}
             )
+        if subsample.name != old_name:
+            record_revision(
+                experiment=subsample.experiment,
+                action=AnalysisRevision.ACTION_RENAME,
+                target_type=AnalysisRevision.TARGET_SUBSAMPLE,
+                target_id=subsample.id,
+                user=self.request.user,
+                payload_before={"targets": {str(subsample.id): {"name": old_name}}},
+                payload_after={
+                    "targets": {str(subsample.id): {"name": subsample.name}}
+                },
+                affected_ids=[subsample.id],
+                summary=f'renomeou o subsample "{old_name}" → "{subsample.name}"',
+            )
 
     def perform_destroy(self, instance):
         self.check_can_edit(instance)
+        linked_ids = list(instance.files.values_list("id", flat=True))
         if instance.active:
             instance.active = False
             instance.save(update_fields=["active"])
         instance.files.update(subsample=None)
+        record_revision(
+            experiment=instance.experiment,
+            action=AnalysisRevision.ACTION_DELETE,
+            target_type=AnalysisRevision.TARGET_SUBSAMPLE,
+            target_id=instance.id,
+            user=self.request.user,
+            payload_before={
+                "targets": {str(instance.id): {"active": True}},
+                "unlinked_file_ids": linked_ids,
+            },
+            payload_after={"targets": {str(instance.id): {"active": False}}},
+            affected_ids=[instance.id, *linked_ids],
+            summary=(
+                f'arquivou o subsample "{instance.name}"'
+                + (
+                    f" ({len(linked_ids)} amostra(s) desagrupada(s))"
+                    if linked_ids
+                    else ""
+                )
+            ),
+        )
 
 
 class FileSubsampleView(APIView):
@@ -597,13 +1146,10 @@ class FileSubsampleView(APIView):
     )
     def patch(self, request, file_id):
         file_data = get_object_or_404(
-            FileDataModel.objects.select_related("experiment"), id=file_id
+            file_data_visible_to(request.user).select_related("experiment"),
+            id=file_id,
         )
-        if not can_edit_experiment(request.user, file_data.experiment):
-            return Response(
-                {"detail": "Você não tem permissão para alterar este experimento."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        require_can_edit_file_data(request.user, file_data)
 
         if "subsample" not in request.data:
             return Response(
@@ -625,8 +1171,32 @@ class FileSubsampleView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        old_subsample_id = file_data.subsample_id
         file_data.subsample = subsample
         file_data.save(update_fields=["subsample"])
+        if old_subsample_id != file_data.subsample_id:
+            record_revision(
+                experiment=file_data.experiment,
+                action=AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
+                target_type=AnalysisRevision.TARGET_FILE,
+                target_id=file_data.id,
+                user=request.user,
+                payload_before={
+                    "targets": {str(file_data.id): {"subsample_id": old_subsample_id}}
+                },
+                payload_after={
+                    "targets": {
+                        str(file_data.id): {"subsample_id": file_data.subsample_id}
+                    }
+                },
+                affected_ids=[file_data.id],
+                summary=(
+                    f'moveu a amostra "{file_data.file_name}" para '
+                    f'"{subsample.name}"'
+                    if subsample
+                    else f'removeu a amostra "{file_data.file_name}" do subsample'
+                ),
+            )
 
         return Response(
             ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
@@ -640,7 +1210,9 @@ class GetExperimentFiles(generics.ListAPIView):
 
     def get_queryset(self):
         experiment_id = self.kwargs.get("experiment_id")
-        queryset = FileDataModel.objects.filter(experiment_id=experiment_id)
+        queryset = file_data_visible_to(self.request.user).filter(
+            experiment_id=experiment_id
+        )
         if self.request.query_params.get("include_inactive") != "true":
             queryset = queryset.filter(active=True)
         return queryset
@@ -656,8 +1228,22 @@ class GetExperimentFiles(generics.ListAPIView):
         ]
     )
     def list(self, request, *args, **kwargs):
+        from analytics.services.branches import resolve_branch
+        from fcs_parser.permissions import experiments_visible_to
+
         # Retrieve the queryset of files
         queryset = self.get_queryset()
+
+        # BE-23: a árvore é da linha de análise pedida (?branch=<id>,
+        # default main do experimento). Experimento invisível já resulta
+        # em queryset vazio — mantemos [] em vez de 404 (contrato antigo).
+        branch_id = request.query_params.get("branch")
+        experiment = (
+            experiments_visible_to(request.user)
+            .filter(id=self.kwargs.get("experiment_id"))
+            .first()
+        )
+        branch = resolve_branch(experiment, branch_id) if experiment else None
 
         # Manually create the response data with the gate tree
         data = []
@@ -667,7 +1253,7 @@ class GetExperimentFiles(generics.ListAPIView):
             file_data = file_serializer.data
 
             # Build the gate tree for the current file
-            gate_tree = GateModel.build_tree(file_data_id=file.id)
+            gate_tree = GateModel.build_tree(file_data_id=file.id, branch=branch)
 
             # Add the built tree to the file data
             file_data["gates"] = gate_tree
@@ -683,7 +1269,9 @@ class ListFileParams(generics.ListAPIView):
 
     def get_queryset(self):
         file_id = self.kwargs.get("file_id")
-        queryset = get_object_or_404(FileDataModel, id=file_id)
+        queryset = get_object_or_404(
+            file_data_visible_to(self.request.user), id=file_id
+        )
         return queryset
 
     def list(self, request, *args, **kwargs):
@@ -699,6 +1287,11 @@ class ListFileParams(generics.ListAPIView):
                 {"detail": INACTIVE_FILE_DETAIL}, status=status.HTTP_409_CONFLICT
             )
         dataset = normalize_columns(file_data.get_dataframe())
+        # BE-22: a tabela de eventos mostra o mesmo espaço que o usuário
+        # vê/gateia — com compensação ativa, os valores já vêm corrigidos.
+        applied = applied_compensation(file_data.experiment)
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
         dataset = dataset.head(limit)
         file_data.data_set = json.loads(dataset.to_json(orient="records"))
         serializer = self.serializer_class(file_data)
@@ -834,14 +1427,21 @@ class FileDensityView(APIView):
             cache_key += f":xr{x_range[0]}:{x_range[1]}"
         if y_range:
             cache_key += f":yr{y_range[0]}:{y_range[1]}"
+        file_data, error = get_active_file_data_or_error(request.user, file_id)
+        if error:
+            return error
+
+        # BE-22: a matriz aplicada entra na chave de cache — densidade
+        # compensada nunca é servida como se fosse crua.
+        applied = applied_compensation(file_data.experiment)
+        cache_key += f":comp{applied.id if applied else 0}"
         cached = get_cached_density(cache_key)
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
 
-        file_data, error = get_active_file_data_or_error(file_id)
-        if error:
-            return error
         dataset = normalize_columns(file_data.get_dataframe())
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
 
         base = {
             "mode": mode,
@@ -905,8 +1505,12 @@ class ProcessFileDataView(generics.CreateAPIView):
         from fcs_parser.services.process_experiment_file import process_experiment_zip
 
         file_id = kwargs.get("file_id")
-        file = get_object_or_404(FileModel, id=file_id)
+        file = get_object_or_404(
+            uploads_visible_to(request.user).select_related("experiment"),
+            id=file_id,
+        )
         experiment = file.experiment
+        require_can_edit_experiment(request.user, experiment)
         if experiment.status == "processing":
             return Response(
                 {"message": "The file is still being processed."},
@@ -960,10 +1564,13 @@ class FileStatsView(APIView):
         ),
     )
     def get(self, request, file_id):
-        file_data, error = get_active_file_data_or_error(file_id)
+        file_data, error = get_active_file_data_or_error(request.user, file_id)
         if error:
             return error
         dataset = normalize_columns(file_data.get_dataframe())
+        applied = applied_compensation(file_data.experiment)
+        if applied:
+            dataset = apply_compensation(dataset, applied.channels, applied.matrix)
 
         if dataset.empty:
             return Response(
@@ -1019,12 +1626,11 @@ class RecomputeFileDataView(APIView):
         ),
     )
     def post(self, request, file_id):
-        file_data, error = get_active_file_data_or_error(file_id)
+        file_data, error = get_active_file_data_or_error(request.user, file_id)
         if error:
             return error
-        has_zip = bool(
-            getattr(getattr(file_data.file, "file", None), "name", None)
-        )
+        require_can_edit_file_data(request.user, file_data)
+        has_zip = bool(getattr(getattr(file_data.file, "file", None), "name", None))
         has_fcs = bool(file_data.fcs_path)
         if not has_zip and not has_fcs:
             return Response(
@@ -1075,7 +1681,7 @@ class FileHeadersView(APIView):
         },
     )
     def get(self, request, file_id):
-        file_data = get_object_or_404(FileDataModel, id=file_id)
+        file_data = get_object_or_404(file_data_visible_to(request.user), id=file_id)
         return Response(
             {
                 "file_data_id": file_data.id,
@@ -1162,6 +1768,72 @@ class ExperimentCopyView(APIView):
         )
 
 
+class ExperimentDeriveAnalysisView(APIView):
+    """POST /experiment/<experiment_id>/derive-analysis/ — deriva a estratégia
+    de outro experimento sobre as amostras deste (BE-19, ADR-0021).
+
+    Casa amostras por `content_guid` (fallback `file_name`) e clona as
+    árvores de gates — snapshot, sem vínculo vivo e sem `copied_from`
+    cross-experimento. Amostras com gates existentes são puladas. Opcional:
+    encaixe em subsamples homônimos e cópia da matriz de compensação
+    aplicada. Zero trust: exige edição nos dois experimentos.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=inline_serializer(
+            name="ExperimentDeriveAnalysisRequest",
+            fields={
+                "source_experiment_id": serializers.IntegerField(),
+                "include_subsamples": serializers.BooleanField(required=False),
+                "include_compensation": serializers.BooleanField(required=False),
+            },
+        ),
+        responses={200: inline_serializer(name="DeriveAnalysisResponse", fields={})},
+    )
+    def post(self, request, experiment_id):
+        target = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        if not can_edit_experiment(request.user, target):
+            return Response(
+                {"detail": "Derivar análise exige edição no experimento alvo."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        raw = request.data.get("source_experiment_id")
+        try:
+            source_id = int(raw)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "source_experiment_id é obrigatório."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if source_id == target.id:
+            return Response(
+                {"detail": "Origem e alvo são o mesmo experimento."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source = get_object_or_404(experiments_visible_to(request.user), id=source_id)
+        if not can_edit_experiment(request.user, source):
+            return Response(
+                {
+                    "detail": "Derivar exige permissão de edição no experimento de origem."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        report = derive_analysis(
+            target,
+            source,
+            user=request.user,
+            include_subsamples=request.data.get("include_subsamples", True),
+            include_compensation=request.data.get("include_compensation", True),
+        )
+        return Response(report, status=status.HTTP_200_OK)
+
+
 class FileHashCheckView(APIView):
     """POST /experiment/check-hash/ — dedup de upload por SHA-256 (BE-12).
 
@@ -1198,12 +1870,18 @@ class FileHashCheckView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         # Dedup escopado por experimento quando `experiment_id` vem no body:
-        # "este arquivo já está NESTE experimento". Sem ele, resposta global
-        # (informativa). O hash pode ser do blob (FileModel.sha256) ou de um
+        # "este arquivo já está NESTE experimento". Sem ele, a resposta cobre
+        # só os experimentos visíveis ao usuário — file_name de blob alheio
+        # não vaza. O hash pode ser do blob (FileModel.sha256) ou de um
         # .fcs individual já extraído (FileDataModel.content_sha256).
         experiment_id = request.data.get("experiment_id")
-        blob_qs = FileModel.objects.filter(sha256=sha256.lower())
-        sample_qs = FileDataModel.objects.filter(content_sha256=sha256.lower())
+        visible = experiments_visible_to(request.user)
+        blob_qs = FileModel.objects.filter(
+            sha256=sha256.lower(), experiment__in=visible
+        )
+        sample_qs = FileDataModel.objects.filter(
+            content_sha256=sha256.lower(), experiment__in=visible
+        )
         if experiment_id not in (None, ""):
             blob_qs = blob_qs.filter(experiment_id=experiment_id)
             sample_qs = sample_qs.filter(experiment_id=experiment_id)
@@ -1235,49 +1913,28 @@ class ExperimentFileInitView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        request=inline_serializer(
-            name="ExperimentFileInitRequest",
-            fields={
-                "fileName": serializers.CharField(),
-                "totalChunks": serializers.IntegerField(),
-            },
-        ),
+        request=ExperimentFileInitSerializer,
         responses=inline_serializer(
             name="ExperimentFileInitResponse",
             fields={"fileId": serializers.IntegerField()},
         ),
     )
     def post(self, request, experiment_id):
-        experiment = get_object_or_404(ExperimentModel, id=experiment_id)
-        if not can_edit_experiment(request.user, experiment):
-            return Response(
-                {"detail": "Você não tem permissão para alterar este experimento."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
 
-        raw_file_name = request.data.get("fileName")
-        try:
-            extension = experiment_file_extension(raw_file_name)
-        except DjangoValidationError as exc:
-            return Response(
-                {"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST
-            )
+        serializer = ExperimentFileInitSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _invalid(serializer)
 
-        total = request.data.get("totalChunks")
-        try:
-            total = int(total)
-            if total < 1:
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response(
-                {"detail": "totalChunks inválido."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        data = serializer.validated_data
+        extension = experiment_file_extension(data["fileName"])
         upload = FileModel.objects.create(
             experiment=experiment,
-            file_name=raw_file_name,
-            total_chunks=total,
+            file_name=data["fileName"],
+            total_chunks=data["totalChunks"],
         )
         return Response({"fileId": upload.id, "extension": extension}, status=201)
 
@@ -1292,38 +1949,29 @@ class ExperimentFileChunkView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        request=inline_serializer(
-            name="ExperimentFileChunkRequest",
-            fields={
-                "fileId": serializers.IntegerField(),
-                "chunkIndex": serializers.IntegerField(),
-                "chunk": serializers.FileField(),
-            },
-        ),
+        request=ChunkUploadSerializer,
         responses=inline_serializer(
             name="ChunkStatusResponse",
             fields={"status": serializers.CharField()},
         ),
     )
     def post(self, request):
-        upload = get_object_or_404(
-            FileModel.objects.select_related("experiment"),
-            id=request.data.get("fileId"),
-        )
-        if not can_edit_experiment(request.user, upload.experiment):
-            return Response(
-                {"detail": "Você não tem permissão para alterar este experimento."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        serializer = ChunkUploadSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _invalid(serializer)
 
-        chunk_index = int(request.data["chunkIndex"])
-        chunk = request.FILES["chunk"]
+        upload = get_object_or_404(
+            uploads_visible_to(request.user).select_related("experiment"),
+            id=serializer.validated_data["fileId"],
+        )
+        require_can_edit_experiment(request.user, upload.experiment)
+
+        chunk_index = serializer.validated_data["chunkIndex"]
+        chunk = serializer.validated_data["chunk"]
 
         chunk_dir = os.path.join(settings.MEDIA_ROOT, "chunks")
         os.makedirs(chunk_dir, exist_ok=True)
-        chunk_path = os.path.join(
-            chunk_dir, f"f{upload.id}_{chunk_index}.part"
-        )
+        chunk_path = os.path.join(chunk_dir, f"f{upload.id}_{chunk_index}.part")
         with open(chunk_path, "wb") as f:
             for c in chunk.chunks():
                 f.write(c)
@@ -1345,13 +1993,7 @@ class ExperimentFileCompleteView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        request=inline_serializer(
-            name="ExperimentFileCompleteRequest",
-            fields={
-                "fileId": serializers.IntegerField(),
-                "fileName": serializers.CharField(required=False),
-            },
-        ),
+        request=ExperimentCompleteSerializer,
         responses=inline_serializer(
             name="ExperimentFileCompleteResponse",
             fields={
@@ -1362,18 +2004,18 @@ class ExperimentFileCompleteView(APIView):
         ),
     )
     def post(self, request):
+        serializer = ExperimentCompleteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _invalid(serializer)
+
         upload = get_object_or_404(
-            FileModel.objects.select_related("experiment"),
-            id=request.data.get("fileId"),
+            uploads_visible_to(request.user).select_related("experiment"),
+            id=serializer.validated_data["fileId"],
         )
         experiment = upload.experiment
-        if not can_edit_experiment(request.user, experiment):
-            return Response(
-                {"detail": "Você não tem permissão para alterar este experimento."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        require_can_edit_experiment(request.user, experiment)
 
-        raw_file_name = request.data.get("fileName") or upload.file_name
+        raw_file_name = serializer.validated_data.get("fileName") or upload.file_name
         try:
             extension = experiment_file_extension(raw_file_name)
         except DjangoValidationError as exc:
@@ -1383,13 +2025,9 @@ class ExperimentFileCompleteView(APIView):
 
         upload_key = f"f{upload.id}"
         try:
-            final_path = assemble_chunks(
-                upload_key, upload.total_chunks, extension
-            )
+            final_path = assemble_chunks(upload_key, upload.total_chunks, extension)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         if extension == ".fcs":
             zip_path = os.path.join(settings.MEDIA_ROOT, f"{upload_key}.zip")
@@ -1483,10 +2121,9 @@ class ExperimentDownloadView(APIView):
             try:
                 with zipfile.ZipFile(upload_file, "r") as zf:
                     names = zf.namelist()
-                    match = (
-                        [n for n in names if n == entry]
-                        or [n for n in names if n.endswith(f"/{entry}")]
-                    )
+                    match = [n for n in names if n == entry] or [
+                        n for n in names if n.endswith(f"/{entry}")
+                    ]
                     if match:
                         return zf.read(match[0])
             except (zipfile.BadZipFile, KeyError, OSError):

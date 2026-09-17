@@ -36,6 +36,9 @@ class ExperimentModel(models.Model):
     id = models.BigAutoField(primary_key=True)
     title = models.CharField(max_length=50)
     type = models.CharField(max_length=100, null=True)
+    # Contexto livre do experimento (objetivo, painel, notas) — opcional,
+    # preenchido/alterado pelo usuário (BE-24).
+    description = models.TextField(blank=True, default="")
     values = ArrayField(models.TextField(), blank=True, default=list)
     active = models.BooleanField(default=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default="new")
@@ -64,13 +67,13 @@ class ExperimentModel(models.Model):
             models.UniqueConstraint(
                 fields=["title", "created_by", "organization"],
                 name="unique_title_per_user_and_org",
-                condition=models.Q(organization__isnull=False),
+                condition=models.Q(organization__isnull=False, active=True),
             ),
             # Evita que o MESMO usuário crie experimentos pessoais com títulos iguais
             models.UniqueConstraint(
                 fields=["title", "created_by"],
                 name="unique_title_per_user_personal",
-                condition=models.Q(organization__isnull=True),
+                condition=models.Q(organization__isnull=True, active=True),
             ),
         ]
 
@@ -130,6 +133,19 @@ class SubsampleModel(models.Model):
     # Diretório relativo dentro do ZIP que originou o subsample.
     # Vazio quando o subsample foi criado pelo usuário na UI.
     source_path = models.CharField(max_length=512, blank=True, default="")
+    # BE-22/ADR-0019: papel de controle de compensação. "unstained" =
+    # controle negativo; "single_stain" = controle do canal em
+    # `control_channel`. Arquivos dentro são réplicas (pool no cálculo).
+    CONTROL_UNSTAINED = "unstained"
+    CONTROL_SINGLE_STAIN = "single_stain"
+    CONTROL_TYPE_CHOICES = [
+        (CONTROL_UNSTAINED, "Negativo (unstained)"),
+        (CONTROL_SINGLE_STAIN, "Single stain"),
+    ]
+    control_type = models.CharField(
+        max_length=20, choices=CONTROL_TYPE_CHOICES, null=True, blank=True
+    )
+    control_channel = models.CharField(max_length=256, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
         User,
@@ -283,9 +299,7 @@ class FileDataModel(models.Model):
         if upload is None:
             return None
 
-        fcs_path = extract_fcs_from_zip(
-            upload, self.source_path or self.file_name
-        )
+        fcs_path = extract_fcs_from_zip(upload, self.source_path or self.file_name)
         if fcs_path is None:
             return None
 
