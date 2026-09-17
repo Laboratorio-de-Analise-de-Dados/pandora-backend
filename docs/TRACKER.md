@@ -14,7 +14,6 @@ ou alinhe com o responsável.
 | Feature | Área afetada | Branch | Sessão | Desde |
 |---|---|---|---|---|
 | Reverte profile juvia do compose | `docker-compose.yml`, AGENTS.md | `chore/remove-juvia-service` | devin | 2026-09 |
-| BE-29 vinculação de IdPs | `accounts/models.py`, `accounts/views.py`, `accounts/services/oauth.py`, `accounts/urls.py`, `accounts/serializers.py`, `accounts/tests.py` | `feat/email-smtp-config` | devin | 2026-09 |
 
 ## Concluído nesta branch
 
@@ -25,6 +24,7 @@ ou alinhe com o responsável.
 | BE-19 (derivação) | `POST /experiment/<id>/derive-analysis/` (ADR-0021): match por `content_guid`/`file_name`, cópia de árvore + subsamples homônimos + compensação aplicada; revisões `derive`/`create` revertíveis |
 | BE-23 (branches) | ADR-0020 implementado: `AnalysisBranch` + `branch`/`forked_from` em gates/revisões, fork materializado, `GET/POST .../branches/`, `PATCH/DELETE /analytics/branches/<id>/`, `GET .../diff/`, `POST .../merge/` (mine/theirs/both, dry_run, revert em cadeia), `?branch=` na timeline e na árvore de `list/data` |
 | BE-24 | `POST /experiment/` cria experimento sem arquivo, `description` livre, `values` read-only (derivado dos FCS) |
+| BE-29 | SocialAccount + AuthEvent + link/unlink + aviso de vínculo (ADR-0025/0026) — mergeado no PR #95 |
 
 ## Fora da branch (em PR própria)
 
