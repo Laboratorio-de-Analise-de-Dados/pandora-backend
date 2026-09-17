@@ -38,6 +38,7 @@ ou alinhe com o responsável.
 
 | Feature | Observação |
 |---|---|
+| Google SSO — ativação (fase 2) | Código pronto (BE-29); falta só OAuth client no Google Cloud + envs `GOOGLE_*`. Decisão 2026-09: ativar antes da virada para v1 em prod — ver seção "Ativação do Google" no PRD BE-29 |
 | FE: UI de "derivar análise" (BE-19) | Backend pronto — consumir `POST /experiment/<id>/derive-analysis/` no front (PRD: `pandora-front/docs/prd/FE-28`) |
 | FE: UI de branches (BE-23) | Backend pronto — seletor de branch (`?branch=` nas leituras), criar/renomear/arquivar, tela de diff + resolução de conflitos do merge (PRD: `pandora-front/docs/prd/FE-29`) |
 | BE-19 workspaces/templates (objeto persistido) | Visão no PRD — ADR-0021 escolheu snapshot sem template; reabrir só se o caso de uso pedir catálogo |

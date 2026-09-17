@@ -116,3 +116,23 @@ POST /accounts/social-accounts/<id>/unlink/   desvincula
 - UI (FE-31)
 - Domain auto-join opt-in por org
 - Reautenticação para link (aceitável no beta; registrar como hardening futuro)
+
+## Ativação do Google — fase 2 (decisão 2026-09)
+
+O código do provider Google está completo e simétrico ao Microsoft
+(`GoogleAuthInitView`/`Callback`/`LinkInit`, `google_fetch_identity`,
+rotas `/accounts/auth/google/*`, match por `sub`, vínculo no perfil) —
+**falta apenas a credencial**: criar o OAuth client (tipo "Web
+application") no Google Cloud Console e preencher `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET` e `GOOGLE_REDIRECT_URI` (`.env` dev e
+`docker-compose.prod.yml` já têm os pontos preparados).
+
+Decisão de rollout: manter `GOOGLE_AUTH_ENABLED=false` e o Google como
+**segunda fase**, a ser ativado um pouco antes da virada para v1 em
+produção — enquanto isso só o Microsoft fica exposto. Motivo: o app de
+teste do Google exige lista de test users, e publicar exige página
+inicial + URL de política de privacidade no domínio — pendências de
+maturidade do produto, não de código. Quando ativar: redirect URIs a
+registrar são `http://localhost:8085/accounts/auth/google/callback/`
+(dev) e `https://api.project-pandora.com.br/accounts/auth/google/callback/`
+(prod).
