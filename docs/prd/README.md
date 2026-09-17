@@ -30,7 +30,7 @@
 | [BE-26](BE-26-identificar-amostras-controle.md) | Marcação de controles pelo usuário + sugestão por heurística | Não iniciado (estende ADR-0019) |
 | [BE-27](BE-27-fila-de-jobs-juvia.md) | Fila de jobs pro Juvia: `SKIP LOCKED`, claim/complete/fail, quarentena, cleanup | Não iniciado (juvia ADR-0002 Proposto) |
 | [BE-28](BE-28-tipo-de-experimento-vocabulario.md) | Tipo de experimento como vocabulário controlado (admin ou dono do experimento; `/experiment/types/` + dedup normalizado) | Implementado em `feat/experiment-type` (ADR-0023) |
-| [BE-29](BE-29-vinculacao-identity-providers.md) | Conta central vinculável a N IdPs (`SocialAccount`), log de auth (`AuthEvent`), aviso de vínculo no login, unlink com regra do último acesso | Implementado — PR #95 (ADR-0025) |
+| [BE-29](BE-29-vinculacao-identity-providers.md) | Conta central vinculável a N IdPs (`SocialAccount`), log de auth (`AuthEvent`), aviso de vínculo no login, unlink com regra do último acesso | Implementado — PR #95 (ADR-0025). Google: código pronto, ativação adiada para fase 2 (pré-v1) |
 | [BE-30](BE-30-merge-de-contas.md) | Merge de contas duplicadas: migra memberships, autoria e vínculos; conta absorvida inativa | Implementado em `feat/account-merge` |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
