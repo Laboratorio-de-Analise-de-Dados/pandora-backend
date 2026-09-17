@@ -17,6 +17,18 @@ one-off → health check → rollback automático → `latest` no Hub. Tag
 avulsa via `git tag` **não** deploya. Deploy passa pelo portão do
 environment `production` (aprovável via API, ver passo 5).
 
+## Passo 0 — produção não é ambiente de teste
+
+Antes de publicar, tudo que entra na release já tem que estar
+**verificado**: CI verde na `main`, testes/verificação local do que
+mudou, QA e review fechados. Depois do deploy só se confere o *deploy*
+— container subiu, health check, versão certa no ar — nunca a feature.
+
+E pipeline novo também é código não testado: se `release.yml` ou
+`rollback.yml` mudaram desde o último deploy bem-sucedido, exercite o
+caminho antes de confiar nele — `workflow_dispatch` numa tag já
+publicada é idempotente e serve como ensaio do deploy.
+
 ## Passo 1 — descobrir a última versão e o que entra
 
 ```bash

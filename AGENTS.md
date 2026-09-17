@@ -36,6 +36,12 @@ python manage.py check              # sanity check do Django
   one-off → health check → rollback automático de código;
   `rollback.yml` restaura uma tag por `workflow_dispatch`. Deploy ainda
   passa pelo portão do environment `production`.
+- **Produção não é ambiente de teste** — toda verificação de feature
+  (testes, QA, review) acontece antes da release; em produção roda só o
+  smoke check do próprio deploy (subiu, health, versão certa no ar).
+  Mudança em `release.yml`/`rollback.yml` é código não testado até ser
+  exercitada — valide com dispatch numa tag já publicada antes de
+  confiar nela num deploy real.
 - **Migrations retrocompatíveis (expand-contract)**: toda migration deve
   funcionar com a versão anterior do código — nunca dropar coluna/tabela
   na mesma release que para de usá-la. É o que torna o rollback automático
