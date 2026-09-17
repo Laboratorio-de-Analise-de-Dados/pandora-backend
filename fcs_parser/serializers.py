@@ -360,7 +360,7 @@ class UpdateExperimentSerializer(serializers.ModelSerializer):
         if not value or not value.strip():
             raise serializers.ValidationError("Tipo é obrigatório.")
         value = value.strip()
-        # BE-28/ADR-0022: tipo novo entra no vocabulário no save() — quem
+        # BE-28/ADR-0023: tipo novo entra no vocabulário no save() — quem
         # pode introduzir um é só admin ou o dono do experimento; membro
         # editando experimento alheio escolhe entre os existentes.
         exists = ExperimentTypeModel.objects.filter(

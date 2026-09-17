@@ -19,7 +19,7 @@ def parquet_storage_dir() -> str:
 
 
 class ExperimentTypeModel(models.Model):
-    """Vocabulário controlado de tipos de experimento (ADR-0022, BE-28).
+    """Vocabulário controlado de tipos de experimento (ADR-0023, BE-28).
 
     Qualquer usuário autenticado pode criar um tipo novo — basta salvar um
     experimento com um nome que ainda não existe. A unicidade é

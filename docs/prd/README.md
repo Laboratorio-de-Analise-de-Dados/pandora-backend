@@ -26,7 +26,7 @@
 | [BE-22](BE-22-compensacao.md) | Compensação: aceitar `$SPILLOVER` do FCS ou calcular de controles (subsamples) | Implementado em `feat/analysis-checkpoints` (ADR-0018/0019) |
 | [BE-23](BE-23-analise-colaborativa-branch-merge.md) | Análise colaborativa: branches de análise, merge e conflitos (visão git-like) | Visão — precisa de ADR antes |
 | [BE-24](BE-24-metadados-e-criacao-sem-arquivo.md) | Criar experimento sem arquivo (`POST /experiment/`), `description` opcional e `values` read-only | Implementado em `feat/analysis-checkpoints` |
-| [BE-28](BE-28-tipo-de-experimento-vocabulario.md) | Tipo de experimento como vocabulário controlado criável por usuário (`/experiment/types/` + dedup normalizado) | Implementado em `feat/experiment-type` (ADR-0022) |
+| [BE-28](BE-28-tipo-de-experimento-vocabulario.md) | Tipo de experimento como vocabulário controlado  (admin ou dono do experimento; `/experiment/types/` + dedup normalizado) | Implementado em `feat/experiment-type` (ADR-0023) |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na

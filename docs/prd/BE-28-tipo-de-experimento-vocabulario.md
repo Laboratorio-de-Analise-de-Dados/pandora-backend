@@ -2,7 +2,7 @@
 
 **Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
 **Status:** implementado em `feat/experiment-type` · ADR:
-[ADR-0022 — vocabulário de tipos](../adr/0022-experiment-type-vocabulario-controlado.md)
+[ADR-0023 — vocabulário de tipos](../adr/0023-experiment-type-vocabulario-controlado.md)
 (branch `docs/adr-0022-experiment-type`) · Front: autocomplete+criar nos
 dialogs de experimento (`refactor/tema-pandora-dark`).
 
@@ -14,7 +14,7 @@ e estatística/filtro por tipo vira bagunça. Mas um enum fechado também não
 serve — tipos de experimento variam por laboratório e criar um tipo novo não
 pode exigir deploy nem admin.
 
-## Decisão (ADR-0022)
+## Decisão (ADR-0023)
 
 Vocabulário **controlado mas extensível**: tabela `experiment_type` com
 dedup normalizado. Quem pode introduzir um tipo novo é **admin ou o dono

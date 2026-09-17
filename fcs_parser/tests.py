@@ -2132,7 +2132,7 @@ class ExperimentCreateEmptyTestCase(TestCase):
 
 
 class ExperimentTypeTestCase(TestCase):
-    """BE-28 (ADR-0022): vocabulário de tipos — GET/POST /experiment/types/,
+    """BE-28 (ADR-0023): vocabulário de tipos — GET/POST /experiment/types/,
     dedup case-insensitive e sync automático via ExperimentModel.save()."""
 
     def setUp(self):

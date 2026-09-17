@@ -384,7 +384,7 @@ class ExperimentListView(generics.ListCreateAPIView):
 
 
 class ExperimentTypeListCreateView(generics.ListCreateAPIView):
-    """Vocabulário de tipos de experimento (BE-28, ADR-0022).
+    """Vocabulário de tipos de experimento (BE-28, ADR-0023).
 
     GET lista os tipos ativos ordenados (autocomplete do front) para todo
     autenticado; POST cria um tipo novo e é **admin-only** — fora do

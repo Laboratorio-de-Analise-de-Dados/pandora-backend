@@ -83,7 +83,7 @@ def can_move_experiment(user, experiment) -> bool:
 
 
 def can_create_experiment_type(user, experiment=None) -> bool:
-    """Criar entrada nova no vocabulário de tipos (BE-28/ADR-0022).
+    """Criar entrada nova no vocabulário de tipos (BE-28/ADR-0023).
 
     Super admin sempre pode (curadoria); fora isso só o dono do
     experimento (``created_by``) — quem cria o próprio experimento é dono
