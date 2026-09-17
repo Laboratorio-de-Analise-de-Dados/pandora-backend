@@ -25,6 +25,7 @@ ou alinhe com o responsável.
 | BE-23 (branches) | ADR-0020 implementado: `AnalysisBranch` + `branch`/`forked_from` em gates/revisões, fork materializado, `GET/POST .../branches/`, `PATCH/DELETE /analytics/branches/<id>/`, `GET .../diff/`, `POST .../merge/` (mine/theirs/both, dry_run, revert em cadeia), `?branch=` na timeline e na árvore de `list/data` |
 | BE-24 | `POST /experiment/` cria experimento sem arquivo, `description` livre, `values` read-only (derivado dos FCS) |
 | BE-29 | SocialAccount + AuthEvent + link/unlink + aviso de vínculo (ADR-0025/0026) — mergeado no PR #95 |
+| BE-30 | Merge de contas: `POST /accounts/merge/confirm/`, `merge_accounts()` migra memberships/FKs/SocialAccount, conta absorvida inativa com `merged_into` — mergeado no PR #97 |
 
 ## Fora da branch (em PR própria)
 
