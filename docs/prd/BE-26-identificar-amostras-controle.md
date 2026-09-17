@@ -17,8 +17,10 @@ bulk e o usuário pode ainda não saber qual análise vai rodar.
 ### 1. Marcação editável a qualquer momento
 
 - Estender o mecanismo de controles (ADR-0019): `control_type` passa a
-  cobrir também controle **biológico/de referência** — tipo distinto de
-  controle de compensação, usado para derivar gates
+  cobrir os tipos que a derivação de gates precisa distinguir —
+  `compensation` (single-stain, ADR-0019), `fmo`, `isotype`, `unstained`
+  e `biological` (referência). Gate de positividade usa FMO/isotípico/
+  unstained; usar o tipo errado seria erro silencioso
 - Marcação por amostra/subsample, PATCH a qualquer momento — **não
   bloqueia upload**
 
