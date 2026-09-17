@@ -26,6 +26,9 @@
 | [BE-22](BE-22-compensacao.md) | Compensação: aceitar `$SPILLOVER` do FCS ou calcular de controles (subsamples) | Implementado em `feat/analysis-checkpoints` (ADR-0018/0019) |
 | [BE-23](BE-23-analise-colaborativa-branch-merge.md) | Análise colaborativa: branches de análise, merge e conflitos (visão git-like) | Visão — precisa de ADR antes |
 | [BE-24](BE-24-metadados-e-criacao-sem-arquivo.md) | Criar experimento sem arquivo (`POST /experiment/`), `description` opcional e `values` read-only | Implementado em `feat/analysis-checkpoints` |
+| [BE-25](BE-25-experiment-type-vocabulario.md) | `experiment_type` como vocabulário controlado (tabela, admin-extensível) | Não iniciado (ADR-0023 Proposto); implementado como BE-28 |
+| [BE-26](BE-26-identificar-amostras-controle.md) | Marcação de controles pelo usuário + sugestão por heurística | Não iniciado (estende ADR-0019) |
+| [BE-27](BE-27-fila-de-jobs-juvia.md) | Fila de jobs pro Juvia: `SKIP LOCKED`, claim/complete/fail, quarentena, cleanup | Não iniciado (juvia ADR-0002 Proposto) |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na
