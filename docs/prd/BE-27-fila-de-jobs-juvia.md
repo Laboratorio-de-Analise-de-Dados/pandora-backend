@@ -28,8 +28,14 @@ ver "na fila → processando → concluído/erro" com UI responsiva.
 > mesmo token nas rotas dele (ex.: `POST /cluster`).
 
 - `POST /internal/jobs/claim` — claim atômico via
-  `SELECT ... FOR UPDATE SKIP LOCKED`; devolve job + dados de entrada;
-  N réplicas do Juvia nunca pegam o mesmo item
+  `SELECT ... FOR UPDATE SKIP LOCKED`; devolve job + referência dos dados
+  (`file_id`, `gate_id`, `subsample_id`, `transform`); N réplicas do
+  Juvia nunca pegam o mesmo item
+- `GET /internal/files/{id}/events?gate=<id>&n=<int>` — resolve o
+  contexto (gate, subsample, ativo, escopo) e devolve os eventos;
+  amostragem randômica com seed fixo, default `n=10000` — espelha como
+  o analista olha os dados e mantém o payload uniforme. Nunca expor o
+  banco nem o `parquet_path` cru.
 - `POST /internal/jobs/{id}/complete` — grava resultado, cria gate(s) e
   checkpoint `source=juvia` (ADR-0022)
 - `POST /internal/jobs/{id}/fail` — incrementa `attempts`; após N falhas
