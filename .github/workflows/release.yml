@@ -2,7 +2,7 @@ name: 🏗️🚀 Release Pandora Backend
 
 # Pipeline de release (ADR-0022):
 #
-#   tag v*  ->  [build imagem vX.Y.Z]  ->  [deploy]
+#   Releases -> Publish (cria a tag na UI)  ->  [build imagem vX.Y.Z]  ->  [deploy]
 #
 #   - build : publica a imagem no Docker Hub com a tag da versão
 #             (ex.: v1.2.0). `latest` NÃO é publicado aqui — só após
@@ -19,10 +19,12 @@ name: 🏗️🚀 Release Pandora Backend
 # Secrets/vars de repositório (já existentes): DOCKER_USER, DOCKER_TOKEN,
 # SECRET_KEY, SERVER_HOST, SERVER_USER, SERVER_SSH_KEY, POSTGRES_*,
 # EMAIL_*, DATABASE_* (vars), DEBUG, ALLOWED_HOSTS, CORS_*.
+# Gatilho: publicar uma Release na UI (Releases -> Draft new release ->
+# "Create new tag" -> Generate release notes -> Publish). A tag é criada
+# no publish e dispara este workflow. Tag avulsa via `git tag` NÃO deploya.
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -41,8 +43,8 @@ jobs:
       - name: Calcula a tag da imagem
         id: meta
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            tag="${GITHUB_REF#refs/tags/}"
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            tag="${{ github.event.release.tag_name }}"
           else
             tag="${{ inputs.tag }}"
           fi

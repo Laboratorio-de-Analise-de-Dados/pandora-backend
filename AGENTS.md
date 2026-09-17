@@ -29,10 +29,11 @@ python manage.py check              # sanity check do Django
   request (ex-tasks viraram funções em `*/tasks.py` e `management/commands/`).
   Não reintroduzir broker sem ADR novo.
 - **CI/CD (ADR-0022)**: `ci.yml` roda testes em push/PR para `main`;
-  `release.yml` dispara em tag `v*` (migrate one-off → health check →
-  rollback automático de código); `rollback.yml` restaura uma tag por
-  `workflow_dispatch`. Deploy ainda passa pelo portão do environment
-  `production`.
+  `release.yml` dispara ao **publicar uma Release** na UI do GitHub
+  (a tag `v*` é criada no publish; tag avulsa não deploya) — migrate
+  one-off → health check → rollback automático de código;
+  `rollback.yml` restaura uma tag por `workflow_dispatch`. Deploy ainda
+  passa pelo portão do environment `production`.
 - **Migrations retrocompatíveis (expand-contract)**: toda migration deve
   funcionar com a versão anterior do código — nunca dropar coluna/tabela
   na mesma release que para de usá-la. É o que torna o rollback automático

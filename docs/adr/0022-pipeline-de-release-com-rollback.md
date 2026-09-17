@@ -29,12 +29,17 @@ com health check.** Concretamente:
 
 - **CI (`ci.yml`)** roda `manage.py test` + `check` em todo push/PR para
   `main` — a suíte deixa de ser responsabilidade só local.
-- **Release (`release.yml`)** dispara em tag `v*` (ex.: `v1.2.0`): builda a
-  imagem com a tag da versão (sem `latest` no push), roda as migrations
-  num container **one-off** (`docker compose run --rm`) **antes** de trocar
-  o tráfego — migration quebrada aborta o deploy com a versão anterior
-  ainda no ar. Depois sobe a nova versão, espera `GET /health/` responder
-  200 e, se falhar, redeploya automaticamente a tag anterior (gravada em
+- **Release (`release.yml`)** dispara em `release: published` — ou seja,
+  publicar uma **GitHub Release** na UI (Releases → Draft new release →
+  "Create new tag `v*`" → "Generate release notes" → Publish). A tag é
+  criada no publish; tag avulsa via `git tag` **não** deploya. As notas
+  são geradas das PRs mergeadas no range, categorizadas por
+  `.github/release.yml`. O workflow builda a imagem com a tag da versão
+  (sem `latest` no push), roda as migrations num container **one-off**
+  (`docker compose run --rm`) **antes** de trocar o tráfego — migration
+  quebrada aborta o deploy com a versão anterior ainda no ar. Depois sobe
+  a nova versão, espera `GET /health/` responder 200 e, se falhar,
+  redeploya automaticamente a tag anterior (gravada em
   `.deployed_version` no servidor). `latest` só é publicado no Docker Hub
   **após** o deploy saudável.
 - **Rollback manual (`rollback.yml`)**: `workflow_dispatch` recebendo uma
@@ -70,8 +75,8 @@ proxy na frente. Complexidade desproporcional ao estágio do projeto.
 
 ## Consequências
 
-- Release é um ato explícito (tag) — `main` pode integrar trabalho em
-  progresso sem publicar.
+- Release é um ato explícito (publicar Release na UI, que cria a tag) —
+  `main` pode integrar trabalho em progresso sem publicar.
 - Falha de migration não derruba produção; falha de boot reverte sozinha.
 - **Dívida aceita:** uma migration que quebra compatibilidade com a versão
   anterior pode deixar o rollback automático ineficaz (código velho contra
