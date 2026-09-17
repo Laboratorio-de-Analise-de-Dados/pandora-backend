@@ -29,7 +29,7 @@ ou alinhe com o responsável.
 
 | Item | Observação |
 |---|---|
-| Bump de segurança de deps | `fix/security-deps` → PR #84: Django 5.2.16, DRF 3.17.2, PyJWT 2.13.0 etc. — resolve os 52 alertas do dependabot. Após merge da #83, re-rodar a suíte completa com as versões novas. |
+| Bump de segurança de deps | PR #84 **mergeada**: Django 5.2.16, DRF 3.17.2, PyJWT 2.13.0 etc. — resolveu os 52 alertas do dependabot. `main` já mergeada nesta branch + `pathspec==1.1.1` (exigido pelo black 26.3.1); suíte completa revalidada — 202 testes OK. |
 | Trunk-based | `develop` removida; default do repo é `main`. Fluxo: `feat/*`/`fix/*` → PR → `main` |
 
 ## Livres para pegar
