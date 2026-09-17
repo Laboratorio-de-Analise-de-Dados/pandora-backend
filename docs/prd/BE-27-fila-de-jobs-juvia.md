@@ -18,11 +18,14 @@ ver "na fila → processando → concluído/erro" com UI responsiva.
 - refs: experimento, arquivo/subsample, modelo + params, payload_ref
 - `attempts`, `last_error`, timestamps de transição
 
-### 2. Endpoints internos (rede interna, não de usuário)
+### 2. Endpoints internos (rede interna + token de serviço)
 
 > O Juvia não é publicado — só existe na `pandora_net` (juvia ADR-0001).
-> Esses endpoints são internos por topologia; token de serviço é defesa
-> em profundidade opcional, não requisito.
+> Mesmo assim, defesa em profundidade: todo `/internal/*` exige
+> `Authorization: Bearer ${JUVIA_INTERNAL_TOKEN}` — token compartilhado
+> via env nos dois serviços, comparado em tempo constante
+> (`secrets.compare_digest`). Vale nas duas direções: o Juvia valida o
+> mesmo token nas rotas dele (ex.: `POST /cluster`).
 
 - `POST /internal/jobs/claim` — claim atômico via
   `SELECT ... FOR UPDATE SKIP LOCKED`; devolve job + dados de entrada;
@@ -46,12 +49,13 @@ ver "na fila → processando → concluído/erro" com UI responsiva.
 ## Arquivos a tocar
 
 - `fcs_parser/models.py` ou app novo — `analysis_jobs` + migration
-- endpoints internos (rota não exposta no nginx; token opcional)
+- endpoints internos (rota não exposta no nginx + Bearer token via env)
 - `fcs_parser/services/` — criação de gate + checkpoint no `complete`
 - `management/commands/` — cleanup
 
 ## Critérios de aceite
 
+- [ ] `/internal/*` sem token → 401; com token → processa
 - [ ] Claim atômico: 2 workers concorrentes nunca pegam o mesmo job
 - [ ] Falha retenta até N vezes e cai em quarentena
 - [ ] `complete` cria gate + checkpoint com origem juvia
