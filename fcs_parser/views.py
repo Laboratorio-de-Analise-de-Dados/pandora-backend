@@ -52,6 +52,7 @@ from fcs_parser.models import (
     SubsampleModel,
 )
 from fcs_parser.permissions import (
+    can_create_experiment_type,
     can_edit_experiment,
     can_move_experiment,
     experiments_visible_to,
@@ -385,9 +386,11 @@ class ExperimentListView(generics.ListCreateAPIView):
 class ExperimentTypeListCreateView(generics.ListCreateAPIView):
     """Vocabulário de tipos de experimento (BE-28, ADR-0022).
 
-    GET lista os tipos ativos ordenados (autocomplete do front); POST cria
-    um tipo novo. A criação é idempotente e case-insensitive: um nome já
-    existente devolve a entrada canônica com 200 em vez de erro.
+    GET lista os tipos ativos ordenados (autocomplete do front) para todo
+    autenticado; POST cria um tipo novo e é **admin-only** — fora do
+    contexto de um experimento, só admin introduz entradas soltas. A
+    criação é idempotente e case-insensitive: um nome já existente devolve
+    a entrada canônica com 200 em vez de erro.
     """
 
     permission_classes = [IsAuthenticated]
@@ -397,6 +400,11 @@ class ExperimentTypeListCreateView(generics.ListCreateAPIView):
         return ExperimentTypeModel.objects.filter(active=True).order_by(Lower("name"))
 
     def create(self, request, *args, **kwargs):
+        if not can_create_experiment_type(request.user):
+            return Response(
+                {"detail": "Criar tipos de experimento exige perfil admin."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
             return _invalid(serializer)

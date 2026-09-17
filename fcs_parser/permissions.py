@@ -82,6 +82,22 @@ def can_move_experiment(user, experiment) -> bool:
     ).exists()
 
 
+def can_create_experiment_type(user, experiment=None) -> bool:
+    """Criar entrada nova no vocabulário de tipos (BE-28/ADR-0022).
+
+    Super admin sempre pode (curadoria); fora isso só o dono do
+    experimento (``created_by``) — quem cria o próprio experimento é dono
+    por definição. Membro editando experimento alheio pode escolher tipos
+    existentes, mas não introduzir novos. Sem experimento no contexto
+    (endpoint solto), só admin.
+    """
+    if user.is_super_admin:
+        return True
+    if experiment is None:
+        return False
+    return experiment.created_by_id == user.id
+
+
 def require_can_edit_experiment(user, experiment):
     """Levanta PermissionDenied (403) quando ``can_edit_experiment`` falha."""
     if not can_edit_experiment(user, experiment):

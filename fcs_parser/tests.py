@@ -2139,37 +2139,61 @@ class ExperimentTypeTestCase(TestCase):
         self.owner = User.objects.create_user(
             username="dono", email="dono@pandora.test", password="senha-forte-123"
         )
+        self.admin = User.objects.create_superuser(
+            username="admin", email="admin@pandora.test", password="senha-forte-123"
+        )
+        # Dono e membro no mesmo lab — membro pode editar o experimento,
+        # mas não pode introduzir tipos novos no vocabulário.
+        self.member = User.objects.create_user(
+            username="membro", email="membro@pandora.test", password="senha-forte-123"
+        )
+        self.org = Organization.objects.create(name="Lab T", org_type="lab")
+        role = Role.objects.create(name="member")
+        Membership.objects.create(
+            user=self.owner, organization=self.org, role=role, status="active"
+        )
+        Membership.objects.create(
+            user=self.member, organization=self.org, role=role, status="active"
+        )
         self.client = APIClient()
         self.client.force_authenticate(self.owner)
 
+    def _post_type(self, name, user=None):
+        client = APIClient()
+        client.force_authenticate(user or self.admin)
+        return client.post("/experiment/types/", {"name": name}, format="json")
+
     def test_post_cria_tipo_e_lista(self):
-        res = self.client.post(
-            "/experiment/types/", {"name": "Stem Cell"}, format="json"
-        )
+        res = self._post_type("Stem Cell")
 
         self.assertEqual(res.status_code, 201)
         self.assertEqual(res.data["name"], "Stem Cell")
 
+        # A listagem é aberta a qualquer autenticado.
         res = self.client.get("/experiment/types/")
         self.assertEqual(res.status_code, 200)
         names = [t["name"] for t in res.data]
         self.assertEqual(names, ["Stem Cell"])
 
-    def test_post_duplicado_case_insensitive_devolve_canonico(self):
-        self.client.post("/experiment/types/", {"name": "Stem Cell"}, format="json")
-
+    def test_post_tipos_exige_admin(self):
         res = self.client.post(
-            "/experiment/types/", {"name": "stem cell"}, format="json"
+            "/experiment/types/", {"name": "tipo solto"}, format="json"
         )
+
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(ExperimentTypeModel.objects.count(), 0)
+
+    def test_post_duplicado_case_insensitive_devolve_canonico(self):
+        self._post_type("Stem Cell")
+
+        res = self._post_type("stem cell")
 
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["name"], "Stem Cell")
         self.assertEqual(ExperimentTypeModel.objects.count(), 1)
 
     def test_whitespace_e_colapsado_no_dedup(self):
-        res = self.client.post(
-            "/experiment/types/", {"name": "  painel   multicolor "}, format="json"
-        )
+        res = self._post_type("  painel   multicolor ")
 
         self.assertEqual(res.status_code, 201)
         self.assertEqual(res.data["name"], "painel multicolor")
@@ -2221,6 +2245,47 @@ class ExperimentTypeTestCase(TestCase):
         self.assertEqual(exp.type, "Novo Tipo")
         self.assertEqual(exp.experiment_type.name_normalized, "novo tipo")
         self.assertEqual(ExperimentTypeModel.objects.count(), 2)
+
+    def test_membro_nao_cria_tipo_em_experimento_alheio(self):
+        """Membro pode editar o experimento do lab, mas tipo novo no
+        vocabulário exige ser o dono ou admin — escolhe entre existentes."""
+        exp = ExperimentModel.objects.create(
+            title="exp",
+            type="antigo",
+            created_by=self.owner,
+            organization=self.org,
+        )
+        client = APIClient()
+        client.force_authenticate(self.member)
+
+        res = client.patch(f"/experiment/{exp.id}/", {"type": "Inédito"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(ExperimentTypeModel.objects.count(), 1)
+
+        # Tipo já existente passa para qualquer editor.
+        res = client.patch(f"/experiment/{exp.id}/", {"type": "antigo"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        exp.refresh_from_db()
+        self.assertEqual(exp.type, "antigo")
+
+    def test_admin_cria_tipo_em_experimento_alheio(self):
+        exp = ExperimentModel.objects.create(
+            title="exp",
+            type="antigo",
+            created_by=self.owner,
+            organization=self.org,
+        )
+        client = APIClient()
+        client.force_authenticate(self.admin)
+
+        res = client.patch(
+            f"/experiment/{exp.id}/", {"type": "Tipo do Admin"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(
+            ExperimentTypeModel.objects.filter(name_normalized="tipo do admin").exists()
+        )
 
     def test_experimento_sem_tipo_nao_quebra(self):
         exp = ExperimentModel.objects.create(title="sem-tipo", created_by=self.owner)

@@ -4,6 +4,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from accounts.models import Organization
 from accounts.serializers import OrganizationListSerializer
+from fcs_parser.permissions import can_create_experiment_type
 from analytics.serializers import ListGateSerializer
 from utils.validators import experiment_file_extension, validate_zip_file
 from .models import (
@@ -358,7 +359,22 @@ class UpdateExperimentSerializer(serializers.ModelSerializer):
     def validate_type(self, value):
         if not value or not value.strip():
             raise serializers.ValidationError("Tipo é obrigatório.")
-        return value.strip()
+        value = value.strip()
+        # BE-28/ADR-0022: tipo novo entra no vocabulário no save() — quem
+        # pode introduzir um é só admin ou o dono do experimento; membro
+        # editando experimento alheio escolhe entre os existentes.
+        exists = ExperimentTypeModel.objects.filter(
+            name_normalized=ExperimentTypeModel.normalize(value)
+        ).exists()
+        if not exists:
+            request = self.context.get("request")
+            user = getattr(request, "user", None)
+            if not (user and can_create_experiment_type(user, self.instance)):
+                raise serializers.ValidationError(
+                    "Tipo inexistente — criar um tipo novo exige ser dono "
+                    "do experimento ou admin."
+                )
+        return value
 
 
 class ListExperimentSerializer(serializers.ModelSerializer):
