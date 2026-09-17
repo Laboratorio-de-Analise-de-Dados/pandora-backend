@@ -17,6 +17,7 @@ from django.db.models import (
     Value,
     When,
 )
+from django.db.models.functions import Lower
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -45,11 +46,13 @@ from utils.density import (
 )
 from fcs_parser.models import (
     ExperimentModel,
+    ExperimentTypeModel,
     FileDataModel,
     FileModel,
     SubsampleModel,
 )
 from fcs_parser.permissions import (
+    can_create_experiment_type,
     can_edit_experiment,
     can_move_experiment,
     experiments_visible_to,
@@ -71,6 +74,7 @@ from fcs_parser.serializers import (
     ExperimentCreateSerializer,
     ExperimentFileInitSerializer,
     ExperimentInitSerializer,
+    ExperimentTypeSerializer,
     ListExperimentSerializer,
     ListFileDataSerializer,
     ParamListDataSerializer,
@@ -376,6 +380,45 @@ class ExperimentListView(generics.ListCreateAPIView):
                 self.request.user, include_inactive=include_inactive
             ),
             self.request.user,
+        )
+
+
+class ExperimentTypeListCreateView(generics.ListCreateAPIView):
+    """Vocabulário de tipos de experimento (BE-28, ADR-0023).
+
+    GET lista os tipos ativos ordenados (autocomplete do front) para todo
+    autenticado; POST cria um tipo novo e é **admin-only** — fora do
+    contexto de um experimento, só admin introduz entradas soltas. A
+    criação é idempotente e case-insensitive: um nome já existente devolve
+    a entrada canônica com 200 em vez de erro.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = ExperimentTypeSerializer
+
+    def get_queryset(self):
+        return ExperimentTypeModel.objects.filter(active=True).order_by(Lower("name"))
+
+    def create(self, request, *args, **kwargs):
+        if not can_create_experiment_type(request.user):
+            return Response(
+                {"detail": "Criar tipos de experimento exige perfil admin."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            return _invalid(serializer)
+        name = serializer.validated_data["name"]
+        existing = ExperimentTypeModel.objects.filter(
+            name_normalized=ExperimentTypeModel.normalize(name)
+        ).first()
+        if existing is not None:
+            return Response(
+                ExperimentTypeSerializer(existing).data, status=status.HTTP_200_OK
+            )
+        obj = ExperimentTypeModel.resolve(name, request.user)
+        return Response(
+            ExperimentTypeSerializer(obj).data, status=status.HTTP_201_CREATED
         )
 
 

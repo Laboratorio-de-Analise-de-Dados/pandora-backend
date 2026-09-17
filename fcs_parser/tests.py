@@ -25,6 +25,7 @@ from analytics.models import (
 )
 from fcs_parser.models import (
     ExperimentModel,
+    ExperimentTypeModel,
     FileDataModel,
     FileModel,
     SubsampleModel,
@@ -2128,3 +2129,207 @@ class ExperimentCreateEmptyTestCase(TestCase):
         self.assertEqual(res.status_code, 201)
         exp = ExperimentModel.objects.get(id=res.data["fileId"])
         self.assertEqual(exp.description, "criado já com upload")
+
+
+class ExperimentTypeTestCase(TestCase):
+    """BE-28 (ADR-0023): vocabulário de tipos — GET/POST /experiment/types/,
+    dedup case-insensitive e sync automático via ExperimentModel.save()."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.admin = User.objects.create_superuser(
+            username="admin", email="admin@pandora.test", password="senha-forte-123"
+        )
+        # Dono, membro comum e org_admin no mesmo lab — membro edita o
+        # experimento mas não introduz tipos novos; org_admin cura o
+        # vocabulário da org (admin no sentido amplo, além do superuser).
+        self.member = User.objects.create_user(
+            username="membro", email="membro@pandora.test", password="senha-forte-123"
+        )
+        self.org_admin = User.objects.create_user(
+            username="adminlab",
+            email="adminlab@pandora.test",
+            password="senha-forte-123",
+        )
+        self.org = Organization.objects.create(name="Lab T", org_type="lab")
+        role = Role.objects.create(name="member")
+        org_admin_role = Role.objects.create(name="org_admin")
+        Membership.objects.create(
+            user=self.owner, organization=self.org, role=role, status="active"
+        )
+        Membership.objects.create(
+            user=self.member, organization=self.org, role=role, status="active"
+        )
+        Membership.objects.create(
+            user=self.org_admin,
+            organization=self.org,
+            role=org_admin_role,
+            status="active",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _post_type(self, name, user=None):
+        client = APIClient()
+        client.force_authenticate(user or self.admin)
+        return client.post("/experiment/types/", {"name": name}, format="json")
+
+    def test_post_cria_tipo_e_lista(self):
+        res = self._post_type("Stem Cell")
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["name"], "Stem Cell")
+
+        # A listagem é aberta a qualquer autenticado.
+        res = self.client.get("/experiment/types/")
+        self.assertEqual(res.status_code, 200)
+        names = [t["name"] for t in res.data]
+        self.assertEqual(names, ["Stem Cell"])
+
+    def test_post_tipos_exige_admin(self):
+        res = self.client.post(
+            "/experiment/types/", {"name": "tipo solto"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(ExperimentTypeModel.objects.count(), 0)
+
+    def test_post_tipos_aceita_org_admin(self):
+        """Admin no sentido amplo: org_admin de qualquer org cura o
+        vocabulário global mesmo sem experimento no contexto."""
+        res = self._post_type("tipo do lab", user=self.org_admin)
+
+        self.assertEqual(res.status_code, 201)
+
+    def test_post_duplicado_case_insensitive_devolve_canonico(self):
+        self._post_type("Stem Cell")
+
+        res = self._post_type("stem cell")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["name"], "Stem Cell")
+        self.assertEqual(ExperimentTypeModel.objects.count(), 1)
+
+    def test_whitespace_e_colapsado_no_dedup(self):
+        res = self._post_type("  painel   multicolor ")
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["name"], "painel multicolor")
+
+    def test_types_exige_autenticacao(self):
+        client = APIClient()
+        self.assertEqual(client.get("/experiment/types/").status_code, 401)
+        self.assertEqual(
+            client.post("/experiment/types/", {"name": "x"}, format="json").status_code,
+            401,
+        )
+
+    def test_experimento_com_tipo_novo_cria_vocabulario(self):
+        res = self.client.post(
+            "/experiment/", {"title": "exp", "type": "Citometria"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 201)
+        exp = ExperimentModel.objects.get(id=res.data["id"])
+        self.assertIsNotNone(exp.experiment_type_id)
+        self.assertEqual(exp.experiment_type.name, "Citometria")
+        self.assertEqual(ExperimentTypeModel.objects.count(), 1)
+
+    def test_experimento_reusa_tipo_existente_com_outro_casing(self):
+        ExperimentTypeModel.objects.create(
+            name="Stem Cell", name_normalized="stem cell"
+        )
+
+        exp = ExperimentModel.objects.create(
+            title="exp", type="stem cell", created_by=self.owner
+        )
+
+        self.assertEqual(ExperimentTypeModel.objects.count(), 1)
+        self.assertEqual(exp.experiment_type.name, "Stem Cell")
+        # O string do experimento é normalizado pro casing canônico.
+        self.assertEqual(exp.type, "Stem Cell")
+
+    def test_patch_de_type_atualiza_vocabulario(self):
+        exp = ExperimentModel.objects.create(
+            title="exp", type="antigo", created_by=self.owner
+        )
+
+        res = self.client.patch(
+            f"/experiment/{exp.id}/", {"type": "Novo Tipo"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        exp.refresh_from_db()
+        self.assertEqual(exp.type, "Novo Tipo")
+        self.assertEqual(exp.experiment_type.name_normalized, "novo tipo")
+        self.assertEqual(ExperimentTypeModel.objects.count(), 2)
+
+    def test_membro_nao_cria_tipo_em_experimento_alheio(self):
+        """Membro pode editar o experimento do lab, mas tipo novo no
+        vocabulário exige ser o dono ou admin — escolhe entre existentes."""
+        exp = ExperimentModel.objects.create(
+            title="exp",
+            type="antigo",
+            created_by=self.owner,
+            organization=self.org,
+        )
+        client = APIClient()
+        client.force_authenticate(self.member)
+
+        res = client.patch(f"/experiment/{exp.id}/", {"type": "Inédito"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(ExperimentTypeModel.objects.count(), 1)
+
+        # Tipo já existente passa para qualquer editor.
+        res = client.patch(f"/experiment/{exp.id}/", {"type": "antigo"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        exp.refresh_from_db()
+        self.assertEqual(exp.type, "antigo")
+
+    def test_org_admin_cria_tipo_em_experimento_da_org(self):
+        """org_admin da org do experimento introduz tipo novo mesmo sem
+        ser o dono — curadoria do vocabulário do lab."""
+        exp = ExperimentModel.objects.create(
+            title="exp",
+            type="antigo",
+            created_by=self.owner,
+            organization=self.org,
+        )
+        client = APIClient()
+        client.force_authenticate(self.org_admin)
+
+        res = client.patch(
+            f"/experiment/{exp.id}/", {"type": "Tipo do Lab"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(
+            ExperimentTypeModel.objects.filter(name_normalized="tipo do lab").exists()
+        )
+
+    def test_admin_cria_tipo_em_experimento_alheio(self):
+        exp = ExperimentModel.objects.create(
+            title="exp",
+            type="antigo",
+            created_by=self.owner,
+            organization=self.org,
+        )
+        client = APIClient()
+        client.force_authenticate(self.admin)
+
+        res = client.patch(
+            f"/experiment/{exp.id}/", {"type": "Tipo do Admin"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(
+            ExperimentTypeModel.objects.filter(name_normalized="tipo do admin").exists()
+        )
+
+    def test_experimento_sem_tipo_nao_quebra(self):
+        exp = ExperimentModel.objects.create(title="sem-tipo", created_by=self.owner)
+
+        self.assertIsNone(exp.experiment_type_id)
+        self.assertEqual(ExperimentTypeModel.objects.count(), 0)

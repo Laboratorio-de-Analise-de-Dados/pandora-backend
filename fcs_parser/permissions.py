@@ -82,6 +82,32 @@ def can_move_experiment(user, experiment) -> bool:
     ).exists()
 
 
+def can_create_experiment_type(user, experiment=None) -> bool:
+    """Criar entrada nova no vocabulário de tipos (BE-28/ADR-0023).
+
+    "Admin" aqui cobre os dois níveis: ``is_super_admin`` sempre pode; e
+    ``org_admin`` — admin da organização — cura o vocabulário do próprio
+    lab: no endpoint solto basta ser org_admin ativo de alguma org, e com
+    experimento precisa ser org_admin da org dele. Fora isso, só o dono
+    (``created_by``) — quem cria o próprio experimento é dono por
+    definição. Membro comum editando experimento alheio só escolhe entre
+    os tipos existentes.
+    """
+    if user.is_super_admin:
+        return True
+    if experiment is None:
+        return user.memberships.filter(status="active", role__name="org_admin").exists()
+    if experiment.created_by_id == user.id:
+        return True
+    if experiment.organization_id is None:
+        return False
+    return user.memberships.filter(
+        organization_id=experiment.organization_id,
+        status="active",
+        role__name="org_admin",
+    ).exists()
+
+
 def require_can_edit_experiment(user, experiment):
     """Levanta PermissionDenied (403) quando ``can_edit_experiment`` falha."""
     if not can_edit_experiment(user, experiment):

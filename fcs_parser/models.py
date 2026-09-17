@@ -18,6 +18,52 @@ def parquet_storage_dir() -> str:
     return os.path.join(settings.MEDIA_ROOT, "parquet")
 
 
+class ExperimentTypeModel(models.Model):
+    """Vocabulário controlado de tipos de experimento (ADR-0023, BE-28).
+
+    Qualquer usuário autenticado pode criar um tipo novo — basta salvar um
+    experimento com um nome que ainda não existe. A unicidade é
+    case-insensitive via ``name_normalized``: "Stem Cell" e "stem cell"
+    convergem para a mesma entrada, e o experimento passa a guardar o
+    casing canônico (``name``) no campo ``type``.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    name = models.CharField(max_length=100)
+    name_normalized = models.CharField(max_length=100, unique=True)
+    active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_experiment_types",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    @staticmethod
+    def normalize(name: str) -> str:
+        return " ".join(name.split()).lower()
+
+    @classmethod
+    def resolve(cls, name: str, user=None) -> "ExperimentTypeModel | None":
+        """Retorna o tipo canônico para ``name``, criando se não existir."""
+        normalized = cls.normalize(name or "")
+        if not normalized:
+            return None
+        obj, _ = cls.objects.get_or_create(
+            name_normalized=normalized,
+            defaults={"name": " ".join(name.split()), "created_by": user},
+        )
+        return obj
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class ExperimentModel(models.Model):
     STATUS_CHOICES = [
         ("new", "New"),
@@ -35,7 +81,17 @@ class ExperimentModel(models.Model):
 
     id = models.BigAutoField(primary_key=True)
     title = models.CharField(max_length=50)
+    # `type` continua sendo o label exposto na API (string); a identidade
+    # canônica vive em `experiment_type` — o save() sincroniza os dois e
+    # normaliza o casing para o nome do vocabulário (BE-28).
     type = models.CharField(max_length=100, null=True)
+    experiment_type = models.ForeignKey(
+        ExperimentTypeModel,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="experiments",
+    )
     # Contexto livre do experimento (objetivo, painel, notas) — opcional,
     # preenchido/alterado pelo usuário (BE-24).
     description = models.TextField(blank=True, default="")
@@ -80,6 +136,24 @@ class ExperimentModel(models.Model):
     @property
     def is_personal(self) -> bool:
         return self.organization_id is None
+
+    def save(self, *args, **kwargs):
+        # Mantém `experiment_type` (FK canônica) e `type` (label) em sincronia
+        # em qualquer caminho de escrita — API, services, shell, admin.
+        resolved = None
+        if self.type:
+            resolved = ExperimentTypeModel.resolve(self.type, self.created_by)
+        if resolved is not None:
+            self.experiment_type = resolved
+            self.type = resolved.name
+        else:
+            self.experiment_type = None
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            kwargs["update_fields"] = list(
+                set(update_fields) | {"type", "experiment_type"}
+            )
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"Experiment {self.id} – {self.title} ({self.status})"

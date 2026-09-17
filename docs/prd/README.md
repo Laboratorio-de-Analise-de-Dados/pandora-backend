@@ -29,6 +29,7 @@
 | [BE-25](BE-25-experiment-type-vocabulario.md) | `experiment_type` como vocabulário controlado (tabela, admin-extensível) | Não iniciado (ADR-0023 Proposto); implementado como BE-28 |
 | [BE-26](BE-26-identificar-amostras-controle.md) | Marcação de controles pelo usuário + sugestão por heurística | Não iniciado (estende ADR-0019) |
 | [BE-27](BE-27-fila-de-jobs-juvia.md) | Fila de jobs pro Juvia: `SKIP LOCKED`, claim/complete/fail, quarentena, cleanup | Não iniciado (juvia ADR-0002 Proposto) |
+| [BE-28](BE-28-tipo-de-experimento-vocabulario.md) | Tipo de experimento como vocabulário controlado (admin ou dono do experimento; `/experiment/types/` + dedup normalizado) | Implementado em `feat/experiment-type` (ADR-0023) |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na
