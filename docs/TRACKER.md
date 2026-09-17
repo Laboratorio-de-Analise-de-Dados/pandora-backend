@@ -13,7 +13,7 @@ ou alinhe com o responsável.
 
 | Feature | Área afetada | Branch | Sessão | Desde |
 |---|---|---|---|---|
-| Dev compose com Juvia | `docker-compose.yml` (profile opcional), AGENTS.md | `chore/dev-compose-juvia` | devin | 2026-09 |
+| Reverte profile juvia do compose | `docker-compose.yml`, AGENTS.md | `chore/remove-juvia-service` | devin | 2026-09 |
 
 ## Concluído nesta branch
 
