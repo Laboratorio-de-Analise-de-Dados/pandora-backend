@@ -17,18 +17,19 @@ COPY . .
 # Definir settings do Django
 ENV DJANGO_SETTINGS_MODULE=pandora.settings
 
-# Argumento para passar SECRET_KEY no build
-ARG SECRET_KEY
-ENV SECRET_KEY=$SECRET_KEY
-
 # Criar pasta de estáticos
 RUN mkdir -p /app/staticfiles
 
-# Gate: model mudou sem migration -> falha o build (sem imagem, sem deploy)
-RUN python manage.py makemigrations --check --dry-run
+# Segredos NUNCA entram na imagem (ADR-0024): os comandos de boot usam uma
+# SECRET_KEY dummy que vive só no RUN; a real chega em runtime via env do
+# compose. Não reintroduzir ARG/ENV de segredo aqui — imagem com segredo
+# vaza o segredo junto com a layer.
 
-# Coletar arquivos estáticos (precisa do SECRET_KEY)
-RUN python manage.py collectstatic --noinput
+# Gate: model mudou sem migration -> falha o build (sem imagem, sem deploy)
+RUN SECRET_KEY=build-dummy python manage.py makemigrations --check --dry-run
+
+# Coletar arquivos estáticos (precisa de uma SECRET_KEY qualquer pro boot)
+RUN SECRET_KEY=build-dummy python manage.py collectstatic --noinput
 
 # Expor porta
 EXPOSE 8000
