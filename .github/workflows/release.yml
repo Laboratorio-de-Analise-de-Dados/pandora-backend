@@ -52,7 +52,9 @@ jobs:
 
       - name: Checkout na tag (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
-        run: git checkout "${{ steps.meta.outputs.image_tag }}"
+        run: |
+          git fetch --depth 1 origin "tag ${{ steps.meta.outputs.image_tag }}"
+          git checkout "${{ steps.meta.outputs.image_tag }}"
 
       - name: Login no Docker Hub
         run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USER }}" --password-stdin
