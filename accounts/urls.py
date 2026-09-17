@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     AuthEventListView,
     AuthProvidersConfigView,
+    ConfirmMergeView,
     ConfirmSocialLinkView,
     CustomTokenObtainPairView,
     GoogleAuthCallbackView,
@@ -119,6 +120,11 @@ urlpatterns = [
         "social-accounts/<int:pk>/unlink/",
         SocialAccountUnlinkView.as_view(),
         name="social_account_unlink",
+    ),
+    path(
+        "merge/confirm/",
+        ConfirmMergeView.as_view(),
+        name="merge_confirm",
     ),
     path(
         "users/me/memberships/",

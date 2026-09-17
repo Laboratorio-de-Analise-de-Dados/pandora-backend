@@ -41,6 +41,14 @@ class User(AbstractUser):
         default="local",
         help_text="Provedor usado para autenticação deste usuário.",
     )
+    merged_into = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Conta canônica que absorveu esta conta num merge (BE-30).",
+    )
 
     def __str__(self):
         return self.username

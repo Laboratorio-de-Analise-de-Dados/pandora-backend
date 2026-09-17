@@ -2,7 +2,7 @@
 
 **Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
 **Branch sugerida:** `feat/account-linking`
-**Status:** em andamento.
+**Status:** implementado (PR #95).
 **ADR:** `docs/adr/0025` (modelo), `docs/adr/0026` (sem org por domínio)
 **Front:** `pandora-front/docs/prd/FE-31`
 

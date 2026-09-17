@@ -1,7 +1,8 @@
 # BE-30 — Merge de contas de usuário
 
 **Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
-**Status:** não iniciado.
+**Branch:** `feat/account-merge`
+**Status:** implementado.
 **ADR:** `docs/adr/0025` · **Depende de:** BE-29
 
 ## Problema
