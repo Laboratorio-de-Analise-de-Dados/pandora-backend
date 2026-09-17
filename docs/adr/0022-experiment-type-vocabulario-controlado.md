@@ -25,8 +25,17 @@ só conveniência:
 ## Decisão (proposta)
 
 - `ExperimentModel` ganha `experiment_type` como FK para uma **tabela de
-  vocabulário controlado** — extensível por admin, com opção "outro" +
-  descrição livre como escape. Não é `choices` hardcoded nem texto livre.
+  vocabulário controlado** — extensível por **qualquer usuário
+  autenticado** quando o tipo não existir (padrão autocomplete-cria:
+  a UI sugere os existentes primeiro e oferece "Criar X" como escape).
+  Não é `choices` hardcoded nem texto livre.
+- **Dedup case-insensitive na origem** — a tabela guarda
+  `name_normalized` (lower/trim) com unicidade; "Stem Cell" e "stem
+  cell" convergem para a mesma entrada. Escrita pelo serializer de
+  experimento faz `get_or_create` normalizado: quem digita um tipo
+  existente reutiliza, quem digita novo cria — sem permissão extra.
+- Curadoria (mesclar/renomear tipos quase-duplicados) fica como função
+  administrativa posterior, fora do caminho de criação.
 - Toda gate criada a partir de resultado do Juvia gera **checkpoint
   imediato** (mecanismo do ADR-0017) com metadado de origem:
   `source=juvia`, modelo e hiperparâmetros usados.
@@ -55,8 +64,10 @@ estado da análise é o Pandora.
 
 ## Consequências
 
-- Vocabulário evolui sem deploy; exige curadoria (quem adiciona tipos e
-  como deduplicar).
+- Vocabulário evolui sem deploy e sem fricção pro usuário; o autocomplete
+  empurra pra reutilizar o que existe e o dedup normalizado contém a
+  fragmentação. Resíduo aceito: erros de digitação ("stem cel") criam
+  entradas ruins — mitigado pela curadoria admin posterior.
 - Um checkpoint extra por gate gerada — volume pequeno, já previsto pelo
   mecanismo.
 - Habilita em fases: estatística "qual modelo performa por tipo" →
