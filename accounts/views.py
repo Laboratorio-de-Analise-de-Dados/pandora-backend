@@ -601,19 +601,6 @@ class MicrosoftAuthCallbackView(APIView):
             user.auth_provider = "microsoft"
             user.save(update_fields=["auth_provider"])
 
-        # Optionally link to an org based on email domain
-        org_name = email.split("@")[-1]
-        organization, _ = Organization.objects.get_or_create(
-            name=org_name,
-            defaults={"org_type": "lab"},
-        )
-        roles = get_or_create_default_roles()
-        Membership.objects.get_or_create(
-            user=user,
-            organization=organization,
-            defaults={"role": roles[Role.MEMBER], "status": "active"},
-        )
-
         from rest_framework_simplejwt.tokens import RefreshToken
 
         refresh = RefreshToken.for_user(user)
@@ -738,19 +725,6 @@ class GoogleAuthCallbackView(APIView):
         else:
             user.auth_provider = "google"
             user.save(update_fields=["auth_provider"])
-
-        # Optionally link to an org based on email domain
-        org_name = email.split("@")[-1]
-        organization, _ = Organization.objects.get_or_create(
-            name=org_name,
-            defaults={"org_type": "lab"},
-        )
-        roles = get_or_create_default_roles()
-        Membership.objects.get_or_create(
-            user=user,
-            organization=organization,
-            defaults={"role": roles[Role.MEMBER], "status": "active"},
-        )
 
         from rest_framework_simplejwt.tokens import RefreshToken
 
