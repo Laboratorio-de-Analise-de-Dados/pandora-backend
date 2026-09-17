@@ -50,6 +50,11 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from .serializers import get_or_create_default_roles
 from accounts.services.send_mail import send_invite_email, send_password_reset_email
+from accounts.services.merge import (
+    make_merge_token,
+    merge_accounts,
+    read_merge_token,
+)
 from accounts.services.oauth import (
     google_fetch_identity,
     log_auth_event,
@@ -549,9 +554,18 @@ def _link_identity_to_user(request, user, provider, provider_user_id, email):
         provider=provider, provider_user_id=provider_user_id
     ).first()
     if existing and existing.user_id != user.id:
-        return redirect(
-            f"{settings.FRONTEND_URL}/profile?link_error=conflict&provider={provider}"
+        # A identidade já pertence a outra conta → o front oferece merge
+        # (BE-30) em vez de um erro seco.
+        token = make_merge_token(provider, provider_user_id, existing.user_id)
+        params = urllib.parse.urlencode(
+            {
+                "merge_notice": "1",
+                "provider": provider,
+                "email": existing.user.email,
+                "token": token,
+            }
         )
+        return redirect(f"{settings.FRONTEND_URL}/profile?{params}")
     if existing:
         if not existing.active or existing.email != email:
             existing.active = True
@@ -610,7 +624,7 @@ def _complete_sso(request, provider, identity, link_user_id=None):
         # Identidade desvinculada antes — confirma para reativar no mesmo user.
         return _redirect_link_notice(provider, sub, email, account.user)
 
-    user = User.objects.filter(email__iexact=email).first()
+    user = User.objects.filter(email__iexact=email, is_active=True).first()
     if user:
         return _redirect_link_notice(provider, sub, email, user)
 
@@ -866,6 +880,16 @@ class ConfirmSocialLinkView(APIView):
             )
 
         user = get_object_or_404(User, id=payload.get("user_id"))
+        if not user.is_active or user.merged_into:
+            return Response(
+                {
+                    "detail": (
+                        "Esta conta foi fundida em outra. "
+                        "Entre pelo login principal."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         sub = payload.get("sub")
         email = payload.get("email")
 
@@ -984,3 +1008,48 @@ class SocialAccountUnlinkView(APIView):
 
         unlink_social_account(request, account)
         return Response({"detail": "Conta desvinculada."}, status=status.HTTP_200_OK)
+
+
+class ConfirmMergeView(APIView):
+    """Confirma o merge: funde a conta dona da identidade do IdP na conta
+    do usuário logado (BE-30). A conta canônica é sempre a autenticada —
+    o token só carrega a conta absorvida."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=ConfirmLinkSerializer)
+    def post(self, request):
+        serializer = ConfirmLinkSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            payload = read_merge_token(serializer.validated_data["token"])
+        except signing.SignatureExpired:
+            return Response(
+                {"detail": "Confirmação expirada. Refaça a conexão."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except signing.BadSignature:
+            return Response(
+                {"detail": "Token de merge inválido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        absorbed = get_object_or_404(User, id=payload.get("absorbed_id"))
+        canonical = request.user
+        if absorbed.id == canonical.id:
+            return Response(
+                {"detail": "A identidade já pertence à sua conta."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not absorbed.is_active:
+            return Response(
+                {"detail": "Esta conta já foi fundida."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        merge_accounts(request, canonical, absorbed)
+        return Response(
+            {"detail": f"Conta {absorbed.email} fundida na sua."},
+            status=status.HTTP_200_OK,
+        )

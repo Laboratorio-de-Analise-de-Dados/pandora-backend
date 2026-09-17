@@ -441,7 +441,7 @@ class SocialLoginFlowTests(APITestCase):
         account = SocialAccount.objects.get(provider_user_id="sub-link")
         self.assertEqual(account.user, user)
 
-    def test_link_mode_conflict_redirects_with_error(self):
+    def test_link_mode_conflict_offers_merge(self):
         user = User.objects.create_user(
             username="pmoro", email="pmoro@fiocruz.br", password="x"
         )
@@ -464,7 +464,10 @@ class SocialLoginFlowTests(APITestCase):
                 {"code": "code", "state": link_state},
             )
 
-        self.assertIn("link_error=conflict", response.url)
+        params = _callback_params(response.url)
+        self.assertEqual(params["merge_notice"], "1")
+        self.assertEqual(params["email"], "other@x.com")
+        self.assertIn("token", params)
 
     def test_link_init_requires_authentication(self):
         response = self.client.get(reverse("google_auth_link_init"))
@@ -611,3 +614,123 @@ class SocialAccountManagementTests(APITestCase):
         self.assertTrue(
             AuthEvent.objects.filter(user=self.user, action="login_local").exists()
         )
+
+
+class AccountMergeTests(APITestCase):
+    """BE-30: merge de contas — identidade do IdP já vinculada a outra
+    conta oferece fundir na conta logada."""
+
+    def setUp(self):
+        self.roles = get_or_create_default_roles()
+        self.canonical = User.objects.create_user(
+            username="canon", email="canon@x.com", password="pass12345"
+        )
+        self.absorbed = User.objects.create_user(
+            username="abs", email="abs@x.com", password="pass12345"
+        )
+        self.client.force_authenticate(user=self.canonical)
+
+    def _confirm(self, token):
+        return self.client.post(reverse("merge_confirm"), {"token": token})
+
+    def test_confirm_merge_migrates_everything(self):
+        from accounts.services.merge import make_merge_token
+        from fcs_parser.models import ExperimentModel
+
+        org = Organization.objects.create(name="Lab", org_type="lab")
+        Membership.objects.create(
+            user=self.absorbed,
+            organization=org,
+            role=self.roles[Role.MEMBER],
+            status="active",
+        )
+        SocialAccount.objects.create(
+            user=self.absorbed,
+            provider="microsoft",
+            provider_user_id="oid-1",
+            email="abs@x.com",
+        )
+        experiment = ExperimentModel.objects.create(
+            title="Exp", created_by=self.absorbed
+        )
+
+        token = make_merge_token("microsoft", "oid-1", self.absorbed.id)
+        response = self._confirm(token)
+
+        self.assertEqual(response.status_code, 200)
+        self.absorbed.refresh_from_db()
+        self.assertFalse(self.absorbed.is_active)
+        self.assertEqual(self.absorbed.merged_into, self.canonical)
+        self.assertEqual(
+            SocialAccount.objects.get(provider_user_id="oid-1").user,
+            self.canonical,
+        )
+        self.assertEqual(
+            Membership.objects.get(user=self.canonical, organization=org).status,
+            "active",
+        )
+        experiment.refresh_from_db()
+        self.assertEqual(experiment.created_by, self.canonical)
+        self.assertTrue(
+            AuthEvent.objects.filter(
+                user=self.canonical, action="merge", target_user=self.absorbed
+            ).exists()
+        )
+
+    def test_merge_keeps_stronger_role_on_conflict(self):
+        from accounts.services.merge import make_merge_token
+
+        org = Organization.objects.create(name="Lab", org_type="lab")
+        Membership.objects.create(
+            user=self.canonical,
+            organization=org,
+            role=self.roles[Role.MEMBER],
+            status="active",
+        )
+        Membership.objects.create(
+            user=self.absorbed,
+            organization=org,
+            role=self.roles[Role.ORG_ADMIN],
+            status="active",
+        )
+
+        token = make_merge_token("google", "sub-1", self.absorbed.id)
+        self._confirm(token)
+
+        membership = Membership.objects.get(user=self.canonical, organization=org)
+        self.assertEqual(membership.role.name, Role.ORG_ADMIN)
+        absorbed_membership = Membership.objects.get(user=self.absorbed)
+        self.assertEqual(absorbed_membership.status, "inactive")
+
+    def test_confirm_merge_requires_auth_and_valid_token(self):
+        self.client.force_authenticate(user=None)
+        response = self._confirm("x")
+        self.assertEqual(response.status_code, 401)
+
+        self.client.force_authenticate(user=self.canonical)
+        response = self._confirm("token.forged.invalid")
+        self.assertEqual(response.status_code, 400)
+
+    def test_confirm_merge_rejects_self_and_already_merged(self):
+        from accounts.services.merge import make_merge_token
+
+        token = make_merge_token("google", "sub-1", self.canonical.id)
+        self.assertEqual(self._confirm(token).status_code, 400)
+
+        self.absorbed.is_active = False
+        self.absorbed.save()
+        token = make_merge_token("google", "sub-1", self.absorbed.id)
+        self.assertEqual(self._confirm(token).status_code, 400)
+
+    def test_merged_account_cannot_login(self):
+        from accounts.services.merge import make_merge_token
+
+        token = make_merge_token("google", "sub-1", self.absorbed.id)
+        self._confirm(token)
+
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            reverse("token_obtain_pair"),
+            {"username": "abs", "password": "pass12345"},
+        )
+        self.assertEqual(response.status_code, 401)
