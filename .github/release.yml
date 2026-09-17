@@ -1,0 +1,29 @@
+# Config das release notes geradas pelo botão "Generate release notes"
+# (e por `gh release create --generate-notes`): agrupa as PRs mergeadas
+# no range por label. PR sem label cai em "Outros".
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+    authors:
+      - dependabot
+  categories:
+    - title: 🚀 Features
+      labels:
+        - feature
+        - enhancement
+    - title: 🐛 Correções
+      labels:
+        - bug
+        - fix
+    - title: 🔒 Segurança & Deps
+      labels:
+        - security
+        - dependencies
+    - title: 📚 Docs & Infra
+      labels:
+        - documentation
+        - ci
+    - title: 📦 Outros
+      labels:
+        - "*"
