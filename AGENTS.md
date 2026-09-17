@@ -98,6 +98,11 @@ pandora/    Projeto Django (settings, urls raiz, wsgi/asgi)
 
 ## Regras duras
 
+- **"Pronto" sem teste não existe** — tarefa só se declara concluída depois
+  de rodar a verificação; "não testei" vale como "não está pronto". Mexeu
+  em permissão, migration, gate/estatística ou contrato de API → o teste
+  de regressão faz parte da entrega, não é opcional. Bug que chegou a
+  produção vira teste novo + correção, nunca só o patch.
 - **A API nunca deleta** — soft delete (`active=false`) sempre (ADR-0001/0005).
 - Nunca commitar `.env`, `uploads/`, `staticfiles/`, `db.sqlite3` ou
   credenciais (o `.gitignore` já cobre).
