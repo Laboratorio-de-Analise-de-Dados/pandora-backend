@@ -55,3 +55,5 @@ valor à pasta.
 | [0021](adr/0021-derivar-analise-entre-experimentos-por-snapshot.md) | Derivar análise entre experimentos: snapshot com match por guid/nome, sem vínculo vivo | Aceito |
 | [0022](adr/0022-pipeline-de-release-com-rollback.md) | Release por tag: migrate one-off, health check e rollback automático de código | Aceito |
 | [0023](adr/0023-experiment-type-vocabulario-controlado.md) | `experiment_type` como vocabulário controlado + checkpoint em gates geradas pelo Juvia | Proposto |
+| [0025](adr/0025-identidade-multi-provider-socialaccount.md) | Conta central com N identidades de IdP (`SocialAccount`) + `AuthEvent` append-only; match por `sub`, email-match exige confirmação | Proposto |
+| [0026](adr/0026-organizacao-nao-deriva-de-dominio-de-email.md) | Login social não cria nem associa organização — org é boundary de confiança via convite | Aceito |

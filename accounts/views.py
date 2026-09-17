@@ -1,9 +1,6 @@
-import base64
-import hashlib
 import secrets
 import urllib.parse
 from datetime import timedelta
-import jwt
 import requests
 from django.conf import settings
 from django.db.models import Prefetch
@@ -20,9 +17,19 @@ from accounts.serializers import (
     UserListSerializer,
 )
 from utils.mixins import SerializerByMethodMixin
-from .models import Invite, Membership, Organization, Role, User
+from .models import (
+    AuthEvent,
+    Invite,
+    Membership,
+    Organization,
+    Role,
+    SocialAccount,
+    User,
+)
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .serializers import (
+    AuthEventSerializer,
+    ConfirmLinkSerializer,
     CustomTokenObtainPairSerializer,
     InviteAcceptSerializer,
     InviteCreateSerializer,
@@ -30,6 +37,8 @@ from .serializers import (
     MembershipCreateSerializer,
     MembershipSerializer,
     RoleSerializer,
+    SocialAccountSerializer,
+    SocialAccountUnlinkSerializer,
     UserMembershipSerializer,
     UserRegisterSerializer,
     PasswordResetConfirmSerializer,
@@ -41,11 +50,31 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from .serializers import get_or_create_default_roles
 from accounts.services.send_mail import send_invite_email, send_password_reset_email
-from accounts.services.oauth import resolve_microsoft_email, unique_username_for_email
+from accounts.services.oauth import (
+    google_fetch_identity,
+    log_auth_event,
+    make_link_state,
+    make_link_token,
+    microsoft_fetch_identity,
+    read_link_state,
+    read_link_token,
+    unique_username_for_email,
+    unlink_social_account,
+)
+from django.core import signing
+from rest_framework_simplejwt.tokens import RefreshToken
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == status.HTTP_200_OK:
+            user = User.objects.filter(username=request.data.get("username")).first()
+            if user:
+                log_auth_event(request, user, "login_local", summary="Login com senha")
+        return response
 
 
 class OrganizationListCreateView(SerializerByMethodMixin, generics.ListCreateAPIView):
@@ -65,9 +94,13 @@ class OrganizationListCreateView(SerializerByMethodMixin, generics.ListCreateAPI
         )
         if user.is_super_admin:
             return Organization.objects.prefetch_related(members)
-        return Organization.objects.filter(
-            memberships__user=user, memberships__status="active"
-        ).prefetch_related(members).distinct()
+        return (
+            Organization.objects.filter(
+                memberships__user=user, memberships__status="active"
+            )
+            .prefetch_related(members)
+            .distinct()
+        )
 
     def perform_create(self, serializer):
         org = serializer.save()
@@ -187,9 +220,7 @@ class MembershipRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView)
         membership = serializer.instance
         new_role = serializer.validated_data.get("role", membership.role)
         new_status = serializer.validated_data.get("status", membership.status)
-        leaves_admin = (
-            new_role.name != Role.ORG_ADMIN or new_status != "active"
-        )
+        leaves_admin = new_role.name != Role.ORG_ADMIN or new_status != "active"
         if leaves_admin:
             _assert_not_last_org_admin(membership)
         serializer.save()
@@ -480,8 +511,135 @@ class AuthProvidersConfigView(APIView):
         )
 
 
+def _redirect_with_tokens(user):
+    """Redirect padrão pós-login: emite JWT e manda o front completar."""
+    refresh = RefreshToken.for_user(user)
+    redirect_url = (
+        f"{settings.FRONTEND_URL}/auth/callback?"
+        f"access={str(refresh.access_token)}&"
+        f"refresh={str(refresh)}&"
+        f"user_id={user.id}&"
+        f"username={urllib.parse.quote(user.username)}&"
+        f"email={urllib.parse.quote(user.email)}"
+    )
+    return redirect(redirect_url)
+
+
+def _redirect_link_notice(provider, provider_user_id, email, user):
+    """Email-match sem vínculo: o front avisa e pede confirmação (BE-29)."""
+    token = make_link_token(provider, provider_user_id, email, user.id)
+    params = urllib.parse.urlencode(
+        {
+            "link_notice": "1",
+            "provider": provider,
+            "email": email,
+            "token": token,
+        }
+    )
+    return redirect(f"{settings.FRONTEND_URL}/auth/callback?{params}")
+
+
+def _link_identity_to_user(request, user, provider, provider_user_id, email):
+    """Modo link (perfil): vincula a identidade ao usuário da sessão."""
+    if not provider_user_id:
+        return redirect(
+            f"{settings.FRONTEND_URL}/profile?link_error=no_sub&provider={provider}"
+        )
+    existing = SocialAccount.objects.filter(
+        provider=provider, provider_user_id=provider_user_id
+    ).first()
+    if existing and existing.user_id != user.id:
+        return redirect(
+            f"{settings.FRONTEND_URL}/profile?link_error=conflict&provider={provider}"
+        )
+    if existing:
+        if not existing.active or existing.email != email:
+            existing.active = True
+            existing.unlinked_at = None
+            existing.email = email
+            existing.save(update_fields=["active", "unlinked_at", "email"])
+    else:
+        SocialAccount.objects.create(
+            user=user,
+            provider=provider,
+            provider_user_id=provider_user_id,
+            email=email,
+        )
+    log_auth_event(
+        request,
+        user,
+        "link",
+        provider=provider,
+        summary=f"Vinculou {provider} ({email})",
+        provider_email=email,
+    )
+    return redirect(f"{settings.FRONTEND_URL}/profile?linked={provider}")
+
+
+def _complete_sso(request, provider, identity, link_user_id=None):
+    """Despacha o callback OAuth: modo link, vínculo existente, aviso de
+    vínculo por email-match ou criação de usuário novo."""
+    sub = identity.get("sub")
+    email = identity.get("email")
+
+    if link_user_id is not None:
+        user = User.objects.filter(id=link_user_id).first()
+        if not user:
+            return Response(
+                {"detail": "Sessão de vínculo inválida."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return _link_identity_to_user(request, user, provider, sub, email)
+
+    account = None
+    if sub:
+        account = SocialAccount.objects.filter(
+            provider=provider, provider_user_id=sub
+        ).first()
+    if account and account.active:
+        log_auth_event(
+            request,
+            account.user,
+            "login_sso",
+            provider=provider,
+            summary=f"Login via {provider} ({email})",
+            provider_email=email,
+        )
+        return _redirect_with_tokens(account.user)
+    if account:
+        # Identidade desvinculada antes — confirma para reativar no mesmo user.
+        return _redirect_link_notice(provider, sub, email, account.user)
+
+    user = User.objects.filter(email__iexact=email).first()
+    if user:
+        return _redirect_link_notice(provider, sub, email, user)
+
+    user = User.objects.create(
+        username=unique_username_for_email(email),
+        email=email,
+        is_active=True,
+        auth_provider=provider,
+    )
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    if sub:
+        SocialAccount.objects.create(
+            user=user, provider=provider, provider_user_id=sub, email=email
+        )
+    log_auth_event(
+        request,
+        user,
+        "login_sso",
+        provider=provider,
+        summary=f"Criou conta via {provider} ({email})",
+        provider_email=email,
+    )
+    return _redirect_with_tokens(user)
+
+
 class MicrosoftAuthInitView(APIView):
     permission_classes = []
+    link_mode = False
 
     def get(self, request, *args, **kwargs):
         if not settings.MICROSOFT_AUTH_ENABLED:
@@ -490,8 +648,13 @@ class MicrosoftAuthInitView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        state = secrets.token_urlsafe(32)
-        request.session["microsoft_auth_state"] = state
+        if self.link_mode:
+            # O state assinado carrega o usuário — o cookie de sessão não
+            # sobreviveria ao fetch cross-origin do front.
+            state = make_link_state(request.user.id)
+        else:
+            state = secrets.token_urlsafe(32)
+            request.session["microsoft_auth_state"] = state
 
         tenant = settings.MICROSOFT_TENANT_ID or "common"
         authorize_url = (
@@ -506,7 +669,14 @@ class MicrosoftAuthInitView(APIView):
             "state": state,
         }
         url = f"{authorize_url}?{urllib.parse.urlencode(params)}"
+        if self.link_mode:
+            return Response({"authorize_url": url})
         return redirect(url)
+
+
+class MicrosoftAuthLinkInitView(MicrosoftAuthInitView):
+    permission_classes = [IsAuthenticated]
+    link_mode = True
 
 
 class MicrosoftAuthCallbackView(APIView):
@@ -522,103 +692,35 @@ class MicrosoftAuthCallbackView(APIView):
         code = request.GET.get("code")
         state = request.GET.get("state")
         stored_state = request.session.get("microsoft_auth_state")
+        link_payload = read_link_state(state)
 
-        if not code or state != stored_state:
+        if not code or (link_payload is None and state != stored_state):
             return Response(
                 {"detail": "Requisição inválida ou state mismatch."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        tenant = settings.MICROSOFT_TENANT_ID or "common"
-        token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-
-        token_data = {
-            "grant_type": "authorization_code",
-            "client_id": settings.MICROSOFT_CLIENT_ID,
-            "client_secret": settings.MICROSOFT_CLIENT_SECRET,
-            "code": code,
-            "redirect_uri": settings.MICROSOFT_REDIRECT_URI,
-        }
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
         try:
-            token_response = requests.post(token_url, data=token_data, headers=headers)
-            token_response.raise_for_status()
-            tokens = token_response.json()
+            identity = microsoft_fetch_identity(code)
         except requests.RequestException as e:
             return Response(
-                {"detail": f"Erro ao trocar code por token: {str(e)}"},
+                {"detail": f"Erro ao obter identidade Microsoft: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        access_token = tokens.get("access_token")
-        id_token = tokens.get("id_token")
-
-        claims = {}
-        if id_token:
-            try:
-                claims = jwt.decode(id_token, options={"verify_signature": False})
-            except jwt.PyJWTError:
-                claims = {}
-
-        # Fetch user info from Microsoft Graph
-        try:
-            graph_response = requests.get(
-                "https://graph.microsoft.com/v1.0/me",
-                params={"$select": "displayName,mail,userPrincipalName,otherMails"},
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            graph_response.raise_for_status()
-            profile = graph_response.json()
-        except requests.RequestException as e:
-            return Response(
-                {"detail": f"Erro ao obter perfil do Microsoft: {str(e)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        email = resolve_microsoft_email(profile, claims)
-        if not email:
+        if not identity.get("email"):
             return Response(
                 {"detail": "Não foi possível obter o email do usuário Microsoft."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        name = profile.get("displayName") or email.split("@")[0]
 
-        user, created = User.objects.get_or_create(
-            email__iexact=email,
-            defaults={
-                "username": unique_username_for_email(email),
-                "email": email,
-                "is_active": True,
-                "auth_provider": "microsoft",
-            },
-        )
-
-        if created:
-            user.set_unusable_password()
-            user.save(update_fields=["password"])
-        else:
-            user.auth_provider = "microsoft"
-            user.save(update_fields=["auth_provider"])
-
-        from rest_framework_simplejwt.tokens import RefreshToken
-
-        refresh = RefreshToken.for_user(user)
-
-        # Redirect to frontend with tokens
-        redirect_url = (
-            f"{settings.FRONTEND_URL}/auth/callback?"
-            f"access={str(refresh.access_token)}&"
-            f"refresh={str(refresh)}&"
-            f"user_id={user.id}&"
-            f"username={urllib.parse.quote(user.username)}&"
-            f"email={urllib.parse.quote(user.email)}"
-        )
-        return redirect(redirect_url)
+        link_user_id = link_payload.get("user_id") if link_payload else None
+        return _complete_sso(request, "microsoft", identity, link_user_id)
 
 
 class GoogleAuthInitView(APIView):
     permission_classes = []
+    link_mode = False
 
     def get(self, request, *args, **kwargs):
         if not settings.GOOGLE_AUTH_ENABLED:
@@ -627,8 +729,11 @@ class GoogleAuthInitView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        state = secrets.token_urlsafe(32)
-        request.session["google_auth_state"] = state
+        if self.link_mode:
+            state = make_link_state(request.user.id)
+        else:
+            state = secrets.token_urlsafe(32)
+            request.session["google_auth_state"] = state
 
         authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
         params = {
@@ -641,7 +746,14 @@ class GoogleAuthInitView(APIView):
             "prompt": "select_account",
         }
         url = f"{authorize_url}?{urllib.parse.urlencode(params)}"
+        if self.link_mode:
+            return Response({"authorize_url": url})
         return redirect(url)
+
+
+class GoogleAuthLinkInitView(GoogleAuthInitView):
+    permission_classes = [IsAuthenticated]
+    link_mode = True
 
 
 class GoogleAuthCallbackView(APIView):
@@ -657,85 +769,218 @@ class GoogleAuthCallbackView(APIView):
         code = request.GET.get("code")
         state = request.GET.get("state")
         stored_state = request.session.get("google_auth_state")
+        link_payload = read_link_state(state)
 
-        if not code or state != stored_state:
+        if not code or (link_payload is None and state != stored_state):
             return Response(
                 {"detail": "Requisição inválida ou state mismatch."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        token_url = "https://oauth2.googleapis.com/token"
-        token_data = {
-            "grant_type": "authorization_code",
-            "client_id": settings.GOOGLE_CLIENT_ID,
-            "client_secret": settings.GOOGLE_CLIENT_SECRET,
-            "code": code,
-            "redirect_uri": settings.GOOGLE_REDIRECT_URI,
-        }
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
         try:
-            token_response = requests.post(token_url, data=token_data, headers=headers)
-            token_response.raise_for_status()
-            tokens = token_response.json()
+            identity = google_fetch_identity(code)
         except requests.RequestException as e:
             return Response(
-                {"detail": f"Erro ao trocar code por token: {str(e)}"},
+                {"detail": f"Erro ao obter identidade Google: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        access_token = tokens.get("access_token")
-
-        try:
-            userinfo_response = requests.get(
-                "https://www.googleapis.com/oauth2/v1/userinfo",
-                params={"alt": "json"},
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            userinfo_response.raise_for_status()
-            profile = userinfo_response.json()
-        except requests.RequestException as e:
-            return Response(
-                {"detail": f"Erro ao obter perfil do Google: {str(e)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        email = profile.get("email")
-        name = profile.get("name") or (email.split("@")[0] if email else "")
-
-        if not email:
+        if not identity.get("email"):
             return Response(
                 {"detail": "Não foi possível obter o email do usuário Google."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user, created = User.objects.get_or_create(
-            email__iexact=email,
-            defaults={
-                "username": unique_username_for_email(email),
-                "email": email,
-                "is_active": True,
-                "auth_provider": "google",
+        link_user_id = link_payload.get("user_id") if link_payload else None
+        return _complete_sso(request, "google", identity, link_user_id)
+
+
+class SocialAccountListView(generics.ListAPIView):
+    """Vínculos de IdP ativos do usuário logado (seção "Contas conectadas")."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = SocialAccountSerializer
+
+    def get_queryset(self):
+        return SocialAccount.objects.filter(user=self.request.user, active=True)
+
+
+class AuthEventListView(generics.ListAPIView):
+    """Linha do tempo de eventos de autenticação do usuário logado."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = AuthEventSerializer
+
+    def get_queryset(self):
+        return AuthEvent.objects.filter(user=self.request.user)
+
+
+class ConfirmSocialLinkView(APIView):
+    """Confirma o vínculo após o aviso de email-match no login SSO.
+
+    Recebe o token assinado emitido pelo callback, cria/reativa o
+    SocialAccount e devolve os JWTs como um login normal.
+    """
+
+    permission_classes = []
+
+    @extend_schema(
+        request=ConfirmLinkSerializer,
+        responses=inline_serializer(
+            name="ConfirmLinkResponse",
+            fields={
+                "access": serializers.CharField(),
+                "refresh": serializers.CharField(),
+                "user_id": serializers.IntegerField(),
+                "username": serializers.CharField(),
+                "email": serializers.CharField(),
             },
+        ),
+    )
+    def post(self, request, provider):
+        if provider not in ("microsoft", "google"):
+            return Response(
+                {"detail": "Provider inválido."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = ConfirmLinkSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            payload = read_link_token(serializer.validated_data["token"])
+        except signing.SignatureExpired:
+            return Response(
+                {"detail": "Confirmação expirada. Refaça o login."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except signing.BadSignature:
+            return Response(
+                {"detail": "Token de vínculo inválido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if payload.get("provider") != provider:
+            return Response(
+                {"detail": "Token de vínculo não corresponde ao provider."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = get_object_or_404(User, id=payload.get("user_id"))
+        sub = payload.get("sub")
+        email = payload.get("email")
+
+        if sub:
+            existing = SocialAccount.objects.filter(
+                provider=provider, provider_user_id=sub
+            ).first()
+            if existing:
+                if existing.user_id != user.id:
+                    return Response(
+                        {
+                            "detail": (
+                                "Esta identidade já está vinculada a outra conta. "
+                                "A fusão de contas ainda não está disponível."
+                            )
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                if not existing.active or existing.email != email:
+                    existing.active = True
+                    existing.unlinked_at = None
+                    existing.email = email
+                    existing.save(update_fields=["active", "unlinked_at", "email"])
+            else:
+                SocialAccount.objects.create(
+                    user=user,
+                    provider=provider,
+                    provider_user_id=sub,
+                    email=email,
+                )
+            log_auth_event(
+                request,
+                user,
+                "link",
+                provider=provider,
+                summary=f"Vinculou {provider} ({email})",
+                provider_email=email,
+            )
+
+        user.auth_provider = provider
+        user.save(update_fields=["auth_provider"])
+        log_auth_event(
+            request,
+            user,
+            "login_sso",
+            provider=provider,
+            summary=f"Login via {provider} ({email})",
+            provider_email=email,
         )
-
-        if created:
-            user.set_unusable_password()
-            user.save(update_fields=["password"])
-        else:
-            user.auth_provider = "google"
-            user.save(update_fields=["auth_provider"])
-
-        from rest_framework_simplejwt.tokens import RefreshToken
 
         refresh = RefreshToken.for_user(user)
-
-        redirect_url = (
-            f"{settings.FRONTEND_URL}/auth/callback?"
-            f"access={str(refresh.access_token)}&"
-            f"refresh={str(refresh)}&"
-            f"user_id={user.id}&"
-            f"username={urllib.parse.quote(user.username)}&"
-            f"email={urllib.parse.quote(user.email)}"
+        return Response(
+            {
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                "user_id": user.id,
+                "username": user.username,
+                "email": user.email,
+            },
+            status=status.HTTP_200_OK,
         )
-        return redirect(redirect_url)
+
+
+class SocialAccountUnlinkView(APIView):
+    """Desvincula um provider — nunca deleta o vínculo nem a conta.
+
+    Se o vínculo é o último método de acesso (sem senha utilizável e sem
+    outro provider ativo), exige email+senha nova ou um reset de senha
+    para o usuário não se trancar fora.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=SocialAccountUnlinkSerializer)
+    def post(self, request, pk):
+        account = get_object_or_404(
+            SocialAccount, pk=pk, user=request.user, active=True
+        )
+        serializer = SocialAccountUnlinkSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        has_other = (
+            SocialAccount.objects.filter(user=user, active=True)
+            .exclude(pk=account.pk)
+            .exists()
+        )
+        if not user.has_usable_password() and not has_other:
+            new_password = serializer.validated_data.get("password")
+            new_email = serializer.validated_data.get("email")
+            wants_reset = serializer.validated_data.get("request_password_reset")
+            if not new_password and not wants_reset:
+                return Response(
+                    {
+                        "detail": (
+                            "Este é o último método de acesso da conta. "
+                            "Defina uma senha ou solicite a redefinição antes "
+                            "de desvincular."
+                        ),
+                        "requires_credential_setup": True,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if new_email:
+                user.email = new_email
+            if new_password:
+                user.set_password(new_password)
+            user.save()
+            if wants_reset:
+                token = default_token_generator.make_token(user)
+                reset_link = (
+                    f"{settings.FRONTEND_URL}/reset-password"
+                    f"?token={user.id}:{token}"
+                )
+                send_password_reset_email(user, reset_link)
+
+        unlink_social_account(request, account)
+        return Response({"detail": "Conta desvinculada."}, status=status.HTTP_200_OK)

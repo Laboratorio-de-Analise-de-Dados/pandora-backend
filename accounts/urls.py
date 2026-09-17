@@ -1,9 +1,12 @@
 from django.urls import path
 from .views import (
+    AuthEventListView,
     AuthProvidersConfigView,
+    ConfirmSocialLinkView,
     CustomTokenObtainPairView,
     GoogleAuthCallbackView,
     GoogleAuthInitView,
+    GoogleAuthLinkInitView,
     InviteAcceptView,
     InviteDeclineView,
     InviteListCreateView,
@@ -16,6 +19,7 @@ from .views import (
     MembershipRetrieveUpdateDestroyView,
     MicrosoftAuthCallbackView,
     MicrosoftAuthInitView,
+    MicrosoftAuthLinkInitView,
     OrganizationListCreateView,
     OrganizationRetrieveUpdateDestroyView,
     PasswordUpdateView,
@@ -25,12 +29,13 @@ from .views import (
     RetrieveUserView,
     RoleListCreateView,
     RoleRetrieveUpdateDestroyView,
+    SocialAccountListView,
+    SocialAccountUnlinkView,
     UserListCreateView,
     UserMembershipListView,
     UserRetrieveUpdateDestroyView,
 )
 from rest_framework_simplejwt.views import TokenRefreshView
-
 
 urlpatterns = [
     path(
@@ -87,7 +92,9 @@ urlpatterns = [
         "invites/accept/<str:token>/", InviteAcceptView.as_view(), name="invite_accept"
     ),
     path(
-        "invites/decline/<str:token>/", InviteDeclineView.as_view(), name="invite_decline"
+        "invites/decline/<str:token>/",
+        InviteDeclineView.as_view(),
+        name="invite_decline",
     ),
     path("roles/", RoleListCreateView.as_view(), name="role_list_create"),
     path(
@@ -98,6 +105,21 @@ urlpatterns = [
         "users/<int:pk>/", UserRetrieveUpdateDestroyView.as_view(), name="user_detail"
     ),
     path("users/me/", RetrieveUserView.as_view(), name="user_me"),
+    path(
+        "users/me/social-accounts/",
+        SocialAccountListView.as_view(),
+        name="user_social_accounts",
+    ),
+    path(
+        "users/me/auth-events/",
+        AuthEventListView.as_view(),
+        name="user_auth_events",
+    ),
+    path(
+        "social-accounts/<int:pk>/unlink/",
+        SocialAccountUnlinkView.as_view(),
+        name="social_account_unlink",
+    ),
     path(
         "users/me/memberships/",
         UserMembershipListView.as_view(),
@@ -128,14 +150,29 @@ urlpatterns = [
         name="microsoft_auth_init",
     ),
     path(
+        "auth/microsoft/link/",
+        MicrosoftAuthLinkInitView.as_view(),
+        name="microsoft_auth_link_init",
+    ),
+    path(
         "auth/microsoft/callback/",
         MicrosoftAuthCallbackView.as_view(),
         name="microsoft_auth_callback",
     ),
     path(
+        "auth/<str:provider>/confirm-link/",
+        ConfirmSocialLinkView.as_view(),
+        name="social_confirm_link",
+    ),
+    path(
         "auth/google/",
         GoogleAuthInitView.as_view(),
         name="google_auth_init",
+    ),
+    path(
+        "auth/google/link/",
+        GoogleAuthLinkInitView.as_view(),
+        name="google_auth_link_init",
     ),
     path(
         "auth/google/callback/",

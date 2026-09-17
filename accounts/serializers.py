@@ -4,7 +4,15 @@ from django.db import transaction
 from django.utils import timezone
 from django.contrib.auth.tokens import default_token_generator
 from accounts.services.send_mail import generate_token, send_invite_email
-from .models import Invite, Membership, Organization, Role, User
+from .models import (
+    AuthEvent,
+    Invite,
+    Membership,
+    Organization,
+    Role,
+    SocialAccount,
+    User,
+)
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
@@ -396,6 +404,45 @@ class InviteAcceptSerializer(serializers.Serializer):
             invite.save(update_fields=["status"])
 
         return {"invite": invite, "membership": membership}
+
+
+class SocialAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SocialAccount
+        fields = ["id", "provider", "email", "linked_at"]
+
+
+class SocialAccountUnlinkSerializer(serializers.Serializer):
+    """Payload do desvínculo — email/senha só importam quando o vínculo
+    é o último método de acesso da conta."""
+
+    email = serializers.EmailField(required=False)
+    password = serializers.CharField(write_only=True, required=False, min_length=6)
+    request_password_reset = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        if attrs.get("password") and attrs.get("request_password_reset"):
+            raise serializers.ValidationError(
+                "Informe uma senha nova OU peça o link de redefinição, não ambos."
+            )
+        return attrs
+
+
+class ConfirmLinkSerializer(serializers.Serializer):
+    token = serializers.CharField()
+
+
+class AuthEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AuthEvent
+        fields = [
+            "id",
+            "action",
+            "provider",
+            "summary",
+            "metadata",
+            "created_at",
+        ]
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
