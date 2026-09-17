@@ -1,4 +1,4 @@
-# ADR-0022 — Tipo de experimento como vocabulário controlado e checkpoint em gates do Juvia
+# ADR-0023 — Tipo de experimento como vocabulário controlado e checkpoint em gates do Juvia
 
 - **Status:** Proposto
 - **Data:** 2026-09-16
@@ -25,15 +25,21 @@ só conveniência:
 ## Decisão (proposta)
 
 - `ExperimentModel` ganha `experiment_type` como FK para uma **tabela de
-  vocabulário controlado** — extensível por **qualquer usuário
-  autenticado** quando o tipo não existir (padrão autocomplete-cria:
+  vocabulário controlado** — extensível por **admin ou pelo dono do
+  experimento** quando o tipo não existir (padrão autocomplete-cria:
   a UI sugere os existentes primeiro e oferece "Criar X" como escape).
-  Não é `choices` hardcoded nem texto livre.
+  Quem cria o próprio experimento é dono por definição, então o fluxo
+  normal de criação continua sem fricção; membro editando experimento
+  alheio só escolhe entre tipos existentes. Não é `choices` hardcoded
+  nem texto livre.
 - **Dedup case-insensitive na origem** — a tabela guarda
   `name_normalized` (lower/trim) com unicidade; "Stem Cell" e "stem
-  cell" convergem para a mesma entrada. Escrita pelo serializer de
+  cell" convergem para a mesma entrada. A escrita pelo `save()` do
   experimento faz `get_or_create` normalizado: quem digita um tipo
-  existente reutiliza, quem digita novo cria — sem permissão extra.
+  existente reutiliza, quem digita novo cria — respeitando a regra de
+  permissão acima, checada no serializer/endpoint.
+- `POST /experiment/types/` (endpoint solto, sem experimento no
+  contexto) é **admin-only**; o GET da listagem é aberto a autenticados.
 - Curadoria (mesclar/renomear tipos quase-duplicados) fica como função
   administrativa posterior, fora do caminho de criação.
 - Toda gate criada a partir de resultado do Juvia gera **checkpoint
@@ -64,10 +70,11 @@ estado da análise é o Pandora.
 
 ## Consequências
 
-- Vocabulário evolui sem deploy e sem fricção pro usuário; o autocomplete
-  empurra pra reutilizar o que existe e o dedup normalizado contém a
-  fragmentação. Resíduo aceito: erros de digitação ("stem cel") criam
-  entradas ruins — mitigado pela curadoria admin posterior.
+- Vocabulário evolui sem deploy e sem fricção pra quem cria o próprio
+  experimento; o autocomplete empurra pra reutilizar o que existe e o
+  dedup normalizado contém a fragmentação. A restrição a dono/admin limita
+  poluição por terceiros: erros de digitação ("stem cel") só entram via
+  dono do experimento ou admin — mitigado pela curadoria posterior.
 - Um checkpoint extra por gate gerada — volume pequeno, já previsto pelo
   mecanismo.
 - Habilita em fases: estatística "qual modelo performa por tipo" →

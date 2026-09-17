@@ -2,7 +2,7 @@
 
 **Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
 **Branch sugerida:** `feat/experiment-type`
-**Status:** não iniciado — ADR-0022 (Proposto).
+**Status:** não iniciado — ADR-0023 (Proposto).
 
 ## Problema
 
@@ -10,7 +10,7 @@ Sem rotular o tipo de análise do experimento (stem cell, PBMC,
 beads/CBA, tripanossomatídeos, ...), não há como comparar "modelo × tipo"
 quando o Juvia gerar gates — e a pesquisa perde o eixo de agregação que
 permite aprender qual configuração funciona para cada tipo. Texto livre
-fragmenta labels; enum congela o vocabulário (ADR-0022).
+fragmenta labels; enum congela o vocabulário (ADR-0023).
 
 ## Escopo
 

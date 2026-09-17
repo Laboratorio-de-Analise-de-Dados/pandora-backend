@@ -37,7 +37,7 @@ ver "na fila → processando → concluído/erro" com UI responsiva.
   o analista olha os dados e mantém o payload uniforme. Nunca expor o
   banco nem o `parquet_path` cru.
 - `POST /internal/jobs/{id}/complete` — grava resultado, cria gate(s) e
-  checkpoint `source=juvia` (ADR-0022)
+  checkpoint `source=juvia` (ADR-0023)
 - `POST /internal/jobs/{id}/fail` — incrementa `attempts`; após N falhas
   → `quarantine` (revisão manual, não descarte)
 
