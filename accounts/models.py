@@ -50,6 +50,89 @@ class User(AbstractUser):
         return self.is_superuser or self.is_staff
 
 
+class SocialAccount(models.Model):
+    """Vínculo entre o usuário e uma identidade de provider externo (IdP).
+
+    `provider_user_id` é o identificador imutável do provider (`sub`/`oid`);
+    `email` é informativo — o provider pode mudar o email sem quebrar o
+    vínculo. Nunca é deletado: desvincular marca `active=False`.
+    """
+
+    PROVIDERS = [
+        ("google", "Google"),
+        ("microsoft", "Microsoft"),
+    ]
+
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="social_accounts"
+    )
+    provider = models.CharField(max_length=20, choices=PROVIDERS)
+    provider_user_id = models.CharField(max_length=255)
+    email = models.EmailField()
+    active = models.BooleanField(default=True)
+    linked_at = models.DateTimeField(auto_now_add=True)
+    unlinked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "provider_user_id"],
+                name="unique_provider_identity",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["user", "active"], name="socialacct_user_active_idx")
+        ]
+
+    def __str__(self):
+        return f"{self.provider}:{self.email} → {self.user.username}"
+
+
+class AuthEvent(models.Model):
+    """Log append-only de eventos de autenticação (LGPD/auditoria).
+
+    Mesmo espírito do histórico de análise: só INSERT, `summary` pronto
+    para exibição. Nunca editar nem deletar linhas.
+    """
+
+    ACTIONS = [
+        ("login_sso", "Login via SSO"),
+        ("login_local", "Login com senha"),
+        ("link", "Vínculo de identidade"),
+        ("unlink", "Desvínculo de identidade"),
+        ("merge", "Merge de contas"),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="auth_events",
+    )
+    action = models.CharField(max_length=20, choices=ACTIONS)
+    provider = models.CharField(max_length=20, blank=True, default="")
+    target_user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Conta absorvida em merges (BE-30).",
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    summary = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "-created_at"], name="authevent_user_ts_idx")
+        ]
+
+    def __str__(self):
+        return f"{self.action} - {self.user_id} ({self.created_at:%Y-%m-%d %H:%M})"
+
+
 class Role(models.Model):
     """
     Papéis globais e simples usados nos Memberships.

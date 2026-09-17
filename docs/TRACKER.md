@@ -14,6 +14,7 @@ ou alinhe com o responsável.
 | Feature | Área afetada | Branch | Sessão | Desde |
 |---|---|---|---|---|
 | Reverte profile juvia do compose | `docker-compose.yml`, AGENTS.md | `chore/remove-juvia-service` | devin | 2026-09 |
+| BE-29 vinculação de IdPs | `accounts/models.py`, `accounts/views.py`, `accounts/services/oauth.py`, `accounts/urls.py`, `accounts/serializers.py`, `accounts/tests.py` | `feat/email-smtp-config` | devin | 2026-09 |
 
 ## Concluído nesta branch
 

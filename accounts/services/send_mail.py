@@ -24,7 +24,9 @@ def create_invite(email: str, organization: Organization, role: Role) -> Invite:
 
 
 def send_invite_email(invite: Invite) -> bool:
-    subject = f"Você foi convidado para entrar na organização {invite.organization.name}"
+    subject = (
+        f"Você foi convidado para entrar na organização {invite.organization.name}"
+    )
     text_content = (
         f"Você foi convidado para participar da organização {invite.organization.name}\n"
         f"como {invite.role.name}.\n\n"
