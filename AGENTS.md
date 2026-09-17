@@ -31,6 +31,11 @@ python manage.py check              # sanity check do Django
 - **CI não roda testes** — o workflow (`.github/workflows/ci.yml`) só builda e
   publica a imagem Docker; deploy exige aprovação manual no environment
   `production`. Teste local é responsabilidade sua.
+- **Trunk-based**: não existe `develop` — `main` é a default e única linha
+  de integração. Branch curta `feat/*`/`fix/*` → PR → `main`.
+- **Dependabot**: os alertas ficam na aba Security do repo (aparecem no
+  output do push). Ao subir PR, confira se há alerta novo de dependência —
+  bumps de segurança vão em `fix/security-*` própria, não dentro de feature.
 - O compose aplica `migrate` na subida; `makemigrations` é manual:
   `docker compose exec web python manage.py makemigrations` (o dev não
   precisa de Django na máquina). O Dockerfile roda
