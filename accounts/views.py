@@ -3,6 +3,7 @@ import hashlib
 import secrets
 import urllib.parse
 from datetime import timedelta
+import jwt
 import requests
 from django.conf import settings
 from django.db.models import Prefetch
@@ -40,6 +41,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from .serializers import get_or_create_default_roles
 from accounts.services.send_mail import send_invite_email, send_password_reset_email
+from accounts.services.oauth import resolve_microsoft_email
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -552,10 +554,18 @@ class MicrosoftAuthCallbackView(APIView):
         access_token = tokens.get("access_token")
         id_token = tokens.get("id_token")
 
+        claims = {}
+        if id_token:
+            try:
+                claims = jwt.decode(id_token, options={"verify_signature": False})
+            except jwt.PyJWTError:
+                claims = {}
+
         # Fetch user info from Microsoft Graph
         try:
             graph_response = requests.get(
                 "https://graph.microsoft.com/v1.0/me",
+                params={"$select": "displayName,mail,userPrincipalName,otherMails"},
                 headers={"Authorization": f"Bearer {access_token}"},
             )
             graph_response.raise_for_status()
@@ -566,14 +576,13 @@ class MicrosoftAuthCallbackView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        email = profile.get("mail") or profile.get("userPrincipalName")
-        name = profile.get("displayName") or email.split("@")[0]
-
+        email = resolve_microsoft_email(profile, claims)
         if not email:
             return Response(
                 {"detail": "Não foi possível obter o email do usuário Microsoft."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        name = profile.get("displayName") or email.split("@")[0]
 
         user, created = User.objects.get_or_create(
             email__iexact=email,

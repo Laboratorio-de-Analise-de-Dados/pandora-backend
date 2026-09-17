@@ -1,11 +1,13 @@
 from datetime import timedelta
 
+from django.test import SimpleTestCase
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from accounts.models import Invite, Membership, Organization, Role, User
 from accounts.serializers import get_or_create_default_roles
+from accounts.services.oauth import resolve_microsoft_email
 
 
 class InviteAcceptTests(APITestCase):
@@ -202,3 +204,43 @@ class InviteAcceptTests(APITestCase):
                 user=other, organization=self.organization
             ).exists()
         )
+
+
+class ResolveMicrosoftEmailTests(SimpleTestCase):
+    def test_prefers_graph_mail(self):
+        profile = {"mail": "user@org.com", "userPrincipalName": "u@t.onmicrosoft.com"}
+        self.assertEqual(resolve_microsoft_email(profile, {}), "user@org.com")
+
+    def test_falls_back_to_other_mails(self):
+        profile = {
+            "mail": None,
+            "otherMails": ["aluno@fiocruz.br"],
+            "userPrincipalName": "u@fiocruzbr.onmicrosoft.com",
+        }
+        self.assertEqual(resolve_microsoft_email(profile, {}), "aluno@fiocruz.br")
+
+    def test_uses_id_token_email(self):
+        profile = {"mail": None, "userPrincipalName": "u@t.onmicrosoft.com"}
+        claims = {"email": "real@org.com"}
+        self.assertEqual(resolve_microsoft_email(profile, claims), "real@org.com")
+
+    def test_uses_id_token_preferred_username(self):
+        profile = {"mail": None, "userPrincipalName": "u@t.onmicrosoft.com"}
+        claims = {"preferred_username": "real@org.com"}
+        self.assertEqual(resolve_microsoft_email(profile, claims), "real@org.com")
+
+    def test_normalizes_ext_guest_format(self):
+        profile = {
+            "mail": None,
+            "userPrincipalName": "paulohenrikk_hotmail.com#EXT#@t.onmicrosoft.com",
+        }
+        self.assertEqual(
+            resolve_microsoft_email(profile, {}), "paulohenrikk@hotmail.com"
+        )
+
+    def test_upn_onmicrosoft_as_last_resort(self):
+        profile = {"mail": None, "userPrincipalName": "u@t.onmicrosoft.com"}
+        self.assertEqual(resolve_microsoft_email(profile, {}), "u@t.onmicrosoft.com")
+
+    def test_returns_none_when_nothing_available(self):
+        self.assertIsNone(resolve_microsoft_email({}, {}))
