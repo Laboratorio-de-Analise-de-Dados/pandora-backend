@@ -18,8 +18,10 @@ pode exigir deploy nem admin.
 
 Vocabulário **controlado mas extensível**: tabela `experiment_type` com
 dedup normalizado. Quem pode introduzir um tipo novo é **admin ou o dono
-do experimento** — quem cria o próprio experimento é dono por definição,
-então a criação implícita via save() cobre o fluxo normal; membro
+do experimento** — "admin" cobre `is_super_admin` e `org_admin` (admin da
+organização do experimento; no endpoint solto, org_admin ativo de
+qualquer org). Quem cria o próprio experimento é dono por definição,
+então a criação implícita via save() cobre o fluxo normal; membro comum
 editando experimento alheio só escolhe entre tipos existentes (PATCH com
 tipo inédito → 400). A UX (autocomplete que sugere primeiro, "Criar X"
 como último recurso) faz a pressão de reúso — a API garante a
@@ -48,14 +50,15 @@ canônico. `type` vazio/None limpa a FK.
 
 - `GET` — tipos ativos ordenados por nome (case-insensitive) para o
   autocomplete; qualquer autenticado lê.
-- `POST {"name": "X"}` — **admin-only**: sem experimento no contexto, só
-  admin introduz entradas soltas (403 para demais). **Idempotente**: nome
-  já existente (após normalização) devolve a entrada canônica com `200`,
-  não erro; tipo novo devolve `201`. O vocabulário é global, não por
-  organização.
+- `POST {"name": "X"}` — **admin-only** (super admin ou `org_admin`
+  ativo de alguma org): sem experimento no contexto, só admin introduz
+  entradas soltas (403 para demais). **Idempotente**: nome já existente
+  (após normalização) devolve a entrada canônica com `200`, não erro;
+  tipo novo devolve `201`. O vocabulário é global, não por organização.
 - Permissão centralizada em `can_create_experiment_type(user, experiment)`
-  (`fcs_parser/permissions.py`): super admin sempre; com experimento, só
-  o `created_by`.
+  (`fcs_parser/permissions.py`): super admin sempre; com experimento, o
+  `created_by` ou `org_admin` da org dele; sem experimento, `org_admin`
+  ativo de qualquer org.
 
 ### Migration `0018`
 
@@ -80,10 +83,11 @@ arquivo: varre experimentos com `type` legado, dedup por normalização
 - [x] Experimento criado com tipo inédito popula o vocabulário
       automaticamente (o criador é o dono)
 - [x] Variação de casing no `type` reusa a entrada e normaliza o label
-- [x] PATCH de `type` por dono/admin resolve no vocabulário; membro em
-      experimento alheio com tipo inédito leva 400; `type` vazio limpa a FK
+- [x] PATCH de `type` por dono, super admin ou `org_admin` da org resolve
+      no vocabulário; membro comum em experimento alheio com tipo inédito
+      leva 400; `type` vazio limpa a FK
 - [x] Backfill deduplica tipos legados e preserva casing canônico
-- [x] Suíte completa verde (210 testes)
+- [x] Suíte completa verde (215 testes)
 
 ## Fora de escopo
 

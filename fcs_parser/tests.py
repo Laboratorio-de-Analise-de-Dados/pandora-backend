@@ -2142,18 +2142,31 @@ class ExperimentTypeTestCase(TestCase):
         self.admin = User.objects.create_superuser(
             username="admin", email="admin@pandora.test", password="senha-forte-123"
         )
-        # Dono e membro no mesmo lab — membro pode editar o experimento,
-        # mas não pode introduzir tipos novos no vocabulário.
+        # Dono, membro comum e org_admin no mesmo lab — membro edita o
+        # experimento mas não introduz tipos novos; org_admin cura o
+        # vocabulário da org (admin no sentido amplo, além do superuser).
         self.member = User.objects.create_user(
             username="membro", email="membro@pandora.test", password="senha-forte-123"
         )
+        self.org_admin = User.objects.create_user(
+            username="adminlab",
+            email="adminlab@pandora.test",
+            password="senha-forte-123",
+        )
         self.org = Organization.objects.create(name="Lab T", org_type="lab")
         role = Role.objects.create(name="member")
+        org_admin_role = Role.objects.create(name="org_admin")
         Membership.objects.create(
             user=self.owner, organization=self.org, role=role, status="active"
         )
         Membership.objects.create(
             user=self.member, organization=self.org, role=role, status="active"
+        )
+        Membership.objects.create(
+            user=self.org_admin,
+            organization=self.org,
+            role=org_admin_role,
+            status="active",
         )
         self.client = APIClient()
         self.client.force_authenticate(self.owner)
@@ -2182,6 +2195,13 @@ class ExperimentTypeTestCase(TestCase):
 
         self.assertEqual(res.status_code, 403)
         self.assertEqual(ExperimentTypeModel.objects.count(), 0)
+
+    def test_post_tipos_aceita_org_admin(self):
+        """Admin no sentido amplo: org_admin de qualquer org cura o
+        vocabulário global mesmo sem experimento no contexto."""
+        res = self._post_type("tipo do lab", user=self.org_admin)
+
+        self.assertEqual(res.status_code, 201)
 
     def test_post_duplicado_case_insensitive_devolve_canonico(self):
         self._post_type("Stem Cell")
@@ -2267,6 +2287,27 @@ class ExperimentTypeTestCase(TestCase):
         self.assertEqual(res.status_code, 200)
         exp.refresh_from_db()
         self.assertEqual(exp.type, "antigo")
+
+    def test_org_admin_cria_tipo_em_experimento_da_org(self):
+        """org_admin da org do experimento introduz tipo novo mesmo sem
+        ser o dono — curadoria do vocabulário do lab."""
+        exp = ExperimentModel.objects.create(
+            title="exp",
+            type="antigo",
+            created_by=self.owner,
+            organization=self.org,
+        )
+        client = APIClient()
+        client.force_authenticate(self.org_admin)
+
+        res = client.patch(
+            f"/experiment/{exp.id}/", {"type": "Tipo do Lab"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(
+            ExperimentTypeModel.objects.filter(name_normalized="tipo do lab").exists()
+        )
 
     def test_admin_cria_tipo_em_experimento_alheio(self):
         exp = ExperimentModel.objects.create(
