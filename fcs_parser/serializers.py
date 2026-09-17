@@ -6,7 +6,12 @@ from accounts.models import Organization
 from accounts.serializers import OrganizationListSerializer
 from analytics.serializers import ListGateSerializer
 from utils.validators import experiment_file_extension, validate_zip_file
-from .models import ExperimentModel, FileDataModel, SubsampleModel
+from .models import (
+    ExperimentModel,
+    ExperimentTypeModel,
+    FileDataModel,
+    SubsampleModel,
+)
 
 
 def _extension_error_detail(exc: DjangoValidationError) -> str:
@@ -52,6 +57,24 @@ def validate_experiment_context(user, title, org_id):
         raise serializers.ValidationError(
             {"detail": "Título já criado para esse laboratório."}
         )
+
+
+class ExperimentTypeSerializer(serializers.ModelSerializer):
+    """Vocabulário de tipos de experimento (BE-28).
+
+    ``name`` é o casing canônico — o dedup acontece em
+    ``name_normalized`` (lower + whitespace colapsado).
+    """
+
+    class Meta:
+        model = ExperimentTypeModel
+        fields = ["id", "name"]
+
+    def validate_name(self, value):
+        name = " ".join(value.split())
+        if not name:
+            raise serializers.ValidationError("Nome do tipo é obrigatório.")
+        return name
 
 
 class ExperimentCreateSerializer(serializers.Serializer):

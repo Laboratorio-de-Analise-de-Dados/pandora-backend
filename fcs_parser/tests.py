@@ -25,6 +25,7 @@ from analytics.models import (
 )
 from fcs_parser.models import (
     ExperimentModel,
+    ExperimentTypeModel,
     FileDataModel,
     FileModel,
     SubsampleModel,
@@ -2128,3 +2129,101 @@ class ExperimentCreateEmptyTestCase(TestCase):
         self.assertEqual(res.status_code, 201)
         exp = ExperimentModel.objects.get(id=res.data["fileId"])
         self.assertEqual(exp.description, "criado já com upload")
+
+
+class ExperimentTypeTestCase(TestCase):
+    """BE-28 (ADR-0022): vocabulário de tipos — GET/POST /experiment/types/,
+    dedup case-insensitive e sync automático via ExperimentModel.save()."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def test_post_cria_tipo_e_lista(self):
+        res = self.client.post(
+            "/experiment/types/", {"name": "Stem Cell"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["name"], "Stem Cell")
+
+        res = self.client.get("/experiment/types/")
+        self.assertEqual(res.status_code, 200)
+        names = [t["name"] for t in res.data]
+        self.assertEqual(names, ["Stem Cell"])
+
+    def test_post_duplicado_case_insensitive_devolve_canonico(self):
+        self.client.post("/experiment/types/", {"name": "Stem Cell"}, format="json")
+
+        res = self.client.post(
+            "/experiment/types/", {"name": "stem cell"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["name"], "Stem Cell")
+        self.assertEqual(ExperimentTypeModel.objects.count(), 1)
+
+    def test_whitespace_e_colapsado_no_dedup(self):
+        res = self.client.post(
+            "/experiment/types/", {"name": "  painel   multicolor "}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["name"], "painel multicolor")
+
+    def test_types_exige_autenticacao(self):
+        client = APIClient()
+        self.assertEqual(client.get("/experiment/types/").status_code, 401)
+        self.assertEqual(
+            client.post("/experiment/types/", {"name": "x"}, format="json").status_code,
+            401,
+        )
+
+    def test_experimento_com_tipo_novo_cria_vocabulario(self):
+        res = self.client.post(
+            "/experiment/", {"title": "exp", "type": "Citometria"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 201)
+        exp = ExperimentModel.objects.get(id=res.data["id"])
+        self.assertIsNotNone(exp.experiment_type_id)
+        self.assertEqual(exp.experiment_type.name, "Citometria")
+        self.assertEqual(ExperimentTypeModel.objects.count(), 1)
+
+    def test_experimento_reusa_tipo_existente_com_outro_casing(self):
+        ExperimentTypeModel.objects.create(
+            name="Stem Cell", name_normalized="stem cell"
+        )
+
+        exp = ExperimentModel.objects.create(
+            title="exp", type="stem cell", created_by=self.owner
+        )
+
+        self.assertEqual(ExperimentTypeModel.objects.count(), 1)
+        self.assertEqual(exp.experiment_type.name, "Stem Cell")
+        # O string do experimento é normalizado pro casing canônico.
+        self.assertEqual(exp.type, "Stem Cell")
+
+    def test_patch_de_type_atualiza_vocabulario(self):
+        exp = ExperimentModel.objects.create(
+            title="exp", type="antigo", created_by=self.owner
+        )
+
+        res = self.client.patch(
+            f"/experiment/{exp.id}/", {"type": "Novo Tipo"}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        exp.refresh_from_db()
+        self.assertEqual(exp.type, "Novo Tipo")
+        self.assertEqual(exp.experiment_type.name_normalized, "novo tipo")
+        self.assertEqual(ExperimentTypeModel.objects.count(), 2)
+
+    def test_experimento_sem_tipo_nao_quebra(self):
+        exp = ExperimentModel.objects.create(title="sem-tipo", created_by=self.owner)
+
+        self.assertIsNone(exp.experiment_type_id)
+        self.assertEqual(ExperimentTypeModel.objects.count(), 0)
