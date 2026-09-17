@@ -41,7 +41,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from .serializers import get_or_create_default_roles
 from accounts.services.send_mail import send_invite_email, send_password_reset_email
-from accounts.services.oauth import resolve_microsoft_email
+from accounts.services.oauth import resolve_microsoft_email, unique_username_for_email
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -587,7 +587,7 @@ class MicrosoftAuthCallbackView(APIView):
         user, created = User.objects.get_or_create(
             email__iexact=email,
             defaults={
-                "username": email.split("@")[0],
+                "username": unique_username_for_email(email),
                 "email": email,
                 "is_active": True,
                 "auth_provider": "microsoft",
@@ -712,7 +712,7 @@ class GoogleAuthCallbackView(APIView):
         user, created = User.objects.get_or_create(
             email__iexact=email,
             defaults={
-                "username": name or email.split("@")[0],
+                "username": unique_username_for_email(email),
                 "email": email,
                 "is_active": True,
                 "auth_provider": "google",

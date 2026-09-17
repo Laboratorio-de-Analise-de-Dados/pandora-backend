@@ -1,3 +1,26 @@
+import re
+
+
+def unique_username_for_email(email):
+    """Gera username único a partir do local part do email.
+
+    Sanitiza para o charset aceito pelo validator do Django
+    (\\w, @, ., +, -, _) e acrescenta sufixo numérico em colisão —
+    dois usuários "paulo@..." de domínios diferentes não podem
+    quebrar o login do segundo.
+    """
+    from accounts.models import User
+
+    base = re.sub(r"[^\w.@+-]", "_", email.split("@")[0]).strip("_") or "user"
+    base = base[:140]
+    username = base
+    suffix = 2
+    while User.objects.filter(username=username).exists():
+        username = f"{base}{suffix}"
+        suffix += 1
+    return username
+
+
 def _normalize_microsoft_address(address):
     if not address:
         return None

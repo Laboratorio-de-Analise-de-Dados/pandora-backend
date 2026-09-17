@@ -1,13 +1,16 @@
 from datetime import timedelta
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from accounts.models import Invite, Membership, Organization, Role, User
 from accounts.serializers import get_or_create_default_roles
-from accounts.services.oauth import resolve_microsoft_email
+from accounts.services.oauth import (
+    resolve_microsoft_email,
+    unique_username_for_email,
+)
 
 
 class InviteAcceptTests(APITestCase):
@@ -244,3 +247,18 @@ class ResolveMicrosoftEmailTests(SimpleTestCase):
 
     def test_returns_none_when_nothing_available(self):
         self.assertIsNone(resolve_microsoft_email({}, {}))
+
+
+class UniqueUsernameForEmailTests(TestCase):
+    def test_uses_email_local_part(self):
+        self.assertEqual(unique_username_for_email("pmoro@aluno.fiocruz.br"), "pmoro")
+
+    def test_suffixes_on_collision(self):
+        User.objects.create_user(username="pmoro", email="a@x.com", password="x")
+        User.objects.create_user(username="pmoro2", email="b@x.com", password="x")
+        self.assertEqual(unique_username_for_email("pmoro@fiocruz.br"), "pmoro3")
+
+    def test_sanitizes_invalid_chars(self):
+        self.assertEqual(
+            unique_username_for_email("paulo henrique@x.com"), "paulo_henrique"
+        )
