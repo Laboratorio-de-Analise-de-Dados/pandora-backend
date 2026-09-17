@@ -41,6 +41,10 @@ services:
       FRONTEND_URL: "${FRONTEND_URL:-http://localhost:3000}"
       EMAIL_HOST_USER: "${EMAIL_HOST_USER:-}"
       EMAIL_HOST_PASSWORD: "${EMAIL_HOST_PASSWORD:-}"
+      # Juvia: serviço de ML interno (pandora_net). Só sobe com
+      # `docker compose --profile juvia up` — ver serviço abaixo.
+      JUVIA_URL: "${JUVIA_URL:-http://juvia:8000}"
+      JUVIA_INTERNAL_TOKEN: "${JUVIA_INTERNAL_TOKEN:-dev-token}"
     # migrate na subida é conveniência de dev. Migration NÃO é gerada na
     # subida: o check abaixo só avisa; o gate duro está no Dockerfile
     # (build falha). Gerar: docker compose exec web python manage.py makemigrations
@@ -54,6 +58,24 @@ services:
       - "${WEB_PORT:-8085}:8000"
     depends_on:
       - db
+    networks:
+      - pandora_net
+
+  # Opcional: sobe o Juvia a partir do clone local do repo irmão.
+  # Uso: docker compose --profile juvia up --build
+  # Espera ../juvia-project existir (mesmo diretório-pai dos clones).
+  juvia:
+    profiles: ["juvia"]
+    build:
+      context: ../juvia-project
+      dockerfile: Dockerfile.dev
+    container_name: juvia
+    environment:
+      JUVIA_INTERNAL_TOKEN: "${JUVIA_INTERNAL_TOKEN:-dev-token}"
+    volumes:
+      - ../juvia-project:/app
+    ports:
+      - "127.0.0.1:${JUVIA_PORT:-8001}:8000"
     networks:
       - pandora_net
 
