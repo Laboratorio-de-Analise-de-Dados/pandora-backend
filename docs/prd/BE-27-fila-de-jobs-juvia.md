@@ -18,7 +18,11 @@ ver "na fila → processando → concluído/erro" com UI responsiva.
 - refs: experimento, arquivo/subsample, modelo + params, payload_ref
 - `attempts`, `last_error`, timestamps de transição
 
-### 2. Endpoints internos (auth de serviço, não de usuário)
+### 2. Endpoints internos (rede interna, não de usuário)
+
+> O Juvia não é publicado — só existe na `pandora_net` (juvia ADR-0001).
+> Esses endpoints são internos por topologia; token de serviço é defesa
+> em profundidade opcional, não requisito.
 
 - `POST /internal/jobs/claim` — claim atômico via
   `SELECT ... FOR UPDATE SKIP LOCKED`; devolve job + dados de entrada;
@@ -42,7 +46,7 @@ ver "na fila → processando → concluído/erro" com UI responsiva.
 ## Arquivos a tocar
 
 - `fcs_parser/models.py` ou app novo — `analysis_jobs` + migration
-- endpoints internos + autenticação de serviço (token do Juvia)
+- endpoints internos (rota não exposta no nginx; token opcional)
 - `fcs_parser/services/` — criação de gate + checkpoint no `complete`
 - `management/commands/` — cleanup
 
