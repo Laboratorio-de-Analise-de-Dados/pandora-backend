@@ -1615,6 +1615,25 @@ class CompensationControlsTestCase(TestCase):
         self.assertEqual(res.status_code, 201)
         self.assertEqual(res.data["channels"], ["FITC-A", "PE-A"])
 
+    def test_compute_override_recusa_canal_nao_fluorescente(self):
+        # Overrides passam pela mesma regra do control_channel de subsample:
+        # canal que não é fluorescente do experimento vira 400 nomeando-o.
+        neg = self._file("neg.fcs", {"FITC-A": [10], "PE-A": [10]})
+        fitc = self._file("fitc.fcs", {"FITC-A": [1000], "PE-A": [130]})
+        fsc = self._file("fsc.fcs", {"FSC-A": [100], "PE-A": [10]})
+
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/compensations/compute",
+            {
+                "negative": [neg.id],
+                "controls": {"FITC-A": [fitc.id], "FSC-A": [fsc.id]},
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("FSC-A", str(res.data))
+
     def test_from_header_materializa_matriz(self):
         self._file("a1.fcs", {}).headers  # sem spillover → 409 primeiro
         res = self.client.post(
