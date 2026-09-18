@@ -643,6 +643,25 @@ class ExperimentCopyApiTestCase(TestCase):
         res = self._copy(user=nobody)
         self.assertEqual(res.status_code, 404)
 
+    @patch("analytics.tasks.load_fcs_data_from_file_data_model")
+    def test_copy_sobrescreve_resultado_criado_pelo_signal(self, mock_load):
+        # Com dados FCS carregáveis o post_save do GateModel recalcula e
+        # grava um AnalysisResult para o gate clonado — a cópia deve
+        # sobrescrevê-lo com o resultado da origem em vez de colidir na
+        # PK gate_id (regressão: IntegrityError no copy com dados reais).
+        mock_load.return_value = pd.DataFrame(
+            {"FSC-A": [1.0, 2.0, 3.0], "SSC-A": [4.0, 5.0, 6.0]}
+        )
+        res = self._copy()
+
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(mock_load.called)
+        clone = ExperimentModel.objects.get(id=res.data["id"])
+        clone_gate = GateModel.objects.get(
+            file_data=FileDataModel.objects.get(experiment=clone)
+        )
+        self.assertEqual(clone_gate.analysis_result.analysis_result, {"count": 10})
+
     def test_copy_rejects_blank_title(self):
         res = self._copy(title="   ")
 

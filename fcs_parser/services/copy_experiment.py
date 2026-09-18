@@ -11,6 +11,8 @@ reconstruído sob demanda a partir do ZIP compartilhado.
 
 from __future__ import annotations
 
+from django.db import transaction
+
 from analytics.models import (
     AnalysisBranch,
     AnalysisResult,
@@ -41,6 +43,7 @@ def _unique_title(title: str, user, organization_id: int | None) -> str:
     return f"{title}_{ExperimentModel.objects.count()}"
 
 
+@transaction.atomic
 def copy_experiment(
     source: ExperimentModel,
     *,
@@ -212,8 +215,12 @@ def _copy_analysis(
             except AnalysisResult.DoesNotExist:
                 result = None
             if result is not None:
-                AnalysisResult.objects.create(
-                    gate=new_gate, analysis_result=result.analysis_result
+                # O post_save do GateModel já recalcula e grava um resultado
+                # para new_gate — update_or_create sobrescreve com o snapshot
+                # da origem em vez de colidir na PK (gate_id).
+                AnalysisResult.objects.update_or_create(
+                    gate=new_gate,
+                    defaults={"analysis_result": result.analysis_result},
                 )
             gate_map[gate.id] = new_gate
             pending.remove(gate)
