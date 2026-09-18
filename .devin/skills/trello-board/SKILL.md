@@ -63,7 +63,7 @@ Regra de movimento: **Discovery → Backlog → Em andamento → Entregue → Em
 | azul/sky | roadmap        | Escopo planejado de produto                    |
 | rosa     | dívida técnica | Refactor, limpeza, hardening                   |
 | cinza    | arquivado      | Estacionado por decisão — retoma com gatilho   |
-| (a definir) | fazer agora | Pendência do ciclo, executar já — substitui a antiga coluna |
+| laranja | fazer agora | Pendência do ciclo, executar já — substitui a antiga coluna |
 
 **O MCP não seta `cover.color` em card existente.** Workaround provado:
 `copy_card` preserva a capa — copie um card-base da coluna 📖 Docs e
@@ -72,6 +72,7 @@ edite nome/descrição:
 - `6aada2db9b13723af0bc6ef4` — 📋 Card-base capa ⬛ (estacionado)
 - `6aada33a4f4ab0dcbb7766b3` — 📋 Card-base capa 🩷 (dívida técnica)
 - `6aada33f4b31c20a5cb9f9a2` — 📋 Card-base capa 🩵 (roadmap)
+- `6aadc41e9edaa9a6db7e0b87` — 📋 Card-base capa 🟠 (fazer agora)
 
 Para corrigir a capa de um card existente: copiar o card-base com o
 conteúdo do card original, ajustar etiquetas e arquivar o antigo (o
