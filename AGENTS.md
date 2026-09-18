@@ -131,11 +131,17 @@ main, 📦 Entregue; 🚀 Em produção só depois de release deployada.
 
 ## Documentação
 
-- `docs/prd/BE-XX-*.md` — o **que** a entrega faz (um PRD por MR).
-- `docs/adr/XXXX-*.md` — o **por quê** das decisões. Antes de tocar em modelo
-  de dados, escopo de propagação ou storage, leia os ADRs relevantes —
-  especialmente 0004 (ZIP fonte de verdade), 0005 (nunca deleta), 0006
-  (identidade amostra/subsample) e 0009 (validação em serializers).
+- **PRDs vivem no repo privado `pandora-docs`** (repo irmão:
+  `../pandora-docs/prd/BE-XX-*.md`) — este repo é público; o **que** a
+  entrega faz fica lá (um PRD por MR).
+- `docs/adr/XXXX-*.md` — o **por quê** das decisões de domínio. Antes de
+  tocar em modelo de dados, escopo de propagação ou storage, leia os ADRs
+  relevantes — especialmente 0005 (nunca deleta), 0006 (identidade
+  amostra/subsample) e 0009 (validação em serializers).
+- **ADRs sensíveis** (segurança, infra, auth, storage de dado de paciente)
+  ficam em `../pandora-docs/adr/backend/` — ex.: 0004 (ZIP fonte de
+  verdade), 0014 (queryset escopada), 0022 (pipeline de release). ADR novo
+  sensível → lá; ADR de domínio → `docs/adr/` aqui.
 - ADR aceito **nunca** é editado: decisão nova = ADR novo com
   `Substitui ADR-XXXX`.
 - Endpoints novos: documentar com `@extend_schema` (drf-spectacular).
@@ -146,7 +152,8 @@ main, 📦 Entregue; 🚀 Em produção só depois de release deployada.
   serializer quando tocar (ADR-0009).
 - Processamento pesado roda na request; se passar a doer (timeout de
   upload/parse grande), a conversa é ADR novo, não workaround em view.
-- A lista completa vive em `docs/prd/README.md` → "Dívidas registradas".
+- A lista completa vive em `pandora-docs/prd/README.md` → "Dívidas
+  registradas".
 
 ## Relação com o front
 
