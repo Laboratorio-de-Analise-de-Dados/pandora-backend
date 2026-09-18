@@ -13,8 +13,7 @@ ou alinhe com o responsável.
 
 | Feature | Área afetada | Branch | Sessão | Desde |
 |---|---|---|---|---|
-| Reverte profile juvia do compose | `docker-compose.yml`, AGENTS.md | `chore/remove-juvia-service` | devin | 2026-09 |
-| Imagem sem registry/segredos (ADR-0024) | `.github/workflows/*`, `Dockerfile`, `.dockerignore`, `docker-compose.prod.yml`, `pandora/settings.py` | `fix/security-secret-image` | devin | 2026-09 |
+| BE-31 resiliência de processamento | `docs/prd/BE-31*`, `fcs_parser/services/*` | `docs/be-31-processing-resilience` | outra sessão | 2026-09 |
 
 ## Concluído nesta branch
 
@@ -27,6 +26,8 @@ ou alinhe com o responsável.
 | BE-24 | `POST /experiment/` cria experimento sem arquivo, `description` livre, `values` read-only (derivado dos FCS) |
 | BE-29 | SocialAccount + AuthEvent + link/unlink + aviso de vínculo (ADR-0025/0026) — mergeado no PR #95 |
 | BE-30 | Merge de contas: `POST /accounts/merge/confirm/`, `merge_accounts()` migra memberships/FKs/SocialAccount, conta absorvida inativa com `merged_into` — mergeado no PR #97 |
+| Limpeza de branches (2026-09-17) | `fix/security-secret-image` rebaseada + PR #94 mergeada (ADR-0024 — imagem sem registry/segredos); branches obsoletas removidas: `feat/email-smtp-config` (SMTP já estava na main — `EMAIL_*` em settings + compose prod), `chore/dev-compose-juvia` e `chore/remove-juvia-service` (main já sem serviço juvia), `docs/prd-be-21-*` e `docs/adr-0022-*` (conteúdo já na main / cherry-pickado) |
+| Sync de status de PRDs | README de PRDs corrigido: BE-19 parcial (derivação ok, template é visão), BE-23 implementado (ADR-0020), BE-25 substituído por BE-28 |
 
 ## Fora da branch (em PR própria)
 
@@ -40,6 +41,8 @@ ou alinhe com o responsável.
 | Feature | Observação |
 |---|---|
 | Google SSO — ativação (fase 2) | Código pronto (BE-29); falta só OAuth client no Google Cloud + envs `GOOGLE_*`. Decisão 2026-09: ativar antes da virada para v1 em prod — ver seção "Ativação do Google" no PRD BE-29 |
+| **Validar release.yml/rollback.yml novos (ADR-0024)** | PR #94 mudou o transporte da imagem (sem registry). Antes do próximo deploy real: `workflow_dispatch` do release numa tag já publicada + confirmar secrets `JWT_SIGNING_KEY`/rotação da `SECRET_KEY` antiga (ela foi exposta em layer pública do Docker Hub — tratar como comprometida) |
+| BE-26 identificar controles | Não iniciado — estende ADR-0019; fecha o ciclo da compensação (BE-22) |
 | FE: UI de "derivar análise" (BE-19) | Backend pronto — consumir `POST /experiment/<id>/derive-analysis/` no front (PRD: `pandora-front/docs/prd/FE-28`) |
 | FE: UI de branches (BE-23) | Backend pronto — seletor de branch (`?branch=` nas leituras), criar/renomear/arquivar, tela de diff + resolução de conflitos do merge (PRD: `pandora-front/docs/prd/FE-29`) |
 | BE-19 workspaces/templates (objeto persistido) | Visão no PRD — ADR-0021 escolheu snapshot sem template; reabrir só se o caso de uso pedir catálogo |

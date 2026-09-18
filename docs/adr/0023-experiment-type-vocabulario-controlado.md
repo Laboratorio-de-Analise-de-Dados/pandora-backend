@@ -28,8 +28,10 @@ só conveniência:
   vocabulário controlado** — extensível por **admin ou pelo dono do
   experimento** quando o tipo não existir (padrão autocomplete-cria:
   a UI sugere os existentes primeiro e oferece "Criar X" como escape).
-  Quem cria o próprio experimento é dono por definição, então o fluxo
-  normal de criação continua sem fricção; membro editando experimento
+  "Admin" cobre os dois níveis: `is_super_admin` e `org_admin` — o admin
+  da organização do experimento cura o vocabulário do próprio lab. Quem
+  cria o próprio experimento é dono por definição, então o fluxo normal
+  de criação continua sem fricção; membro comum editando experimento
   alheio só escolhe entre tipos existentes. Não é `choices` hardcoded
   nem texto livre.
 - **Dedup case-insensitive na origem** — a tabela guarda
@@ -39,7 +41,8 @@ só conveniência:
   existente reutiliza, quem digita novo cria — respeitando a regra de
   permissão acima, checada no serializer/endpoint.
 - `POST /experiment/types/` (endpoint solto, sem experimento no
-  contexto) é **admin-only**; o GET da listagem é aberto a autenticados.
+  contexto) exige **admin** — super admin ou `org_admin` ativo de alguma
+  organização; o GET da listagem é aberto a autenticados.
 - Curadoria (mesclar/renomear tipos quase-duplicados) fica como função
   administrativa posterior, fora do caminho de criação.
 - Toda gate criada a partir de resultado do Juvia gera **checkpoint
