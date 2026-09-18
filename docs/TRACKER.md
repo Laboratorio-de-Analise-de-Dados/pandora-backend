@@ -24,6 +24,7 @@ ou alinhe com o responsável.
 | BE-32/ADR-0028 dedup de storage (docs) | `docs/prd`, `docs/adr` | `docs/be-32-blob-dedup` | devin | 2026-09 |
 | BE-34 tags de amostra (+ subsample/herança/setup) | ✅ concluído — mergeado (PRs #113/#114), deploy v0.4.0 | — | — | — |
 | Fix e-mail de convite (FE-10 passo 1) | `accounts/services/send_mail.py`, `accounts/tests.py` | `fix/invite-email-url` | devin | 2026-09 |
+| Docs: revisão do PRD BE-26 (marcação por arquivo + placa) | `pandora-docs/prd/BE-26*` | `docs/be-26-controles-arquivo` | devin | 2026-09 |
 
 ## Concluído nesta branch
 
@@ -53,7 +54,7 @@ ou alinhe com o responsável.
 |---|---|
 | Google SSO — ativação (fase 2) | Código pronto (BE-29); falta só OAuth client no Google Cloud + envs `GOOGLE_*`. Decisão 2026-09: ativar antes da virada para v1 em prod — ver seção "Ativação do Google" no PRD BE-29 |
 | ~~Environment `production`~~ ✅ | Resolvido 2026-09: Required reviewers configurado nos dois repos (`paulo-moro` como reviewer). Deploy agora exige Approve no gate do environment |
-| BE-26 identificar controles | Não iniciado — estende ADR-0019; fecha o ciclo da compensação (BE-22). BE-34 entregou `SampleTag`/`FileTag` — BE-26 vira consumidor das tags de controle |
+| BE-26 identificar controles | Não iniciado — PRD revisado 2026-09: marcação por **arquivo** (`FileDataModel`), PATCH em lote, `well_id`/`suggested_control` na listagem; estende ADR-0019, consome `SampleTag`/`FileTag` do BE-34. Frente à parte junto do Juvia |
 | ~~FE: UI de "derivar análise"~~ ✅ | FE-28 mergeado (front PR #86) — diálogo no menu do card + relatório pós-derivação |
 | ~~FE: UI de branches~~ ✅ | FE-29 mergeado (front PR #88) — seletor `?branch=` no workspace, fork/renomear/arquivar, diff + merge com resolução de conflitos |
 | BE-19 workspaces/templates (objeto persistido) | Visão no PRD — ADR-0021 escolheu snapshot sem template; reabrir só se o caso de uso pedir catálogo |
