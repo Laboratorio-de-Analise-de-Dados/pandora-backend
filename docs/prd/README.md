@@ -20,13 +20,13 @@
 | [BE-16](BE-16-titulo-unico-apenas-ativos.md) | Título único apenas entre ativos | Implementado em `feat/scoped-lookups` |
 | [BE-17](BE-17-creator-name-na-listagem.md) | `created_by_name` na listagem de experimentos | Implementado em `feat/created-by-name-list`                   |
 | [BE-18](BE-18-density-erro-canais.md) | "Erro ao carregar dados" em gate/arquivo sem o canal pedido | Implementado em `fix/gate-density-missing-channel` |
-| [BE-19](BE-19-workspaces-templates-analise.md) | Workspaces/templates: estratégia reutilizável entre experimentos | Visão (exige ADR próprio) |
+| [BE-19](BE-19-workspaces-templates-analise.md) | Workspaces/templates: estratégia reutilizável entre experimentos | Parcial — derivação de análise implementada (ADR-0021); template persistido segue visão |
 | [BE-20](BE-20-checkpoints-de-analise.md) | Checkpoints: salvar ponto nomeado e restaurar o experimento até ele | Implementado em `feat/analysis-checkpoints` (ADR-0017 Aceito) |
 | [BE-21](BE-21-metadados-visuais-listagem.md) | `my_role`, `progress` e preview/thumbnail na listagem de experimentos (dep. do FE-26) | Implementado em `feat/analysis-checkpoints` |
 | [BE-22](BE-22-compensacao.md) | Compensação: aceitar `$SPILLOVER` do FCS ou calcular de controles (subsamples) | Implementado em `feat/analysis-checkpoints` (ADR-0018/0019) |
-| [BE-23](BE-23-analise-colaborativa-branch-merge.md) | Análise colaborativa: branches de análise, merge e conflitos (visão git-like) | Visão — precisa de ADR antes |
+| [BE-23](BE-23-analise-colaborativa-branch-merge.md) | Análise colaborativa: branches de análise, merge e conflitos (visão git-like) | Implementado (ADR-0020) |
 | [BE-24](BE-24-metadados-e-criacao-sem-arquivo.md) | Criar experimento sem arquivo (`POST /experiment/`), `description` opcional e `values` read-only | Implementado em `feat/analysis-checkpoints` |
-| [BE-25](BE-25-experiment-type-vocabulario.md) | `experiment_type` como vocabulário controlado (tabela, admin-extensível) | Não iniciado (ADR-0023 Proposto); implementado como BE-28 |
+| [BE-25](BE-25-experiment-type-vocabulario.md) | `experiment_type` como vocabulário controlado (tabela, admin-extensível) | Substituído por BE-28 (implementado; ADR-0023) |
 | [BE-26](BE-26-identificar-amostras-controle.md) | Marcação de controles pelo usuário + sugestão por heurística | Não iniciado (estende ADR-0019) |
 | [BE-27](BE-27-fila-de-jobs-juvia.md) | Fila de jobs pro Juvia: `SKIP LOCKED`, claim/complete/fail, quarentena, cleanup | Não iniciado (juvia ADR-0002 Proposto) |
 | [BE-28](BE-28-tipo-de-experimento-vocabulario.md) | Tipo de experimento como vocabulário controlado (admin ou dono do experimento; `/experiment/types/` + dedup normalizado) | Implementado em `feat/experiment-type` (ADR-0023) |
