@@ -87,7 +87,10 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    environment: production # portão manual: Required reviewers
+    # ATENÇÃO: o environment "production" no GitHub não tem Required
+    # reviewers configurados — dispatch chega aqui e deploya direto.
+    # O gate real é configurar reviewers em Settings → Environments.
+    environment: production
     steps:
       - name: Checkout (só pra pegar o docker-compose.prod.yml)
         uses: actions/checkout@v4

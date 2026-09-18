@@ -28,7 +28,7 @@ services:
     image: "pandora-backend:${IMAGE_TAG:-latest}"
     pull_policy: never
     container_name: pandora_web
-    command: bash -c "python manage.py migrate && gunicorn pandora.wsgi:application --bind 0.0.0.0:8000 --workers 2"
+    command: bash -c "python manage.py migrate && gunicorn pandora.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120"
     expose:
       - "8000"
     depends_on:

@@ -220,6 +220,12 @@ class SubsampleModel(models.Model):
         max_length=20, choices=CONTROL_TYPE_CHOICES, null=True, blank=True
     )
     control_channel = models.CharField(max_length=256, blank=True, default="")
+    # BE-34: tags de contexto do grupo — herdadas pelas amostras membro
+    # (herança virtual, calculada na leitura). Só `category="general"`:
+    # o papel de controle do grupo é `control_type` (grupo homogêneo).
+    tags = models.ManyToManyField(
+        "SampleTagModel", blank=True, related_name="tagged_subsamples"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
         User,
@@ -296,6 +302,14 @@ class FileDataModel(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="deactivated_files",
+    )
+    # BE-34: tags semânticas por amostra (chips). Tipos de controle são
+    # tags de sistema; tags de usuário são vocabulário por escopo.
+    tags = models.ManyToManyField(
+        "SampleTagModel",
+        through="FileTagModel",
+        related_name="tagged_files",
+        blank=True,
     )
 
     class Meta:
@@ -416,3 +430,127 @@ class FileDataModel(models.Model):
                 self.pk,
             )
             return None
+
+
+class SampleTagModel(models.Model):
+    """Vocabulário de tags de amostra (BE-34).
+
+    Tags de ``scope="system"`` são seeded por migration e carregam a
+    semântica que o código consome — o código referencia ``system_key``,
+    nunca ``name``. Tags de usuário são vocabulário extensível por
+    escopo (organização ou pessoal), mesmo padrão do BE-25/28: texto
+    livre fragmenta, enum congela.
+
+    ``category="control"`` tem regra de exclusividade por amostra — uma
+    amostra não é FMO e unstained ao mesmo tempo. A regra não cabe em
+    constraint SQL (a categoria mora na tag), então toda escrita passa
+    por ``fcs_parser.services.tags.set_file_tags``.
+    """
+
+    SCOPE_SYSTEM = "system"
+    SCOPE_ORGANIZATION = "organization"
+    SCOPE_PERSONAL = "personal"
+    SCOPE_CHOICES = [
+        (SCOPE_SYSTEM, "Sistema"),
+        (SCOPE_ORGANIZATION, "Organização"),
+        (SCOPE_PERSONAL, "Pessoal"),
+    ]
+
+    CATEGORY_CONTROL = "control"
+    CATEGORY_GENERAL = "general"
+    CATEGORY_CHOICES = [
+        (CATEGORY_CONTROL, "Controle"),
+        (CATEGORY_GENERAL, "Geral"),
+    ]
+
+    id = models.BigAutoField(primary_key=True)
+    # `name` é o casing canônico; o dedup é por `name_normalized` dentro
+    # do escopo (ver `scope_key`).
+    name = models.CharField(max_length=100)
+    name_normalized = models.CharField(max_length=100)
+    # Chave estável referenciada pelo código (ex.: "fmo", "unstained").
+    # Só tags de sistema têm — null em tags de usuário.
+    system_key = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    category = models.CharField(
+        max_length=20, choices=CATEGORY_CHOICES, default=CATEGORY_GENERAL
+    )
+    color = models.CharField(max_length=7, default="#6b7280")
+    scope = models.CharField(max_length=20, choices=SCOPE_CHOICES)
+    organization = models.ForeignKey(
+        Organization,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="sample_tags",
+    )
+    created_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_sample_tags",
+    )
+    # Chave de unicidade por escopo, preenchida no save: "system",
+    # "org:<id>" ou "user:<id>". Resolve o problema de NULLs distintos
+    # no UniqueConstraint (Postgres não deduplica NULL).
+    scope_key = models.CharField(max_length=64)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "sample_tags"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scope_key", "name_normalized"],
+                name="unique_tag_name_per_scope",
+            )
+        ]
+
+    @staticmethod
+    def normalize(name: str) -> str:
+        return " ".join(name.split()).lower()
+
+    def save(self, *args, **kwargs):
+        self.name_normalized = self.normalize(self.name)
+        if self.scope == self.SCOPE_SYSTEM:
+            self.scope_key = "system"
+        elif self.scope == self.SCOPE_ORGANIZATION:
+            self.scope_key = f"org:{self.organization_id}"
+        else:
+            self.scope_key = f"user:{self.created_by_id}"
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class FileTagModel(models.Model):
+    """Vínculo amostra ↔ tag (through explícito de `FileData.tags`).
+
+    Escrita exclusiva via ``set_file_tags`` — é lá que a regra "uma
+    tag de controle por amostra" é validada.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    file_data = models.ForeignKey(
+        FileDataModel, on_delete=models.CASCADE, related_name="file_tags"
+    )
+    tag = models.ForeignKey(
+        SampleTagModel, on_delete=models.CASCADE, related_name="file_links"
+    )
+    created_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_file_tags",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "file_tags"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["file_data", "tag"], name="unique_tag_per_file"
+            )
+        ]
