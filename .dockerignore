@@ -1,3 +1,33 @@
-./venv
-./assets
-./storage
+# Contexto de build enxuto (ADR-0024): a imagem carrega só código +
+# dependências. Qualquer arquivo aqui fora entra numa layer — segredos,
+# dados e docs internos ficam de fora por padrão.
+
+.git
+.github
+.devin
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+venv
+.venv
+node_modules
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+
+uploads
+staticfiles
+db.sqlite3
+assets
+storage
+zip_files
+extracted_files
+
+docs
+*.md
+docker-compose*.yml
+Dockerfile

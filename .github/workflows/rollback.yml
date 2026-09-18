@@ -1,8 +1,12 @@
 name: ↩️ Rollback Pandora Backend
 
-# Redeploya uma tag já publicada (ADR-0022). Uso: Actions -> Rollback ->
-# Run workflow -> informar a tag (ex.: v1.2.0). Cobre o caso "deploy
-# passou no health check mas a feature veio errada".
+# Redeploya uma tag já presente no servidor (ADR-0022 + ADR-0024). Sem
+# registry: a imagem precisa existir localmente — o cleanup do deploy
+# mantém as últimas 5 tags v*. Se a tag não estiver no host, o script
+# falha cedo e a saída é release.yml -> Run workflow (rebuild + deploy).
+#
+# Uso: Actions -> Rollback -> Run workflow -> informar a tag (ex.: v1.2.0).
+# Cobre o caso "deploy passou no health check mas a feature veio errada".
 #
 # ATENÇÃO: rollback de código NÃO reverte migrations — só é seguro se a
 # versão alvo for compatível com o schema atual (expand-contract).
@@ -28,6 +32,7 @@ jobs:
           DATABASE_PORT: ${{ vars.DATABASE_PORT }}
           DEBUG: ${{ vars.DEBUG }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          JWT_SIGNING_KEY: ${{ secrets.JWT_SIGNING_KEY }}
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
           CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS }}
           CORS_ALLOW_ALL_ORIGINS: ${{ vars.CORS_ALLOW_ALL_ORIGINS }}
@@ -43,25 +48,28 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REDIRECT_URI: ${{ vars.GOOGLE_REDIRECT_URI }}
-          DOCKER_USER: ${{ secrets.DOCKER_USER }}
-          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
           IMAGE_TAG: ${{ inputs.tag }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS,CORS_ALLOWED_ORIGINS,CORS_ALLOW_ALL_ORIGINS,EMAIL_HOST,EMAIL_PORT,EMAIL_HOST_USER,EMAIL_HOST_PASSWORD,DEFAULT_FROM_EMAIL,MICROSOFT_CLIENT_ID,MICROSOFT_CLIENT_SECRET,MICROSOFT_TENANT_ID,MICROSOFT_REDIRECT_URI,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,GOOGLE_REDIRECT_URI,DOCKER_USER,DOCKER_TOKEN,IMAGE_TAG
+          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,DEBUG,SECRET_KEY,JWT_SIGNING_KEY,ALLOWED_HOSTS,CORS_ALLOWED_ORIGINS,CORS_ALLOW_ALL_ORIGINS,EMAIL_HOST,EMAIL_PORT,EMAIL_HOST_USER,EMAIL_HOST_PASSWORD,DEFAULT_FROM_EMAIL,MICROSOFT_CLIENT_ID,MICROSOFT_CLIENT_SECRET,MICROSOFT_TENANT_ID,MICROSOFT_REDIRECT_URI,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,GOOGLE_REDIRECT_URI,IMAGE_TAG
           script: |
             set -e
             cd /opt/pandora/backend
+            COMPOSE="docker compose -f docker-compose.prod.yml"
+            export IMAGE_TAG
 
-            echo "🔑 Login no Docker Hub..."
-            echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USER" --password-stdin
+            echo "🔎 Verificando imagem pandora-backend:$IMAGE_TAG no host..."
+            if ! docker image inspect "pandora-backend:$IMAGE_TAG" >/dev/null 2>&1; then
+              echo "❌ Imagem não existe no servidor (cleanup removeu ou nunca foi deployada)."
+              echo "   Alternativa: release.yml -> Run workflow -> tag $IMAGE_TAG (rebuild + deploy)."
+              exit 1
+            fi
 
             echo "↩️  Restaurando $IMAGE_TAG..."
-            export IMAGE_TAG
-            docker compose -f docker-compose.prod.yml pull pandora_web
-            docker compose -f docker-compose.prod.yml up -d pandora_web
+            $COMPOSE up -d pandora_web
 
             echo "$IMAGE_TAG" > .deployed_version
+            docker tag "pandora-backend:$IMAGE_TAG" pandora-backend:latest
             echo "✅ Rollback para $IMAGE_TAG concluído."

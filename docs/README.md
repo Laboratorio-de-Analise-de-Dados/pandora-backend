@@ -57,3 +57,4 @@ valor à pasta.
 | [0023](adr/0023-experiment-type-vocabulario-controlado.md) | `experiment_type` como vocabulário controlado + checkpoint em gates geradas pelo Juvia | Proposto |
 | [0025](adr/0025-identidade-multi-provider-socialaccount.md) | Conta central com N identidades de IdP (`SocialAccount`) + `AuthEvent` append-only; match por `sub`, email-match exige confirmação | Proposto |
 | [0026](adr/0026-organizacao-nao-deriva-de-dominio-de-email.md) | Login social não cria nem associa organização — org é boundary de confiança via convite | Aceito |
+| [0027](adr/0027-processamento-vivo-via-advisory-lock-postgres.md) | Vivacidade de processamento via `pg_try_advisory_lock` — sem heartbeat/sweep; claim atômico permite retomada de órfão com N réplicas | Proposto |

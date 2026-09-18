@@ -1,24 +1,33 @@
 name: 🏗️🚀 Release Pandora Backend
 
-# Pipeline de release (ADR-0022):
+# Pipeline de release (ADR-0022 + ADR-0024):
 #
-#   Releases -> Publish (cria a tag na UI)  ->  [build imagem vX.Y.Z]  ->  [deploy]
+#   Releases -> Publish (cria a tag na UI)  ->  [build imagem vX.Y.Z]
+#        -> artifact (docker save)  ->  [deploy: scp -> docker load]
 #
-#   - build : publica a imagem no Docker Hub com a tag da versão
-#             (ex.: v1.2.0). `latest` NÃO é publicado aqui — só após
-#             deploy saudável.
+#   - build : builda a imagem localmente e exporta como artifact
+#             (`docker save | gzip`). NÃO vai a registry nenhum — a
+#             imagem nunca sai do pipeline GitHub -> servidor (ADR-0024).
+#             Segredos também não entram: o Dockerfile roda com uma
+#             SECRET_KEY dummy que só existe no RUN.
 #   - deploy: portão manual do environment `production` (Approve) e,
 #     uma vez aprovado:
-#       1. roda `migrate` num container one-off ANTES de trocar o tráfego
+#       1. copia o tarball pro servidor e carrega com `docker load`;
+#       2. roda `migrate` num container one-off ANTES de trocar o tráfego
 #          — migration quebrada aborta com a versão anterior no ar;
-#       2. sobe a nova versão e espera `GET /health/` responder 200;
-#       3. health check falhou -> redeploy automático da tag anterior
-#          (gravada em .deployed_version no servidor);
-#       4. sucesso -> grava a nova versão e publica `latest` no Hub.
+#       3. sobe a nova versão e espera `GET /health/` responder 200;
+#       4. health check falhou -> redeploy da tag anterior (imagem local,
+#          gravada em .deployed_version no servidor);
+#       5. sucesso -> grava a nova versão e marca `latest` local no host.
 #
-# Secrets/vars de repositório (já existentes): DOCKER_USER, DOCKER_TOKEN,
-# SECRET_KEY, SERVER_HOST, SERVER_USER, SERVER_SSH_KEY, POSTGRES_*,
-# EMAIL_*, DATABASE_* (vars), DEBUG, ALLOWED_HOSTS, CORS_*.
+# Rollback: imagens vivem no servidor (o cleanup do deploy mantém as
+# últimas 5 tags v*). rollback.yml só troca IMAGE_TAG e sobe de novo —
+# sem pull, sem registry.
+#
+# Secrets/vars de repositório (já existentes): SECRET_KEY, JWT_SIGNING_KEY
+# (opcional — fallback na SECRET_KEY), SERVER_HOST, SERVER_USER,
+# SERVER_SSH_KEY, POSTGRES_*, EMAIL_*, DATABASE_* (vars), DEBUG,
+# ALLOWED_HOSTS, CORS_*. DOCKER_USER/DOCKER_TOKEN não são mais usados.
 # Gatilho: publicar uma Release na UI (Releases -> Draft new release ->
 # "Create new tag" -> Generate release notes -> Publish). A tag é criada
 # no publish e dispara este workflow. Tag avulsa via `git tag` NÃO deploya.
@@ -28,7 +37,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag a buildar/publicar (ex.: v1.2.0)"
+        description: "Tag a buildar (ex.: v1.2.0)"
         required: true
 
 jobs:
@@ -53,19 +62,27 @@ jobs:
       - name: Checkout na tag (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
         run: |
-          git fetch --depth 1 origin tag "${{ steps.meta.outputs.image_tag }}"
+          git fetch --depth 1 origin "refs/tags/${{ steps.meta.outputs.image_tag }}:refs/tags/${{ steps.meta.outputs.image_tag }}"
           git checkout "${{ steps.meta.outputs.image_tag }}"
 
-      - name: Login no Docker Hub
-        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USER }}" --password-stdin
-
-      - name: Build e push da imagem versionada
+      - name: Build da imagem (sem secrets, sem push)
         run: |
-          IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
+          # --build-arg SECRET_KEY=build-dummy: compat com Dockerfiles de tags
+          # antigas (pré-ADR-0024) que declaram `ARG SECRET_KEY` — o valor é
+          # dummy, nunca um segredo real. Dockerfiles novos ignoram o arg
+          # (warning "not consumed", sem falha).
           docker build \
-            --build-arg SECRET_KEY="${{ secrets.SECRET_KEY }}" \
-            -t "$IMAGE_NAME:${{ steps.meta.outputs.image_tag }}" .
-          docker push "$IMAGE_NAME:${{ steps.meta.outputs.image_tag }}"
+            --build-arg "SECRET_KEY=build-dummy" \
+            -t "pandora-backend:${{ steps.meta.outputs.image_tag }}" .
+          docker save "pandora-backend:${{ steps.meta.outputs.image_tag }}" \
+            | gzip > "pandora-backend-${{ steps.meta.outputs.image_tag }}.tar.gz"
+
+      - name: Publica artifact pra atravessar o portão do deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: "pandora-backend-${{ steps.meta.outputs.image_tag }}.tar.gz"
+          retention-days: 1
 
   deploy:
     needs: build
@@ -75,16 +92,21 @@ jobs:
       - name: Checkout (só pra pegar o docker-compose.prod.yml)
         uses: actions/checkout@v4
 
-      - name: Copia o compose pro servidor
+      - name: Baixa o artifact da imagem
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      - name: Copia compose + imagem pro servidor
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          source: "docker-compose.prod.yml"
+          source: "docker-compose.prod.yml,pandora-backend-${{ needs.build.outputs.image_tag }}.tar.gz"
           target: "/opt/pandora/backend"
 
-      - name: Deploy (migrate one-off -> up -> health check -> rollback)
+      - name: Deploy (load -> migrate one-off -> up -> health check -> rollback)
         uses: appleboy/ssh-action@v1.2.0
         env:
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
@@ -94,6 +116,7 @@ jobs:
           DATABASE_PORT: ${{ vars.DATABASE_PORT }}
           DEBUG: ${{ vars.DEBUG }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          JWT_SIGNING_KEY: ${{ secrets.JWT_SIGNING_KEY }}
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
           CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS }}
           CORS_ALLOW_ALL_ORIGINS: ${{ vars.CORS_ALLOW_ALL_ORIGINS }}
@@ -109,14 +132,12 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REDIRECT_URI: ${{ vars.GOOGLE_REDIRECT_URI }}
-          DOCKER_USER: ${{ secrets.DOCKER_USER }}
-          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
           IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,DEBUG,SECRET_KEY,ALLOWED_HOSTS,CORS_ALLOWED_ORIGINS,CORS_ALLOW_ALL_ORIGINS,EMAIL_HOST,EMAIL_PORT,EMAIL_HOST_USER,EMAIL_HOST_PASSWORD,DEFAULT_FROM_EMAIL,MICROSOFT_CLIENT_ID,MICROSOFT_CLIENT_SECRET,MICROSOFT_TENANT_ID,MICROSOFT_REDIRECT_URI,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,GOOGLE_REDIRECT_URI,DOCKER_USER,DOCKER_TOKEN,IMAGE_TAG
+          envs: POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,DATABASE_HOST,DATABASE_PORT,DEBUG,SECRET_KEY,JWT_SIGNING_KEY,ALLOWED_HOSTS,CORS_ALLOWED_ORIGINS,CORS_ALLOW_ALL_ORIGINS,EMAIL_HOST,EMAIL_PORT,EMAIL_HOST_USER,EMAIL_HOST_PASSWORD,DEFAULT_FROM_EMAIL,MICROSOFT_CLIENT_ID,MICROSOFT_CLIENT_SECRET,MICROSOFT_TENANT_ID,MICROSOFT_REDIRECT_URI,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,GOOGLE_REDIRECT_URI,IMAGE_TAG
           script: |
             cd /opt/pandora/backend
             COMPOSE="docker compose -f docker-compose.prod.yml"
@@ -125,12 +146,9 @@ jobs:
             echo "🌐 Garantindo a rede pandora_net..."
             docker network inspect pandora_net >/dev/null 2>&1 || docker network create pandora_net
 
-            echo "🔑 Login no Docker Hub..."
-            echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USER" --password-stdin
-
-            echo "📥 Baixando imagem $IMAGE_TAG..."
+            echo "📦 Carregando imagem $IMAGE_TAG no host (docker load)..."
             export IMAGE_TAG
-            $COMPOSE pull pandora_web
+            docker load -i "pandora-backend-${IMAGE_TAG}.tar.gz"
 
             echo "🗃️  Migrations em container one-off (antes de trocar o tráfego)..."
             if ! $COMPOSE run --rm pandora_web python manage.py migrate --noinput; then
@@ -155,7 +173,6 @@ jobs:
               if [ -n "$PREV_TAG" ]; then
                 echo "↩️  Rollback automático para $PREV_TAG..."
                 export IMAGE_TAG="$PREV_TAG"
-                $COMPOSE pull pandora_web
                 $COMPOSE up -d pandora_web
                 echo "Rollback concluído — versão anterior restaurada."
               else
@@ -165,13 +182,13 @@ jobs:
             fi
 
             echo "$IMAGE_TAG" > .deployed_version
-            echo "🧹 Limpando imagens antigas..."
-            docker image prune -f
-            echo "✅ Deploy de $IMAGE_TAG concluído (anterior: ${PREV_TAG:-nenhuma})."
+            docker tag "pandora-backend:$IMAGE_TAG" pandora-backend:latest
 
-      - name: Publica latest só após deploy saudável
-        run: |
-          echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USER }}" --password-stdin
-          IMAGE_NAME=${{ secrets.DOCKER_USER }}/pandora-backend
-          docker buildx imagetools create \
-            -t "$IMAGE_NAME:latest" "$IMAGE_NAME:${{ needs.build.outputs.image_tag }}"
+            echo "🧹 Limpando tarball e imagens antigas (mantém últimas 5 tags v*)..."
+            rm -f pandora-backend-*.tar.gz
+            docker images pandora-backend --format '{{.Tag}}' \
+              | grep '^v' | sort -rV | tail -n +6 \
+              | xargs -r -I{} docker rmi "pandora-backend:{}" || true
+            docker image prune -f
+
+            echo "✅ Deploy de $IMAGE_TAG concluído (anterior: ${PREV_TAG:-nenhuma})."
