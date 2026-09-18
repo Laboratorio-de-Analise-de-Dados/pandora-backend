@@ -373,6 +373,15 @@ class ExperimentListView(generics.ListCreateAPIView):
                 {"detail": "Título já criado para esse laboratório."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # BE-34: subsamples do setup inicial (ex.: grupo de controles).
+        for spec in data.get("subsamples") or []:
+            SubsampleModel.objects.create(
+                experiment=experiment,
+                name=spec["name"],
+                control_type=spec.get("control_type"),
+                control_channel=spec.get("control_channel", ""),
+                created_by=request.user,
+            )
         return Response(
             ListExperimentSerializer(experiment).data, status=status.HTTP_201_CREATED
         )
@@ -1122,11 +1131,26 @@ class SubsampleDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_update(self, serializer):
         self.check_can_edit(serializer.instance)
         old_name = serializer.instance.name
+        old_tags = sorted(serializer.instance.tags.values_list("id", flat=True))
         try:
             subsample = serializer.save()
         except IntegrityError:
             raise serializers.ValidationError(
                 {"name": "Já existe um subsample com esse nome neste experimento."}
+            )
+        new_tags = sorted(subsample.tags.values_list("id", flat=True))
+        if new_tags != old_tags:
+            names = ", ".join(tag.name for tag in subsample.tags.all()) or "—"
+            record_revision(
+                experiment=subsample.experiment,
+                action=AnalysisRevision.ACTION_TAGS,
+                target_type=AnalysisRevision.TARGET_SUBSAMPLE,
+                target_id=subsample.id,
+                user=self.request.user,
+                payload_before={"targets": {str(subsample.id): {"tags": old_tags}}},
+                payload_after={"targets": {str(subsample.id): {"tags": new_tags}}},
+                affected_ids=[subsample.id],
+                summary=f'etiquetou o subsample "{subsample.name}": {names}',
             )
         if subsample.name != old_name:
             record_revision(
@@ -1262,8 +1286,11 @@ class GetExperimentFiles(generics.ListAPIView):
         )
         if self.request.query_params.get("include_inactive") != "true":
             queryset = queryset.filter(active=True)
-        # BE-34: tags serializadas por amostra — prefetch evita N+1.
-        return queryset.prefetch_related("tags")
+        # BE-34: tags próprias + herdadas do subsample — prefetch/select
+        # evitam N+1 ao calcular `inherited_tags` por amostra.
+        return queryset.select_related("subsample").prefetch_related(
+            "tags", "subsample__tags"
+        )
 
     @extend_schema(
         parameters=[

@@ -220,6 +220,12 @@ class SubsampleModel(models.Model):
         max_length=20, choices=CONTROL_TYPE_CHOICES, null=True, blank=True
     )
     control_channel = models.CharField(max_length=256, blank=True, default="")
+    # BE-34: tags de contexto do grupo — herdadas pelas amostras membro
+    # (herança virtual, calculada na leitura). Só `category="general"`:
+    # o papel de controle do grupo é `control_type` (grupo homogêneo).
+    tags = models.ManyToManyField(
+        "SampleTagModel", blank=True, related_name="tagged_subsamples"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
         User,

@@ -2611,3 +2611,109 @@ class SampleTagsApiTestCase(TestCase):
     def test_suggestion_never_returns_two_controls(self):
         # Mesmo com dois padrões casando, só uma sugestão (exclusividade).
         self.assertEqual(len(suggest_tags("unstained_fmo_beads.fcs")), 1)
+
+    # --- tags em subsample + herança virtual ---
+
+    def _control_subsample(self, control_type="unstained"):
+        subsample = SubsampleModel.objects.create(
+            experiment=self.experiment,
+            name="controles",
+            control_type=control_type,
+            created_by=self.owner,
+        )
+        self.file_data.subsample = subsample
+        self.file_data.save(update_fields=["subsample"])
+        return subsample
+
+    def _list_entry(self):
+        response = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+        self.assertEqual(response.status_code, 200)
+        return response.data[0]
+
+    def test_subsample_patch_sets_context_tags(self):
+        subsample = self._control_subsample()
+        tag = self._create_user_tag()
+
+        response = self.client.patch(
+            f"/experiment/{self.experiment.id}/subsamples/{subsample.id}/",
+            {"tag_ids": [tag.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(subsample.tags.values_list("id", flat=True)), [tag.id])
+        self.assertEqual(response.data["tags"][0]["id"], tag.id)
+
+    def test_control_tag_rejected_on_subsample(self):
+        subsample = self._control_subsample()
+
+        response = self.client.patch(
+            f"/experiment/{self.experiment.id}/subsamples/{subsample.id}/",
+            {"tag_ids": [self.control_tag.id]},
+            format="json",
+        )
+
+        # Controle de grupo vai em control_type, não em tag.
+        self.assertEqual(response.status_code, 400)
+
+    def test_inherited_tags_from_control_subsample(self):
+        self._control_subsample("unstained")
+
+        entry = self._list_entry()
+
+        # control_type="unstained" → herda a tag de sistema homônima.
+        self.assertEqual(
+            [tag["system_key"] for tag in entry["inherited_tags"]],
+            ["unstained"],
+        )
+        self.assertEqual(entry["tags"], [])
+
+    def test_inherited_tags_include_group_context_tags(self):
+        subsample = self._control_subsample(None)
+        context = self._create_user_tag()
+        subsample.tags.set([context])
+
+        entry = self._list_entry()
+
+        self.assertEqual([tag["id"] for tag in entry["inherited_tags"]], [context.id])
+
+    def test_explicit_control_tag_beats_inherited(self):
+        """Override por arquivo: tag de controle própria vence a herdada."""
+        self._control_subsample("unstained")
+        self.client.put(
+            self.file_tags_url(), {"tags": [self.control_tag.id]}, format="json"
+        )
+
+        entry = self._list_entry()
+
+        # A amostra é FMO (explícita) — o unstained do grupo não aparece.
+        self.assertEqual([tag["system_key"] for tag in entry["tags"]], ["fmo"])
+        self.assertEqual(entry["inherited_tags"], [])
+
+    def test_inherited_tags_empty_without_subsample(self):
+        entry = self._list_entry()
+
+        self.assertEqual(entry["inherited_tags"], [])
+
+    def test_experiment_create_with_subsamples(self):
+        response = self.client.post(
+            "/experiment/",
+            {
+                "title": "placa-nova",
+                "type": "cba",
+                "subsamples": [
+                    {"name": "controles", "control_type": "unstained"},
+                    {"name": "amostras"},
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        experiment_id = response.data["id"]
+        subsamples = SubsampleModel.objects.filter(
+            experiment_id=experiment_id
+        ).order_by("name")
+        self.assertEqual([s.name for s in subsamples], ["amostras", "controles"])
+        controles = subsamples.get(name="controles")
+        self.assertEqual(controles.control_type, "unstained")
