@@ -11,7 +11,7 @@ from .models import (
     ExperimentModel,
     ExperimentTypeModel,
     FileDataModel,
-    SampleLabelModel,
+    SampleTagModel,
     SubsampleModel,
 )
 
@@ -304,17 +304,17 @@ class SubsampleSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class SampleLabelSerializer(serializers.ModelSerializer):
-    """Vocabulário de labels de amostra (BE-34).
+class SampleTagSerializer(serializers.ModelSerializer):
+    """Vocabulário de tags de amostra (BE-34).
 
     Na leitura expõe a semântica completa; na escrita só ``name``,
     ``color`` e ``organization`` são aceitos — ``system_key``,
-    ``category="control"`` e ``scope`` são deduzidos na view (labels de
+    ``category="control"`` e ``scope`` são deduzidos na view (tags de
     usuário nunca viram de sistema por API).
     """
 
     class Meta:
-        model = SampleLabelModel
+        model = SampleTagModel
         fields = [
             "id",
             "name",
@@ -329,7 +329,7 @@ class SampleLabelSerializer(serializers.ModelSerializer):
     def validate_name(self, value):
         name = " ".join(value.split())
         if not name:
-            raise serializers.ValidationError("Nome da label é obrigatório.")
+            raise serializers.ValidationError("Nome da tag é obrigatório.")
         return name
 
     def validate_color(self, value):
@@ -340,10 +340,10 @@ class SampleLabelSerializer(serializers.ModelSerializer):
         return value.lower()
 
 
-class FileLabelsUpdateSerializer(serializers.Serializer):
-    """Entrada de PUT /experiment/file/<id>/labels — conjunto completo."""
+class FileTagsUpdateSerializer(serializers.Serializer):
+    """Entrada de PUT /experiment/file/<id>/tags — conjunto completo."""
 
-    labels = serializers.ListField(
+    tags = serializers.ListField(
         child=serializers.IntegerField(), required=True, allow_empty=True
     )
 
@@ -354,10 +354,10 @@ class ListFileDataSerializer(serializers.ModelSerializer):
     # BE-22: a amostra traz $SPILLOVER/$COMP nos headers? O front usa para
     # marcar o arquivo com um indicador de compensação disponível.
     has_embedded_compensation = serializers.SerializerMethodField()
-    # BE-34: chips semânticos. `labels` é o M2M (prefetch no queryset);
-    # `suggested_labels` é heurística por filename — informativa.
-    labels = SampleLabelSerializer(many=True, read_only=True)
-    suggested_labels = serializers.SerializerMethodField()
+    # BE-34: chips semânticos. `tags` é o M2M (prefetch no queryset);
+    # `suggested_tags` é heurística por filename — informativa.
+    tags = SampleTagSerializer(many=True, read_only=True)
+    suggested_tags = serializers.SerializerMethodField()
 
     class Meta:
         model = FileDataModel
@@ -370,8 +370,8 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "active",
             "deactivated_at",
             "has_embedded_compensation",
-            "labels",
-            "suggested_labels",
+            "tags",
+            "suggested_tags",
         ]
         read_only_fields = ["id", "source_path", "active", "deactivated_at"]
 
@@ -380,10 +380,10 @@ class ListFileDataSerializer(serializers.ModelSerializer):
 
         return parse_spillover(obj.headers) is not None
 
-    def get_suggested_labels(self, obj) -> list[str]:
-        from fcs_parser.services.labels import suggest_labels
+    def get_suggested_tags(self, obj) -> list[str]:
+        from fcs_parser.services.tags import suggest_tags
 
-        return suggest_labels(obj.file_name)
+        return suggest_tags(obj.file_name)
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):

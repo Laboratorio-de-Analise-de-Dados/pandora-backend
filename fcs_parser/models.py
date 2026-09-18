@@ -297,12 +297,12 @@ class FileDataModel(models.Model):
         on_delete=models.SET_NULL,
         related_name="deactivated_files",
     )
-    # BE-34: labels semânticas por amostra (chips). Tipos de controle são
-    # labels de sistema; labels de usuário são vocabulário por escopo.
-    labels = models.ManyToManyField(
-        "SampleLabelModel",
-        through="FileLabelModel",
-        related_name="labeled_files",
+    # BE-34: tags semânticas por amostra (chips). Tipos de controle são
+    # tags de sistema; tags de usuário são vocabulário por escopo.
+    tags = models.ManyToManyField(
+        "SampleTagModel",
+        through="FileTagModel",
+        related_name="tagged_files",
         blank=True,
     )
 
@@ -426,19 +426,19 @@ class FileDataModel(models.Model):
             return None
 
 
-class SampleLabelModel(models.Model):
-    """Vocabulário de labels de amostra (BE-34).
+class SampleTagModel(models.Model):
+    """Vocabulário de tags de amostra (BE-34).
 
-    Labels de ``scope="system"`` são seeded por migration e carregam a
+    Tags de ``scope="system"`` são seeded por migration e carregam a
     semântica que o código consome — o código referencia ``system_key``,
-    nunca ``name``. Labels de usuário são vocabulário extensível por
+    nunca ``name``. Tags de usuário são vocabulário extensível por
     escopo (organização ou pessoal), mesmo padrão do BE-25/28: texto
     livre fragmenta, enum congela.
 
     ``category="control"`` tem regra de exclusividade por amostra — uma
     amostra não é FMO e unstained ao mesmo tempo. A regra não cabe em
-    constraint SQL (a categoria mora na label), então toda escrita passa
-    por ``fcs_parser.services.labels.set_file_labels``.
+    constraint SQL (a categoria mora na tag), então toda escrita passa
+    por ``fcs_parser.services.tags.set_file_tags``.
     """
 
     SCOPE_SYSTEM = "system"
@@ -463,7 +463,7 @@ class SampleLabelModel(models.Model):
     name = models.CharField(max_length=100)
     name_normalized = models.CharField(max_length=100)
     # Chave estável referenciada pelo código (ex.: "fmo", "unstained").
-    # Só labels de sistema têm — null em labels de usuário.
+    # Só tags de sistema têm — null em tags de usuário.
     system_key = models.CharField(max_length=50, unique=True, null=True, blank=True)
     category = models.CharField(
         max_length=20, choices=CATEGORY_CHOICES, default=CATEGORY_GENERAL
@@ -475,14 +475,14 @@ class SampleLabelModel(models.Model):
         null=True,
         blank=True,
         on_delete=models.CASCADE,
-        related_name="sample_labels",
+        related_name="sample_tags",
     )
     created_by = models.ForeignKey(
         User,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="created_sample_labels",
+        related_name="created_sample_tags",
     )
     # Chave de unicidade por escopo, preenchida no save: "system",
     # "org:<id>" ou "user:<id>". Resolve o problema de NULLs distintos
@@ -492,11 +492,11 @@ class SampleLabelModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = "sample_labels"
+        db_table = "sample_tags"
         constraints = [
             models.UniqueConstraint(
                 fields=["scope_key", "name_normalized"],
-                name="unique_label_name_per_scope",
+                name="unique_tag_name_per_scope",
             )
         ]
 
@@ -518,33 +518,33 @@ class SampleLabelModel(models.Model):
         return self.name
 
 
-class FileLabelModel(models.Model):
-    """Vínculo amostra ↔ label (through explícito de `FileData.labels`).
+class FileTagModel(models.Model):
+    """Vínculo amostra ↔ tag (through explícito de `FileData.tags`).
 
-    Escrita exclusiva via ``set_file_labels`` — é lá que a regra "uma
-    label de controle por amostra" é validada.
+    Escrita exclusiva via ``set_file_tags`` — é lá que a regra "uma
+    tag de controle por amostra" é validada.
     """
 
     id = models.BigAutoField(primary_key=True)
     file_data = models.ForeignKey(
-        FileDataModel, on_delete=models.CASCADE, related_name="file_labels"
+        FileDataModel, on_delete=models.CASCADE, related_name="file_tags"
     )
-    label = models.ForeignKey(
-        SampleLabelModel, on_delete=models.CASCADE, related_name="file_links"
+    tag = models.ForeignKey(
+        SampleTagModel, on_delete=models.CASCADE, related_name="file_links"
     )
     created_by = models.ForeignKey(
         User,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="assigned_file_labels",
+        related_name="assigned_file_tags",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = "file_labels"
+        db_table = "file_tags"
         constraints = [
             models.UniqueConstraint(
-                fields=["file_data", "label"], name="unique_label_per_file"
+                fields=["file_data", "tag"], name="unique_tag_per_file"
             )
         ]

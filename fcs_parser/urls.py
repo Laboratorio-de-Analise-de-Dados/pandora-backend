@@ -24,12 +24,12 @@ from .views import (
     FileDensityView,
     FileHashCheckView,
     FileHeadersView,
-    FileLabelsView,
+    FileTagsView,
     FileStatsView,
     FileSubsampleView,
     GetExperimentFiles,
-    LabelDetailView,
-    LabelListCreateView,
+    TagDetailView,
+    TagListCreateView,
     ListFileParams,
     ProcessFileDataView,
     RecomputeFileDataView,
@@ -81,11 +81,11 @@ urlpatterns = [
         ExperimentCompensationRemoveView.as_view(),
     ),
     path("<int:experiment_id>/restore", ExperimentRestoreView.as_view()),
-    # `types/` e `labels/` precisam vir antes de `<str:experiment_id>/`
+    # `types/` e `tags/` precisam vir antes de `<str:experiment_id>/`
     # para não ser capturados como id de experimento.
     path("types/", ExperimentTypeListCreateView.as_view()),
-    path("labels/", LabelListCreateView.as_view()),
-    path("labels/<int:pk>/", LabelDetailView.as_view()),
+    path("tags/", TagListCreateView.as_view()),
+    path("tags/<int:pk>/", TagDetailView.as_view()),
     path("list/data/<str:experiment_id>/", GetExperimentFiles.as_view()),
     path("file/<str:file_id>/list", ListFileParams.as_view()),
     path("file/<int:file_id>/density", FileDensityView.as_view()),
@@ -100,9 +100,9 @@ urlpatterns = [
         name="file_subsample",
     ),
     path(
-        "file/<int:file_id>/labels",
-        FileLabelsView.as_view(),
-        name="file_labels",
+        "file/<int:file_id>/tags",
+        FileTagsView.as_view(),
+        name="file_tags",
     ),
     path(
         "<int:experiment_id>/subsamples/",

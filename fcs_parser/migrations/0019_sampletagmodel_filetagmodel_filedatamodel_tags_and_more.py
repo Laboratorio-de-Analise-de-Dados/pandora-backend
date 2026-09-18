@@ -4,9 +4,9 @@ import django.db.models.deletion
 from django.conf import settings
 from django.db import migrations, models
 
-# BE-34: labels de sistema — semântica estável referenciada por
+# BE-34: tags de sistema — semântica estável referenciada por
 # `system_key` no código (sugestões, controles, consumidores futuros).
-SYSTEM_LABELS = [
+SYSTEM_TAGS = [
     # (system_key, name, category, color)
     ("unstained", "Negativo (unstained)", "control", "#f59e0b"),
     ("fmo", "FMO", "control", "#8b5cf6"),
@@ -17,10 +17,10 @@ SYSTEM_LABELS = [
 ]
 
 
-def seed_system_labels(apps, schema_editor):
-    SampleLabel = apps.get_model("fcs_parser", "SampleLabelModel")
-    for system_key, name, category, color in SYSTEM_LABELS:
-        SampleLabel.objects.get_or_create(
+def seed_system_tags(apps, schema_editor):
+    SampleTag = apps.get_model("fcs_parser", "SampleTagModel")
+    for system_key, name, category, color in SYSTEM_TAGS:
+        SampleTag.objects.get_or_create(
             system_key=system_key,
             defaults={
                 "name": name,
@@ -33,9 +33,9 @@ def seed_system_labels(apps, schema_editor):
         )
 
 
-def unseed_system_labels(apps, schema_editor):
-    SampleLabel = apps.get_model("fcs_parser", "SampleLabelModel")
-    SampleLabel.objects.filter(scope="system").delete()
+def unseed_system_tags(apps, schema_editor):
+    SampleTag = apps.get_model("fcs_parser", "SampleTagModel")
+    SampleTag.objects.filter(scope="system").delete()
 
 
 class Migration(migrations.Migration):
@@ -48,7 +48,7 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name="SampleLabelModel",
+            name="SampleTagModel",
             fields=[
                 ("id", models.BigAutoField(primary_key=True, serialize=False)),
                 ("name", models.CharField(max_length=100)),
@@ -86,7 +86,7 @@ class Migration(migrations.Migration):
                         blank=True,
                         null=True,
                         on_delete=django.db.models.deletion.SET_NULL,
-                        related_name="created_sample_labels",
+                        related_name="created_sample_tags",
                         to=settings.AUTH_USER_MODEL,
                     ),
                 ),
@@ -96,17 +96,17 @@ class Migration(migrations.Migration):
                         blank=True,
                         null=True,
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="sample_labels",
+                        related_name="sample_tags",
                         to="accounts.organization",
                     ),
                 ),
             ],
             options={
-                "db_table": "sample_labels",
+                "db_table": "sample_tags",
             },
         ),
         migrations.CreateModel(
-            name="FileLabelModel",
+            name="FileTagModel",
             fields=[
                 ("id", models.BigAutoField(primary_key=True, serialize=False)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
@@ -116,7 +116,7 @@ class Migration(migrations.Migration):
                         blank=True,
                         null=True,
                         on_delete=django.db.models.deletion.SET_NULL,
-                        related_name="assigned_file_labels",
+                        related_name="assigned_file_tags",
                         to=settings.AUTH_USER_MODEL,
                     ),
                 ),
@@ -124,45 +124,45 @@ class Migration(migrations.Migration):
                     "file_data",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="file_labels",
+                        related_name="file_tags",
                         to="fcs_parser.filedatamodel",
                     ),
                 ),
                 (
-                    "label",
+                    "tag",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
                         related_name="file_links",
-                        to="fcs_parser.samplelabelmodel",
+                        to="fcs_parser.sampletagmodel",
                     ),
                 ),
             ],
             options={
-                "db_table": "file_labels",
+                "db_table": "file_tags",
             },
         ),
         migrations.AddField(
             model_name="filedatamodel",
-            name="labels",
+            name="tags",
             field=models.ManyToManyField(
                 blank=True,
-                related_name="labeled_files",
-                through="fcs_parser.FileLabelModel",
-                to="fcs_parser.samplelabelmodel",
+                related_name="tagged_files",
+                through="fcs_parser.FileTagModel",
+                to="fcs_parser.sampletagmodel",
             ),
         ),
         migrations.AddConstraint(
-            model_name="samplelabelmodel",
+            model_name="sampletagmodel",
             constraint=models.UniqueConstraint(
                 fields=("scope_key", "name_normalized"),
-                name="unique_label_name_per_scope",
+                name="unique_tag_name_per_scope",
             ),
         ),
         migrations.AddConstraint(
-            model_name="filelabelmodel",
+            model_name="filetagmodel",
             constraint=models.UniqueConstraint(
-                fields=("file_data", "label"), name="unique_label_per_file"
+                fields=("file_data", "tag"), name="unique_tag_per_file"
             ),
         ),
-        migrations.RunPython(seed_system_labels, unseed_system_labels),
+        migrations.RunPython(seed_system_tags, unseed_system_tags),
     ]

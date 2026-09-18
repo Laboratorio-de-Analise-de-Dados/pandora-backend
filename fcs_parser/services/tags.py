@@ -1,11 +1,11 @@
-"""BE-34: mecânica de labels semânticas por amostra.
+"""BE-34: mecânica de tags semânticas por amostra.
 
-``set_file_labels`` é o **único caminho de escrita** de vínculos
-amostra ↔ label — é aqui que a exclusividade de controle (no máximo
-uma label de ``category="control"`` por amostra) e a visibilidade de
+``set_file_tags`` é o **único caminho de escrita** de vínculos
+amostra ↔ tag — é aqui que a exclusividade de controle (no máximo
+uma tag de ``category="control"`` por amostra) e a visibilidade de
 escopo são garantidas.
 
-``suggest_labels`` é a heurística de sugestão por nome de arquivo:
+``suggest_tags`` é a heurística de sugestão por nome de arquivo:
 informativa, nunca aplicada sozinha — o usuário confirma.
 """
 
@@ -17,77 +17,75 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework import serializers
 
-from fcs_parser.models import FileLabelModel, SampleLabelModel
+from fcs_parser.models import FileTagModel, SampleTagModel
 
 
-def labels_visible_to(user):
+def tags_visible_to(user):
     """Vocabulário visível: sistema + organizações do usuário + pessoais dele."""
-    qs = SampleLabelModel.objects.filter(active=True)
+    qs = SampleTagModel.objects.filter(active=True)
     if not getattr(user, "is_authenticated", False):
-        return qs.filter(scope=SampleLabelModel.SCOPE_SYSTEM)
+        return qs.filter(scope=SampleTagModel.SCOPE_SYSTEM)
     org_ids = user.memberships.filter(status="active").values_list(
         "organization_id", flat=True
     )
     return qs.filter(
-        Q(scope=SampleLabelModel.SCOPE_SYSTEM)
+        Q(scope=SampleTagModel.SCOPE_SYSTEM)
         | Q(
-            scope=SampleLabelModel.SCOPE_ORGANIZATION,
+            scope=SampleTagModel.SCOPE_ORGANIZATION,
             organization_id__in=org_ids,
         )
-        | Q(scope=SampleLabelModel.SCOPE_PERSONAL, created_by=user)
+        | Q(scope=SampleTagModel.SCOPE_PERSONAL, created_by=user)
     )
 
 
-def can_edit_label(user, label: SampleLabelModel) -> bool:
-    """Quem pode renomear/recolorir uma label de usuário.
+def can_edit_tag(user, tag: SampleTagModel) -> bool:
+    """Quem pode renomear/recolorir uma tag de usuário.
 
-    Labels de sistema nunca são editáveis pela API. Org labels são
+    Tags de sistema nunca são editáveis pela API. Org tags são
     editáveis por qualquer membro ativo da organização; pessoais, só
     pelo criador. Super admin edita qualquer uma de usuário.
     """
-    if label.scope == SampleLabelModel.SCOPE_SYSTEM:
+    if tag.scope == SampleTagModel.SCOPE_SYSTEM:
         return False
     if getattr(user, "is_super_admin", False):
         return True
-    if label.scope == SampleLabelModel.SCOPE_ORGANIZATION:
+    if tag.scope == SampleTagModel.SCOPE_ORGANIZATION:
         return user.memberships.filter(
-            organization_id=label.organization_id, status="active"
+            organization_id=tag.organization_id, status="active"
         ).exists()
-    return label.created_by_id == user.id
+    return tag.created_by_id == user.id
 
 
-def set_file_labels(file_data, label_ids, user) -> list[SampleLabelModel]:
-    """Define o conjunto de labels de uma amostra (substituição completa).
+def set_file_tags(file_data, tag_ids, user) -> list[SampleTagModel]:
+    """Define o conjunto de tags de uma amostra (substituição completa).
 
-    Valida que todas as labels são visíveis ao usuário e que há no
-    máximo uma de ``category="control"``. Retorna as labels aplicadas.
+    Valida que todas as tags são visíveis ao usuário e que há no
+    máximo uma de ``category="control"``. Retorna as tags aplicadas.
     """
-    unique_ids = list(dict.fromkeys(label_ids or []))
-    labels = list(labels_visible_to(user).filter(id__in=unique_ids))
-    if len(labels) != len(unique_ids):
-        raise serializers.ValidationError({"labels": "Label inválida ou inacessível."})
-    if sum(1 for label in labels if label.category == "control") > 1:
+    unique_ids = list(dict.fromkeys(tag_ids or []))
+    tags = list(tags_visible_to(user).filter(id__in=unique_ids))
+    if len(tags) != len(unique_ids):
+        raise serializers.ValidationError({"tags": "Tag inválida ou inacessível."})
+    if sum(1 for tag in tags if tag.category == "control") > 1:
         raise serializers.ValidationError(
-            {"labels": "Uma amostra só pode ter um tipo de controle."}
+            {"tags": "Uma amostra só pode ter um tipo de controle."}
         )
 
     with transaction.atomic():
-        FileLabelModel.objects.filter(file_data=file_data).exclude(
-            label__in=labels
-        ).delete()
+        FileTagModel.objects.filter(file_data=file_data).exclude(tag__in=tags).delete()
         existing = set(
-            FileLabelModel.objects.filter(file_data=file_data).values_list(
-                "label_id", flat=True
+            FileTagModel.objects.filter(file_data=file_data).values_list(
+                "tag_id", flat=True
             )
         )
-        FileLabelModel.objects.bulk_create(
+        FileTagModel.objects.bulk_create(
             [
-                FileLabelModel(file_data=file_data, label=label, created_by=user)
-                for label in labels
-                if label.id not in existing
+                FileTagModel(file_data=file_data, tag=tag, created_by=user)
+                for tag in tags
+                if tag.id not in existing
             ]
         )
-    return labels
+    return tags
 
 
 # Regras de sugestão por filename — (padrão regex, system_key). A
@@ -113,7 +111,7 @@ _SUGGESTION_RULES: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def suggest_labels(file_name) -> list[str]:
+def suggest_tags(file_name) -> list[str]:
     """Sugere `system_key` provável pelo nome do arquivo.
 
     Retorna lista com 0 ou 1 chave — informativa para a UI exibir como

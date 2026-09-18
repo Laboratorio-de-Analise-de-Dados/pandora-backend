@@ -31,7 +31,7 @@ class Migration(migrations.Migration):
                     ("derive", "Derivação de análise"),
                     ("fork", "Criação de branch"),
                     ("merge", "Merge de branch"),
-                    ("labels", "Labels de amostra"),
+                    ("tags", "Tags de amostra"),
                 ],
                 max_length=20,
             ),

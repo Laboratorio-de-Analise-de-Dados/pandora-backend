@@ -298,7 +298,7 @@ class AnalysisRevision(models.Model):
     ACTION_DERIVE = "derive"
     ACTION_FORK = "fork"
     ACTION_MERGE = "merge"
-    ACTION_LABELS = "labels"
+    ACTION_TAGS = "tags"
     ACTION_CHOICES = [
         (ACTION_CREATE, "Criação"),
         (ACTION_UPDATE_GEOMETRY, "Geometria"),
@@ -316,7 +316,7 @@ class AnalysisRevision(models.Model):
         (ACTION_DERIVE, "Derivação de análise"),
         (ACTION_FORK, "Criação de branch"),
         (ACTION_MERGE, "Merge de branch"),
-        (ACTION_LABELS, "Labels de amostra"),
+        (ACTION_TAGS, "Tags de amostra"),
     ]
 
     SCOPE_CHOICES = [
@@ -418,8 +418,8 @@ class AnalysisCheckpoint(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:
-        label = self.message or f"#{self.revision_id or 0}"
-        return f"Checkpoint {self.id} – {label}"
+        tag = self.message or f"#{self.revision_id or 0}"
+        return f"Checkpoint {self.id} – {tag}"
 
 
 class CompensationMatrix(models.Model):
@@ -476,5 +476,5 @@ class CompensationMatrix(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:
-        label = self.name or self.get_source_display()
-        return f"Compensation {self.id} – {label}"
+        tag = self.name or self.get_source_display()
+        return f"Compensation {self.id} – {tag}"
