@@ -67,7 +67,13 @@ jobs:
 
       - name: Build da imagem (sem secrets, sem push)
         run: |
-          docker build -t "pandora-backend:${{ steps.meta.outputs.image_tag }}" .
+          # --build-arg SECRET_KEY=build-dummy: compat com Dockerfiles de tags
+          # antigas (pré-ADR-0024) que declaram `ARG SECRET_KEY` — o valor é
+          # dummy, nunca um segredo real. Dockerfiles novos ignoram o arg
+          # (warning "not consumed", sem falha).
+          docker build \
+            --build-arg "SECRET_KEY=build-dummy" \
+            -t "pandora-backend:${{ steps.meta.outputs.image_tag }}" .
           docker save "pandora-backend:${{ steps.meta.outputs.image_tag }}" \
             | gzip > "pandora-backend-${{ steps.meta.outputs.image_tag }}.tar.gz"
 
