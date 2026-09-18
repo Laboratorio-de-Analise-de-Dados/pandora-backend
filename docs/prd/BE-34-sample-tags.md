@@ -1,11 +1,11 @@
-# BE-34 — `SampleLabel`: labels semânticas por amostra
+# BE-34 — `SampleTag`: tags semânticas por amostra
 
 **Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
-**Branch sugerida:** `feat/sample-labels`
+**Branch sugerida:** `feat/sample-tags`
 **Status:** não iniciado.
 **Relacionado:** BE-26 (identificação de controles — vira consumidor),
 BE-25/28 (mesmo padrão de vocabulário controlado), FE-34/35 (UI de
-atribuição) e FE-37 (templates — consome labels de controle na revisão).
+atribuição) e FE-37 (templates — consome tags de controle na revisão).
 
 ## Problema
 
@@ -25,9 +25,9 @@ resolvido no BE-25: vocabulário em tabela, extensível sem deploy.
 
 ## Decisão
 
-**Uma mecânica só de label**, com categorias. Labels de sistema
+**Uma mecânica só de tag**, com categorias. Tags de sistema
 (`system_key` estável, seeded por migration, não editáveis/removíveis)
-carregam a semântica que o código consome; labels de usuário são
+carregam a semântica que o código consome; tags de usuário são
 vocabulário extensível por escopo (organização ou pessoal).
 
 O PRD entrega **só a mecânica** — modelo, vocabulário, API e
@@ -43,10 +43,10 @@ a convergência é decisão do BE-26 quando ele rodar.
 ### 1. Modelo
 
 ```python
-class SampleLabelModel:
+class SampleTagModel:
     name            # display (único por escopo)
     system_key      # nullable, único global — ex.: "fmo", "unstained";
-                    # null em labels de usuário. O código referencia a
+                    # null em tags de usuário. O código referencia a
                     # chave, nunca o nome.
     category        # "control" | "general" — agrupa semântica;
                     # categoria "control" tem regra de exclusividade
@@ -56,64 +56,64 @@ class SampleLabelModel:
     created_by      # FK User
     active          # soft delete (A API nunca deleta)
 
-class FileLabelModel:  # through explícito
+class FileTagModel:  # through explícito
     file_data  → FileDataModel
-    label      → SampleLabelModel
+    tag      → SampleTagModel
     created_by, created_at
 ```
 
 - Seeds via migration: `unstained`, `fmo`, `isotype`, `single_stain`,
   `biological_ref`, `beads` — `category="control"`, `scope="system"`,
   nomes display em PT-BR.
-- **Invariante de exclusividade**: no máximo **uma** label de
+- **Invariante de exclusividade**: no máximo **uma** tag de
   `category="control"` por `file_data`. Não cabe em constraint SQL
-  (a categoria mora na label) → validação no serializer + função de
-  serviço única (`set_file_labels`) como único caminho de escrita.
-- Labels de `scope="system"` não podem ser criadas/editadas/inativadas
+  (a categoria mora na tag) → validação no serializer + função de
+  serviço única (`set_file_tags`) como único caminho de escrita.
+- Tags de `scope="system"` não podem ser criadas/editadas/inativadas
   pela API — só por migration.
-- Label de usuário inativada vira soft delete: vínculos ficam, a label
+- Tag de usuário inativada vira soft delete: vínculos ficam, a tag
   sai do vocabulário e da serialização.
 
 ### 2. API
 
-- `GET /labels/` — vocabulário visível ao usuário (system + sua
+- `GET /tags/` — vocabulário visível ao usuário (system + sua
   organização + pessoais). `?category=` para filtrar.
-- `POST /labels/` — cria label de usuário (`scope` deduzido: com org →
+- `POST /tags/` — cria tag de usuário (`scope` deduzido: com org →
   organization, sem org → personal). `system_key`/`category="control"`
   rejeitados para escopo não-system.
-- `PATCH /labels/<id>/` — renomear/recolorir label própria.
-- `PUT /file-data/<id>/labels/` — define o conjunto de labels da
+- `PATCH /tags/<id>/` — renomear/recolorir tag própria.
+- `PUT /file-data/<id>/tags/` — define o conjunto de tags da
   amostra (payload = ids). Exclusividade de controle violada → 400.
   Permissão: `can_edit_experiment` da amostra.
-- Serialização: `labels: [{id, name, color, system_key, category}]` na
+- Serialização: `tags: [{id, name, color, system_key, category}]` na
   listagem de amostras (join barato — prefetch obrigatório, sem N+1).
 
 ### 3. Sugestão assistida (herdada do BE-26)
 
 - A heurística de filename (`unstained`, `fmo`, `neg`, `control`,
-  `comp`, `beads`) expõe `suggested_labels` na listagem — informativo,
+  `comp`, `beads`) expõe `suggested_tags` na listagem — informativo,
   nunca aplicado. Função pura em `fcs_parser/services/`, testável.
 
 ## Arquivos a tocar
 
-- `fcs_parser/models.py` + migration — `SampleLabelModel`,
-  `FileLabelModel`, seeds de sistema
-- `fcs_parser/serializers.py` — vocabulário, `PUT` de labels,
-  `labels`/`suggested_labels` na listagem (ADR-0009)
+- `fcs_parser/models.py` + migration — `SampleTagModel`,
+  `FileTagModel`, seeds de sistema
+- `fcs_parser/serializers.py` — vocabulário, `PUT` de tags,
+  `tags`/`suggested_tags` na listagem (ADR-0009)
 - `fcs_parser/views.py` + `urls.py` — endpoints
 - `fcs_parser/permissions.py` — edição via `can_edit_experiment`;
   vocabulário de usuário: dono/org
-- `fcs_parser/services/` — `set_file_labels` (único escritor),
+- `fcs_parser/services/` — `set_file_tags` (único escritor),
   heurística de sugestão
 
 ## Critérios de aceite
 
-- [ ] Labels de sistema seeded; API recusa criar/editar/inativar
+- [ ] Tags de sistema seeded; API recusa criar/editar/inativar
       `scope="system"`
-- [ ] `PUT` define conjunto de labels; segunda label de controle → 400
-- [ ] Label de usuário criada por usuário sem org → `scope=personal`,
+- [ ] `PUT` define conjunto de tags; segunda tag de controle → 400
+- [ ] Tag de usuário criada por usuário sem org → `scope=personal`,
       não vaza para outras contas
-- [ ] Listagem expõe `labels` + `suggested_labels` sem N+1
+- [ ] Listagem expõe `tags` + `suggested_tags` sem N+1
 - [ ] Nenhum comportamento existente muda: `control_type` do subsample
       segue intacto e consumido só pela compensação
 - [ ] `python manage.py test` verde; `makemigrations --check` limpo
@@ -122,12 +122,12 @@ class FileLabelModel:  # through explícito
 
 - **Consumidores**: UI de chips (FE-34/35), marcação assistida em lote,
   uso pelo Juvia, uso pelo FE-37 — cada um pluga depois na mecânica
-- **Migração do `control_type` do subsample** para labels — decisão
-  do BE-26 quando ele rodar (avaliar se compensação passa a ler label
+- **Migração do `control_type` do subsample** para tags — decisão
+  do BE-26 quando ele rodar (avaliar se compensação passa a ler tag
   ou se o campo permanece só para comp)
-- Propagação de label por `content_guid` entre experimentos — ideia
+- Propagação de tag por `content_guid` entre experimentos — ideia
   registrada; abre quando um consumidor pedir
-- Label no nível de subsample/grupo — o alvo deste PRD é `file_data`;
-  label de grupo entra se um caso real pedir
-- Vocabulário global compartilhado entre organizações (labels de
+- Tag no nível de subsample/grupo — o alvo deste PRD é `file_data`;
+  tag de grupo entra se um caso real pedir
+- Vocabulário global compartilhado entre organizações (tags de
   usuário ficam por escopo; promover a "system" é via migration)
