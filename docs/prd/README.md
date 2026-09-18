@@ -33,6 +33,7 @@
 | [BE-29](BE-29-vinculacao-identity-providers.md) | Conta central vinculável a N IdPs (`SocialAccount`), log de auth (`AuthEvent`), aviso de vínculo no login, unlink com regra do último acesso | Implementado — PR #95 (ADR-0025). Google: código pronto, ativação adiada para fase 2 (pré-v1) |
 | [BE-30](BE-30-merge-de-contas.md) | Merge de contas duplicadas: migra memberships, autoria e vínculos; conta absorvida inativa | Implementado em `feat/account-merge` |
 | [BE-31](BE-31-processamento-resiliente-advisory-lock.md) | Processamento resiliente: advisory lock, retomada de órfão, retry interno e `error_info` na API | Implementado — PR #104 |
+| [BE-32](BE-32-reuso-de-blob-por-hash.md) | Reuso de blob por `sha256` no upload (dedup de storage) + GC por refcount | Visão (ADR-0028 Proposto) |
 | [BE-33](BE-33-figuras-de-analise.md) | Figuras de análise persistidas: `AnalysisFigure` (spec + `result_cache` + âncora `result_revision`), CRUD + `recompute/`, `is_stale` por procedência | Não iniciado (consumida pelo FE-36) |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
@@ -53,3 +54,8 @@ listagem de organizações (#75), gestão de roles/remoção de membros (#76),
   [ADR-0009](../adr/0009-validacao-em-serializers.md). Resolvido no fluxo de
   upload (BE-13); segue aberto para `FileSubsampleView` e demais pontos com
   checagem manual de campo.
+- Reuso de blob por `sha256` no upload (dedup de storage cross-experiment)
+  — descartado no BE-12, reaberto como [BE-32](BE-32-reuso-de-blob-por-hash.md)
+  com [ADR-0028](../adr/0028-reuso-de-blob-por-hash-escopado-a-organizacao.md)
+  Proposto: pool por org, blob silencioso, amostra com confirmação,
+  deleção por refcount.
