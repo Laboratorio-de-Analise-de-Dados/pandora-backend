@@ -1,5 +1,12 @@
 # Tracker de trabalho em andamento (multi-sessão)
 
+> **Status de features NÃO vive aqui** — pipeline (backlog/fazendo/
+> entregue/produção), prioridade e checklists de progresso estão no
+> Trello, board **"Pandora — Implementações"**
+> (https://trello.com/b/dXb21KpL). Cada card linka seu PRD/ADR na
+> descrição. Este arquivo é só **coordenação entre sessões paralelas**
+> (quem está tocando qual área de arquivos agora).
+
 Vários agentes/sessões podem trabalhar neste repo em paralelo. **Antes de
 começar uma feature, leia este arquivo**: se a área já tem dono, escolha
 outra que não conflite (conflito = mesmos arquivos, modelos ou endpoints)
@@ -15,7 +22,7 @@ ou alinhe com o responsável.
 |---|---|---|---|---|
 | BE-31 resiliência de processamento | `docs/prd/BE-31*`, `fcs_parser/services/*` | `docs/be-31-processing-resilience` | outra sessão | 2026-09 |
 | BE-32/ADR-0028 dedup de storage (docs) | `docs/prd`, `docs/adr` | `docs/be-32-blob-dedup` | devin | 2026-09 |
-| BE-34 tags de amostra (+ subsample/herança/setup) | `fcs_parser/models.py`, `services/tags.py`, `serializers.py`, `views.py`, `urls.py`, `tests.py`, `analytics/models.py` + migrations | `feat/be-34-sample-tags` | devin | 2026-11 |
+| BE-34 tags de amostra (+ subsample/herança/setup) | ✅ concluído — mergeado (PRs #113/#114), deploy v0.4.0 | — | — | — |
 
 ## Concluído nesta branch
 
@@ -45,8 +52,7 @@ ou alinhe com o responsável.
 |---|---|
 | Google SSO — ativação (fase 2) | Código pronto (BE-29); falta só OAuth client no Google Cloud + envs `GOOGLE_*`. Decisão 2026-09: ativar antes da virada para v1 em prod — ver seção "Ativação do Google" no PRD BE-29 |
 | ~~Environment `production`~~ ✅ | Resolvido 2026-09: Required reviewers configurado nos dois repos (`paulo-moro` como reviewer). Deploy agora exige Approve no gate do environment |
-| BE-26 identificar controles | Não iniciado — estende ADR-0019; fecha o ciclo da compensação (BE-22). **Rever abordagem**: BE-34 propõe `SampleTag` como mecânica base — BE-26 vira consumidor |
-| BE-34 sample tags | PRD pronto — mecânica desacoplada de tags semânticas por amostra (sistema + usuário); sem consumidor no escopo |
+| BE-26 identificar controles | Não iniciado — estende ADR-0019; fecha o ciclo da compensação (BE-22). BE-34 entregou `SampleTag`/`FileTag` — BE-26 vira consumidor das tags de controle |
 | ~~FE: UI de "derivar análise"~~ ✅ | FE-28 mergeado (front PR #86) — diálogo no menu do card + relatório pós-derivação |
 | ~~FE: UI de branches~~ ✅ | FE-29 mergeado (front PR #88) — seletor `?branch=` no workspace, fork/renomear/arquivar, diff + merge com resolução de conflitos |
 | BE-19 workspaces/templates (objeto persistido) | Visão no PRD — ADR-0021 escolheu snapshot sem template; reabrir só se o caso de uso pedir catálogo |
