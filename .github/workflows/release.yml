@@ -62,7 +62,7 @@ jobs:
       - name: Checkout na tag (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
         run: |
-          git fetch --depth 1 origin "tag ${{ steps.meta.outputs.image_tag }}"
+          git fetch --depth 1 origin "refs/tags/${{ steps.meta.outputs.image_tag }}:refs/tags/${{ steps.meta.outputs.image_tag }}"
           git checkout "${{ steps.meta.outputs.image_tag }}"
 
       - name: Build da imagem (sem secrets, sem push)
