@@ -31,52 +31,39 @@ Board **"Pandora — Implementações"** (id `6aad992388d05be9a96dc1c4`, shortLi
 
 ## Modelo mental
 
-- **Coluna = andamento** (onde o item está no pipeline)
-- **Etiqueta colorida = prioridade** da task
-- **Etiqueta de categoria = tipo do item** (só no Backlog)
-- **Capa do card (cover) = reforço visual** da categoria
+- **Coluna = andamento** (onde o item está no pipeline — só isso)
+- **Capa do card (cover) = categoria** do item (ver "Capas" abaixo)
+- **Etiqueta = urgência** da task
 
 ## Colunas (esquerda → direita)
 
-| Lista | id | Papel |
-|---|---|---|
-| 📖 Docs — legendas | `6aada06e1eca37e675679dff` | Legendas + cards-base de capa |
-| 📥 Backlog | `6aad993ca54e5ce241fb8dcc` | Tudo que não entrou no fluxo (coluna única) |
-| 🔴 Fazer agora | `6aad9935d39dfd4ced940dae` | Pendências do ciclo, executar já |
-| 🔨 Em andamento | `6aad9acc21dde4bf061362eb` | Trabalho em execução (WIP 1–2/pessoa) |
-| 📦 Entregue | `6aad994921dde4bf061127f5` | Mergeado na main, aguardando release |
-| 🚀 Em produção | `6aad9ad79018b5ec2bafdf3d` | Deployado e verificado — fim |
+| Lista                              | id                         | Papel                                                        |
+| ---------------------------------- | -------------------------- | ------------------------------------------------------------ |
+| 🔍 Discovery                       | `6aadc2d3ab1fdb83e2607fa0` | Precisa de refinamento de produto/PRD antes de virar backlog |
+| 📖 Docs — legendas                 | `6aada06e1eca37e675679dff` | Legendas + cards-base de capa (não são tasks)                |
+| 📥 Backlog                         | `6aad993ca54e5ce241fb8dcc` | Tudo que está definido e não entrou no fluxo                 |
+| 🔨 Em andamento                    | `6aad9acc21dde4bf061362eb` | Trabalho em execução (WIP 1–2/pessoa)                        |
+| 📦 Entregue                        | `6aad994921dde4bf061127f5` | Mergeado na main, aguardando release                         |
+| 🚀 Em produção                     | `6aad9ad79018b5ec2bafdf3d` | Deployado e verificado — fim                                 |
 
-Regra de movimento: **Backlog → Fazer agora → Em andamento → Entregue → Em produção**.
-Cada coluna de trabalho tem um card de "capa" no topo descrevendo o tipo — não mover nem tratar como task.
+Regra de movimento: **Discovery → Backlog → Em andamento → Entregue → Em produção**.
 
-## Etiquetas
+- **Discovery**: item sai daqui quando tem definição suficiente (PRD no
+  `pandora-docs` ou escopo claro na descrição) → move para 📥 Backlog.
+- **"Fazer agora" não é mais coluna** — virou capa. Item urgente do ciclo
+  fica no Backlog com a capa correspondente (+ etiqueta Urgente quando
+  for o caso).
+- Cards de "capa"/legenda no topo das colunas (📖 Docs) não são tasks —
+  não mover nem tratar como trabalho.
 
-**Prioridade** (qualquer card em fluxo/backlog):
+## Capas (covers) = categoria
 
-| Label | id | Cor |
-|---|---|---|
-| Urgente | `6aad992388d05be9a96dc219` | 🔴 red |
-| Muito Importante | `6aad992388d05be9a96dc218` | 🟠 orange |
-| Importante | `6aad992388d05be9a96dc217` | 🟡 yellow |
-| Baixa | `6aad992388d05be9a96dc216` | 🟢 green |
-| Planejamento | `6aad992388d05be9a96dc21a` | 🟣 purple |
-| Ideias | `6aad992388d05be9a96dc21b` | 🔵 blue |
-
-**Categoria** (só em cards do 📥 Backlog — segunda etiqueta):
-
-| Label | id | Cor / capa |
-|---|---|---|
-| estacionado | `6aada1802fb5dcf42a705087` | ⬛ black — pausado, não descartado |
-| dívida técnica | `6aada185536e8c4b1568e386` | 🩷 pink — refactor/limpeza |
-| roadmap | `6aada188db5c83488f3c6317` | 🩵 sky — escopo planejado |
-
-`update_card_details` com `labels` **substitui** o array — sempre incluir
-prioridade + categoria juntas ao atualizar.
-
-## Capas (covers)
-
-A cor da capa espelha a categoria (⬛ estacionado, 🩷 dívida, 🩵 roadmap).
+| Capa     | Categoria      | Significado                                    |
+| -------- | -------------- | ---------------------------------------------- |
+| azul/sky | roadmap        | Escopo planejado de produto                    |
+| rosa     | dívida técnica | Refactor, limpeza, hardening                   |
+| cinza    | arquivado      | Estacionado por decisão — retoma com gatilho   |
+| (a definir) | fazer agora | Pendência do ciclo, executar já — substitui a antiga coluna |
 
 **O MCP não seta `cover.color` em card existente.** Workaround provado:
 `copy_card` preserva a capa — copie um card-base da coluna 📖 Docs e
@@ -89,6 +76,24 @@ edite nome/descrição:
 Para corrigir a capa de um card existente: copiar o card-base com o
 conteúdo do card original, ajustar etiquetas e arquivar o antigo (o
 link/URL muda — avisar o usuário).
+
+## Etiquetas = urgência
+
+| Label            | id                         | Cor       |
+| ---------------- | -------------------------- | --------- |
+| Urgente          | `6aad992388d05be9a96dc219` | 🔴 red    |
+| Muito Importante | `6aad992388d05be9a96dc218` | 🟠 orange |
+| Importante       | `6aad992388d05be9a96dc217` | 🟡 yellow |
+| Baixa            | `6aad992388d05be9a96dc216` | 🟢 green  |
+| Planejamento     | `6aad992388d05be9a96dc21a` | 🟣 purple |
+| Ideias           | `6aad992388d05be9a96dc21b` | 🔵 blue   |
+
+Etiquetas de **categoria** (`estacionado`, `dívida técnica`, `roadmap`)
+são legado — a categoria agora é a **capa**. Ao tocar num card que ainda
+as tem, remova a etiqueta de categoria e garanta a capa correspondente
+(sem etiqueta de categoria nova). `update_card_details` com `labels`
+**substitui** o array — sempre reenvie as etiquetas de urgência que o
+card já tem.
 
 ## Sincronia Trello ↔ git/deploy
 
