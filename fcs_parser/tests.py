@@ -309,6 +309,22 @@ class SubsampleApiTestCase(TestCase):
             404,
         )
 
+    def test_move_file_requires_subsample_field(self):
+        response = self.client.patch(self.move_url(), {}, format="json")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_move_file_rejects_non_integer_subsample(self):
+        # Antes da migração para serializer, id não-inteiro caía em
+        # ValueError no filter (500); agora é 400 de campo (ADR-0009).
+        response = self.client.patch(
+            self.move_url(), {"subsample": "abc"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.subsample_id, self.subsample.id)
+
 
 class RepairSourcePathTestCase(TestCase):
     """Backfill pelo ZIP: o caminho perdido é redescoberto na fonte de verdade."""
@@ -627,6 +643,16 @@ class ExperimentCopyApiTestCase(TestCase):
         res = self._copy(user=nobody)
         self.assertEqual(res.status_code, 404)
 
+    def test_copy_rejects_blank_title(self):
+        res = self._copy(title="   ")
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_copy_rejects_non_integer_org(self):
+        res = self._copy(organization_id="abc")
+
+        self.assertEqual(res.status_code, 400)
+
 
 class ExperimentMoveApiTestCase(TestCase):
     """BE-11: mover troca o contexto sem duplicar nada — dono/admin na origem."""
@@ -726,6 +752,13 @@ class ExperimentMoveApiTestCase(TestCase):
         self.experiment.refresh_from_db()
         self.assertEqual(self.experiment.organization_id, self.org.id)
 
+    def test_move_rejects_non_integer_org(self):
+        res = self._patch(self.owner, organization_id="abc")
+
+        self.assertEqual(res.status_code, 400)
+        self.experiment.refresh_from_db()
+        self.assertEqual(self.experiment.organization_id, self.org.id)
+
 
 class FileHashCheckApiTestCase(TestCase):
     """BE-12: check-hash informa duplicata; nunca bloqueia o upload."""
@@ -762,6 +795,23 @@ class FileHashCheckApiTestCase(TestCase):
         res = self.client.post(
             "/experiment/check-hash/", {"sha256": "nope"}, format="json"
         )
+        self.assertEqual(res.status_code, 400)
+
+    def test_accepts_uppercase_hash(self):
+        res = self.client.post(
+            "/experiment/check-hash/", {"sha256": "B" * 64}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["exists"])
+
+    def test_rejects_non_integer_experiment_id(self):
+        res = self.client.post(
+            "/experiment/check-hash/",
+            {"sha256": "b" * 64, "experiment_id": "abc"},
+            format="json",
+        )
+
         self.assertEqual(res.status_code, 400)
 
 
@@ -2597,6 +2647,13 @@ class DeriveAnalysisApiTestCase(TestCase):
 
     def test_derive_exige_edicao_e_alvo_diferente(self):
         res = self._derive(source_experiment_id=self.target.id)
+        self.assertEqual(res.status_code, 400)
+
+    def test_derive_sem_source_da_400(self):
+        res = self.client.post(
+            f"/experiment/{self.target.id}/derive-analysis", {}, format="json"
+        )
+
         self.assertEqual(res.status_code, 400)
 
         # Estranho não enxerga o alvo → 404.

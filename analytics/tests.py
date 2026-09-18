@@ -311,6 +311,28 @@ class GateScopeTestCase(GateFixtureMixin, TestCase):
         copy = GateModel.objects.get(file_data=self.file_b, name="P8")
         self.assertEqual(copy.created_by_id, self.user.id)
 
+    def test_apply_requires_both_lists(self):
+        res = self.client.post("/analytics/gate/apply", {}, format="json")
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_apply_rejects_unknown_on_conflict(self):
+        # Antes do serializer, um valor fora das choices caía
+        # silenciosamente no rename; agora é 400 (ADR-0009).
+        source = self._gate(self.file_a, "P8")
+
+        res = self.client.post(
+            "/analytics/gate/apply",
+            {
+                "source_gate_ids": [source.id],
+                "target_file_data_ids": [self.file_b.id],
+                "on_conflict": "bogus",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
     def test_gate_list_exposes_author_name(self):
         self.source.created_by = self.user
         self.source.save(update_fields=["created_by"])

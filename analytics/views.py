@@ -21,6 +21,7 @@ from fcs_parser.services.compensation import (
     apply_compensation,
 )
 from analytics.permissions import gates_visible_to, require_can_edit_gate
+from analytics.serializers import ApplyGateSerializer
 from analytics.gate_scope import (
     PROPAGATING_SCOPES,
     SCOPE_EXPERIMENT,
@@ -944,22 +945,7 @@ class ApplyGateView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        request=inline_serializer(
-            name="ApplyGateRequest",
-            fields={
-                "source_gate_ids": serializers.ListField(
-                    child=serializers.IntegerField()
-                ),
-                "target_file_data_ids": serializers.ListField(
-                    child=serializers.IntegerField()
-                ),
-                "recursive": serializers.BooleanField(default=True),
-                "on_conflict": serializers.ChoiceField(
-                    choices=["rename", "replace", "skip"], default="rename"
-                ),
-                "dry_run": serializers.BooleanField(default=False),
-            },
-        ),
+        request=ApplyGateSerializer,
         responses=inline_serializer(
             name="ApplyGateResponse",
             fields={
@@ -973,18 +959,14 @@ class ApplyGateView(APIView):
         ),
     )
     def post(self, request):
-        source_ids = request.data.get("source_gate_ids", [])
-        target_ids = request.data.get("target_file_data_ids", [])
-        recursive = request.data.get("recursive", True)
-        on_conflict = request.data.get("on_conflict", "replace")
-        dry_run = bool(request.data.get("dry_run", False))
+        payload = ApplyGateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        source_ids = payload.validated_data["source_gate_ids"]
+        target_ids = payload.validated_data["target_file_data_ids"]
+        recursive = payload.validated_data["recursive"]
+        on_conflict = payload.validated_data["on_conflict"]
+        dry_run = payload.validated_data["dry_run"]
         author = request.user
-
-        if not source_ids or not target_ids:
-            return Response(
-                {"detail": "source_gate_ids and target_file_data_ids are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         source_gates = list(
             gates_visible_to(request.user)

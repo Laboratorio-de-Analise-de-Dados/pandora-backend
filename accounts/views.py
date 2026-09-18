@@ -43,6 +43,7 @@ from .serializers import (
     UserRegisterSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
+    PasswordUpdateSerializer,
 )
 from rest_framework.response import Response
 from rest_framework import status
@@ -405,13 +406,7 @@ class PasswordUpdateView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        request=inline_serializer(
-            name="PasswordUpdateRequest",
-            fields={
-                "current_password": serializers.CharField(),
-                "new_password": serializers.CharField(),
-            },
-        ),
+        request=PasswordUpdateSerializer,
         responses=inline_serializer(
             name="DetailResponse",
             fields={"detail": serializers.CharField()},
@@ -419,15 +414,15 @@ class PasswordUpdateView(APIView):
     )
     def post(self, request):
         user = request.user
-        current = request.data.get("current_password")
-        new = request.data.get("new_password")
+        payload = PasswordUpdateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
 
-        if not user.check_password(current):
+        if not user.check_password(payload.validated_data["current_password"]):
             return Response(
                 {"detail": "Senha atual incorreta"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        user.set_password(new)
+        user.set_password(payload.validated_data["new_password"])
         user.save()
         return Response(
             {"detail": "Senha atualizada com sucesso"}, status=status.HTTP_200_OK
