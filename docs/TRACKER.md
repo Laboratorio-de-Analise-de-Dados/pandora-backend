@@ -15,7 +15,7 @@ ou alinhe com o responsável.
 |---|---|---|---|---|
 | BE-31 resiliência de processamento | `docs/prd/BE-31*`, `fcs_parser/services/*` | `docs/be-31-processing-resilience` | outra sessão | 2026-09 |
 | BE-32/ADR-0028 dedup de storage (docs) | `docs/prd`, `docs/adr` | `docs/be-32-blob-dedup` | devin | 2026-09 |
-| BE-34 tags de amostra | `fcs_parser/models.py`, `services/tags.py`, `serializers.py`, `views.py`, `urls.py`, `tests.py`, `analytics/models.py` + migrations | `feat/be-34-sample-tags` | devin | 2026-11 |
+| BE-34 tags de amostra (+ subsample/herança/setup) | `fcs_parser/models.py`, `services/tags.py`, `serializers.py`, `views.py`, `urls.py`, `tests.py`, `analytics/models.py` + migrations | `feat/be-34-sample-tags` | devin | 2026-11 |
 
 ## Concluído nesta branch
 
