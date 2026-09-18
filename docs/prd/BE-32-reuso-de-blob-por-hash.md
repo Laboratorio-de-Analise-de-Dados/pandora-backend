@@ -45,6 +45,11 @@ timing.
 4. **Ciclo de vida** — deleção física só de blob sem referências exige
    contagem de referências (ADR-0013 já prevê); acopla com a rotina de
    retenção pendente (BE-10 §4: freeze/delete com garantia de entrega).
+5. **Confirmação síncrona vs. consolidação assíncrona** — alternativa em
+   discussão (ADR-0028 alt. E): `data_sha256` (hash do segmento DATA)
+   + rotina periódica por org que detecta réplicas, avisa o responsável
+   e unifica referências em janela opt-out reversível. Pode complementar
+   ou substituir a confirmação no upload. **Aguardando revisão externa.**
 
 ## Direção provável (a confirmar no ADR)
 

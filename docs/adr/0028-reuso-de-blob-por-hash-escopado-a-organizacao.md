@@ -87,6 +87,39 @@ faria uma edição em A vazar para B. A linha também é metadado barato: o
 peso real está no ZIP (dedupado aqui) e no Parquet, que pode virar cache
 por `content_sha256` como refinamento futuro sem tocar o modelo.
 
+### E) Consolidação assíncrona por hash de dados + opt-out — **em avaliação**
+
+Alternativa/extensão proposta e ainda sob discussão (revisão externa
+pendente): além do `content_sha256` (arquivo inteiro), computar na
+extração um `data_sha256` — hash só do segmento DATA (`$BEGINDATA`–
+`$ENDDATA`), os eventos puros. Detecta deterministicamente "mesmos
+eventos, metadata diferente" (re-export, rename, keyword editada), caso
+que o hash de arquivo inteiro não pega. Rotina periódica (management
+command via cron — sem Celery) escopada à org encontra amostras
+data-iguais entre experimentos, notifica o responsável ("detectamos N
+réplicas; unificação em X dias") e, sem objeção, reponta `fd.file` para o
+blob canônico.
+
+Guardas obrigatórias se adotada: unificação só por `data_sha256`
+(`content_guid` sozinho é sinal fraco — vira proposta manual, nunca
+auto-unifica); ação reversível (blob original só sai pelo GC por
+refcount, com janela própria); notificação em digest, não por arquivo.
+
+Pode **complementar** a confirmação síncrona do upload (nível 2 da
+Decisão) ou **substituí-la** — upload nunca pergunta e toda consolidação
+vira rotina assíncrona com opt-out. Não cobre re-encode real (byte order,
+I→F, colunas reordenadas) — isso exigiria hash da matriz parseada em
+forma canônica, fase 2 se houver demanda.
+
+## Em aberto (aguardando revisão)
+
+- Confirmação síncrona no upload (nível 2) vs. consolidação assíncrona
+  com opt-out (alternativa E) vs. ambas — decisão pendente de revisão
+  com referência externa antes do aceite.
+- Se E for adotada: `data_sha256` vira coluna nova em `FileDataModel`
+  (calculada na extração junto ao `content_sha256`, mesma leitura) e
+  precisa de backfill.
+
 ## Consequências
 
 - Upload de conteúdo repetido deixa de multiplicar storage; o vínculo é
