@@ -109,10 +109,18 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.getenv("JWT_ACCESS_TOKEN_LIFETIME_MINUTES", "15"))),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.getenv("JWT_REFRESH_TOKEN_LIFETIME_DAYS", "7"))),
+    "ACCESS_TOKEN_LIFETIME": timedelta(
+        minutes=int(os.getenv("JWT_ACCESS_TOKEN_LIFETIME_MINUTES", "15"))
+    ),
+    "REFRESH_TOKEN_LIFETIME": timedelta(
+        days=int(os.getenv("JWT_REFRESH_TOKEN_LIFETIME_DAYS", "7"))
+    ),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": False,
+    # Chave dedicada para assinar JWT (ADR-0024): separada da SECRET_KEY
+    # do Django para reduzir blast radius e permitir rotação independente.
+    # Sem JWT_SIGNING_KEY no env, cai na SECRET_KEY (comportamento antigo).
+    "SIGNING_KEY": os.getenv("JWT_SIGNING_KEY") or SECRET_KEY,
     "ALGORITHM": "HS256",
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
@@ -139,10 +147,9 @@ CORS_ALLOWED_ORIGINS = [
 if CORS_ALLOWED_ORIGINS:
     CORS_ALLOW_ALL_ORIGINS = False
 else:
-    CORS_ALLOW_ALL_ORIGINS = (
-        os.environ.get("CORS_ALLOW_ALL_ORIGINS", "True").lower()
-        in ("true", "1", "t", "yes")
-    )
+    CORS_ALLOW_ALL_ORIGINS = os.environ.get(
+        "CORS_ALLOW_ALL_ORIGINS", "True"
+    ).lower() in ("true", "1", "t", "yes")
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = os.getenv("EMAIL_HOST") or "smtp.gmail.com"

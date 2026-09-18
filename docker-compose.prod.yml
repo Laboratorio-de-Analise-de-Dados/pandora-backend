@@ -2,8 +2,11 @@ services:
   db:
     image: postgres:16
     container_name: pandora_db
-    ports:
-      - 5432:5432
+    # Sem `ports:` — o banco só existe dentro da pandora_net (ADR-0024).
+    # Publicar 5432 no host expõe o Postgres pra qualquer um que alcance
+    # o IP de origem, mesmo com a Cloudflare na frente do domínio.
+    expose:
+      - "5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     environment:
@@ -19,7 +22,11 @@ services:
       - pandora_net
 
   pandora_web:
-    image: "${DOCKER_USER}/pandora-backend:${IMAGE_TAG:-latest}"
+    # Imagem local — carregada via `docker load` pelo deploy (ADR-0024).
+    # Sem registry: pull_policy never garante que o compose nunca tente
+    # baixar nada; se a tag não existir no host, o deploy falha cedo.
+    image: "pandora-backend:${IMAGE_TAG:-latest}"
+    pull_policy: never
     container_name: pandora_web
     command: bash -c "python manage.py migrate && gunicorn pandora.wsgi:application --bind 0.0.0.0:8000 --workers 2"
     expose:
@@ -31,6 +38,7 @@ services:
     environment:
       DEBUG: "${DEBUG}"
       SECRET_KEY: "${SECRET_KEY}"
+      JWT_SIGNING_KEY: "${JWT_SIGNING_KEY:-}"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-api.project-pandora.com.br,localhost,127.0.0.1}"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
       CORS_ALLOW_ALL_ORIGINS: "${CORS_ALLOW_ALL_ORIGINS:-True}"

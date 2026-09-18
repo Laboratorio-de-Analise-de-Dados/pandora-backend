@@ -14,6 +14,7 @@ ou alinhe com o responsável.
 | Feature | Área afetada | Branch | Sessão | Desde |
 |---|---|---|---|---|
 | Reverte profile juvia do compose | `docker-compose.yml`, AGENTS.md | `chore/remove-juvia-service` | devin | 2026-09 |
+| Imagem sem registry/segredos (ADR-0024) | `.github/workflows/*`, `Dockerfile`, `.dockerignore`, `docker-compose.prod.yml`, `pandora/settings.py` | `fix/security-secret-image` | devin | 2026-09 |
 
 ## Concluído nesta branch
 
