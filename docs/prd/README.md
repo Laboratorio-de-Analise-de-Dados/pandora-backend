@@ -35,6 +35,7 @@
 | [BE-31](BE-31-processamento-resiliente-advisory-lock.md) | Processamento resiliente: advisory lock, retomada de órfão, retry interno e `error_info` na API | Implementado — PR #104 |
 | [BE-32](BE-32-reuso-de-blob-por-hash.md) | Reuso de blob por `sha256` no upload (dedup de storage) + GC por refcount | Visão (ADR-0028 Proposto) |
 | [BE-33](BE-33-figuras-de-analise.md) | Figuras de análise persistidas: `AnalysisFigure` (spec + `result_cache` + âncora `result_revision`), CRUD + `recompute/`, `is_stale` por procedência | Não iniciado (consumida pelo FE-36) |
+| [BE-34](BE-34-sample-labels.md) | `SampleLabel`: labels semânticas por amostra — mecânica desacoplada (sistema + usuário), BE-26/FE-34/FE-37 viram consumidores | Não iniciado |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na
