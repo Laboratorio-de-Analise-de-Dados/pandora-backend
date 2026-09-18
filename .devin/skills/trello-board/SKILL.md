@@ -12,6 +12,22 @@ allowed-tools:
 
 Board **"Pandora — Implementações"** (id `6aad992388d05be9a96dc1c4`, shortLink `dXb21KpL`) — gerenciado via MCP server `trello`. Sem board default: sempre passar `boardId`.
 
+## Divisão Trello ↔ repos
+
+- **Trello é a fonte de verdade de status**: pipeline (coluna), prioridade
+  (etiqueta), progresso/aceitação (checklist do card) e eventos de
+  entrega (comentário ou linha na descrição, ex.: "deploy v0.4.0").
+- **Repos guardam só documentação durável**: PRD (`docs/prd/`) = o quê,
+  ADR (`docs/adr/`) = o porquê. PRD/ADR **não** é editado para mudar
+  status — se um campo de status do doc estiver desatualizado, o Trello
+  é quem manda.
+- **Todo card linka seus docs**: descrição do card aponta para
+  `https://github.com/Laboratorio-de-Analise-de-Dados/<repo>/blob/main/docs/prd|adr/<arquivo>.md`.
+  Card novo de feature = descrição com link do PRD + checklist de
+  aceitação quando fizer sentido.
+- `docs/TRACKER.md` segue existindo só para coordenar **área de arquivos
+  entre sessões paralelas** — não duplicar status de pipeline nele.
+
 ## Modelo mental
 
 - **Coluna = andamento** (onde o item está no pipeline)
@@ -79,5 +95,5 @@ link/URL muda — avisar o usuário).
 - Card só vai para 🚀 Em produção depois de **release deployada** —
   conferir com `gh release list` + `gh run list --workflow release.yml`
   (skill `release` descreve o pipeline ADR-0022).
-- Verificação feita em 2026-09: back `v0.3.0` + front `v0.6.0` deployados;
-  as 23 features Q1–Q3 + bônus estão em 🚀 Em produção.
+- Verificação feita em 2026-09: back `v0.4.0` + front `v0.7.0` deployados;
+  as 23 features Q1–Q3 + bônus + BE-34/FE-34 (tags) estão em 🚀 Em produção.
