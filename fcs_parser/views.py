@@ -807,7 +807,9 @@ class ExperimentCompensationComputeView(APIView):
         )
         require_can_edit_experiment(request.user, experiment)
 
-        payload = CompensationComputeSerializer(data=request.data)
+        payload = CompensationComputeSerializer(
+            data=request.data, context={"experiment": experiment}
+        )
         payload.is_valid(raise_exception=True)
 
         unstained, stains = experiment_controls(experiment)

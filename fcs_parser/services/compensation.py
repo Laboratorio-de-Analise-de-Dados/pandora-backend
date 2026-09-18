@@ -142,18 +142,6 @@ def applied_compensation(experiment):
     ).first()
 
 
-def compensate_dataset(dataset: pd.DataFrame, experiment):
-    """Aplica a matriz ativa do experimento, se houver.
-
-    Retorna ``(dataset, matrix_id)`` — ``matrix_id=None`` quando não há
-    compensação aplicada (a view usa na chave de cache).
-    """
-    applied = applied_compensation(experiment)
-    if applied is None:
-        return dataset, None
-    return apply_compensation(dataset, applied.channels, applied.matrix), applied.id
-
-
 # --- Controles e cálculo (ADR-0019) --------------------------------------
 
 
