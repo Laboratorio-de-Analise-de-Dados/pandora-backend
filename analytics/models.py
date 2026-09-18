@@ -298,6 +298,7 @@ class AnalysisRevision(models.Model):
     ACTION_DERIVE = "derive"
     ACTION_FORK = "fork"
     ACTION_MERGE = "merge"
+    ACTION_LABELS = "labels"
     ACTION_CHOICES = [
         (ACTION_CREATE, "Criação"),
         (ACTION_UPDATE_GEOMETRY, "Geometria"),
@@ -315,6 +316,7 @@ class AnalysisRevision(models.Model):
         (ACTION_DERIVE, "Derivação de análise"),
         (ACTION_FORK, "Criação de branch"),
         (ACTION_MERGE, "Merge de branch"),
+        (ACTION_LABELS, "Labels de amostra"),
     ]
 
     SCOPE_CHOICES = [

@@ -27,9 +27,12 @@ from fcs_parser.models import (
     ExperimentModel,
     ExperimentTypeModel,
     FileDataModel,
+    FileLabelModel,
     FileModel,
+    SampleLabelModel,
     SubsampleModel,
 )
+from fcs_parser.services.labels import suggest_labels
 from fcs_parser.services.process_experiment_file import (
     subsample_for_path,
     extract_fcs_from_zip,
@@ -2333,3 +2336,290 @@ class ExperimentTypeTestCase(TestCase):
 
         self.assertIsNone(exp.experiment_type_id)
         self.assertEqual(ExperimentTypeModel.objects.count(), 0)
+
+
+class SampleLabelsApiTestCase(TestCase):
+    """BE-34: labels semânticas por amostra — mecânica desacoplada."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp-labels", type="tipo", created_by=self.owner
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="amostras.zip", experiment=self.experiment
+        )
+        self.file_data = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="unstained_ctrl.fcs",
+            source_path="unstained_ctrl.fcs",
+            file=self.file_model,
+        )
+        self.control_label = SampleLabelModel.objects.get(system_key="fmo")
+        self.other_control = SampleLabelModel.objects.get(system_key="unstained")
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def labels_url(self):
+        return "/experiment/labels/"
+
+    def label_url(self, label):
+        return f"/experiment/labels/{label.id}/"
+
+    def file_labels_url(self):
+        return f"/experiment/file/{self.file_data.id}/labels"
+
+    def _create_user_label(self, name="lote 3", **kwargs):
+        return SampleLabelModel.objects.create(
+            name=name,
+            scope=SampleLabelModel.SCOPE_PERSONAL,
+            created_by=self.owner,
+            **kwargs,
+        )
+
+    # --- vocabulário ---
+
+    def test_system_labels_are_seeded(self):
+        keys = set(
+            SampleLabelModel.objects.filter(scope="system").values_list(
+                "system_key", flat=True
+            )
+        )
+        self.assertEqual(
+            keys,
+            {"unstained", "fmo", "isotype", "single_stain", "biological_ref", "beads"},
+        )
+
+    def test_list_returns_system_and_own_labels(self):
+        self._create_user_label()
+        SampleLabelModel.objects.create(
+            name="alheia",
+            scope=SampleLabelModel.SCOPE_PERSONAL,
+            created_by=self.stranger,
+        )
+
+        response = self.client.get(self.labels_url())
+
+        self.assertEqual(response.status_code, 200)
+        names = {label["name"] for label in response.data}
+        self.assertIn("FMO", names)
+        self.assertIn("lote 3", names)
+        self.assertNotIn("alheia", names)
+
+    def test_list_filters_by_category(self):
+        self._create_user_label()
+        response = self.client.get(self.labels_url() + "?category=control")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(all(label["category"] == "control" for label in response.data))
+
+    def test_post_creates_personal_label(self):
+        response = self.client.post(
+            self.labels_url(), {"name": "repetir"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 201)
+        label = SampleLabelModel.objects.get(name="repetir")
+        self.assertEqual(label.scope, "personal")
+        self.assertEqual(label.category, "general")
+        self.assertIsNone(label.system_key)
+        self.assertEqual(label.created_by, self.owner)
+
+    def test_post_with_org_creates_organization_label(self):
+        org = Organization.objects.create(name="Lab X", org_type="lab")
+        role = Role.objects.create(name="member")
+        Membership.objects.create(
+            user=self.owner, organization=org, role=role, status="active"
+        )
+
+        response = self.client.post(
+            self.labels_url(),
+            {"name": "controle interno", "organization": org.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        label = SampleLabelModel.objects.get(name="controle interno")
+        self.assertEqual(label.scope, "organization")
+        self.assertEqual(label.organization_id, org.id)
+
+    def test_post_with_foreign_org_is_forbidden(self):
+        org = Organization.objects.create(name="Lab X", org_type="lab")
+
+        response = self.client.post(
+            self.labels_url(),
+            {"name": "x", "organization": org.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_post_cannot_create_system_label(self):
+        response = self.client.post(
+            self.labels_url(),
+            {"name": "hack", "system_key": "hack", "category": "control"},
+            format="json",
+        )
+
+        label = SampleLabelModel.objects.get(name="hack")
+        self.assertIsNone(label.system_key)
+        self.assertEqual(label.category, "general")
+        self.assertNotEqual(label.scope, "system")
+
+    def test_post_same_name_returns_existing(self):
+        self._create_user_label(name="lote 3")
+
+        response = self.client.post(
+            self.labels_url(), {"name": "Lote  3"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(SampleLabelModel.objects.filter(scope="personal").count(), 1)
+
+    # --- edição do vocabulário ---
+
+    def test_patch_renames_own_label(self):
+        label = self._create_user_label()
+
+        response = self.client.patch(
+            self.label_url(label), {"name": "lote 4"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        label.refresh_from_db()
+        self.assertEqual(label.name, "lote 4")
+
+    def test_patch_system_label_is_forbidden(self):
+        response = self.client.patch(
+            self.label_url(self.control_label), {"name": "x"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_patch_foreign_personal_label_is_404(self):
+        alheia = SampleLabelModel.objects.create(
+            name="alheia",
+            scope=SampleLabelModel.SCOPE_PERSONAL,
+            created_by=self.stranger,
+        )
+
+        response = self.client.patch(
+            self.label_url(alheia), {"name": "x"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    # --- atribuição na amostra ---
+
+    def test_put_assigns_labels_to_file(self):
+        user_label = self._create_user_label()
+
+        response = self.client.put(
+            self.file_labels_url(),
+            {"labels": [self.control_label.id, user_label.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        assigned_ids = set(self.file_data.labels.values_list("id", flat=True))
+        self.assertEqual(assigned_ids, {self.control_label.id, user_label.id})
+        names = {label["name"] for label in response.data["labels"]}
+        self.assertEqual(names, {"FMO", "lote 3"})
+
+    def test_put_replaces_full_set(self):
+        self.client.put(
+            self.file_labels_url(),
+            {"labels": [self.control_label.id]},
+            format="json",
+        )
+        response = self.client.put(
+            self.file_labels_url(), {"labels": []}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.file_data.labels.count(), 0)
+
+    def test_second_control_label_is_rejected(self):
+        response = self.client.put(
+            self.file_labels_url(),
+            {"labels": [self.control_label.id, self.other_control.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.file_data.labels.count(), 0)
+
+    def test_invisible_label_id_is_rejected(self):
+        alheia = SampleLabelModel.objects.create(
+            name="alheia",
+            scope=SampleLabelModel.SCOPE_PERSONAL,
+            created_by=self.stranger,
+        )
+
+        response = self.client.put(
+            self.file_labels_url(), {"labels": [alheia.id]}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_put_records_revision(self):
+        self.client.put(
+            self.file_labels_url(),
+            {"labels": [self.control_label.id]},
+            format="json",
+        )
+
+        revision = AnalysisRevision.objects.filter(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_LABELS,
+            target_id=self.file_data.id,
+        ).get()
+        self.assertIn("FMO", revision.summary)
+
+    def test_stranger_gets_404_on_file_labels(self):
+        self.client.force_authenticate(self.stranger)
+
+        response = self.client.put(
+            self.file_labels_url(), {"labels": []}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    # --- listagem de amostras ---
+
+    def test_file_listing_exposes_labels_and_suggestion(self):
+        FileLabelModel.objects.create(
+            file_data=self.file_data,
+            label=self.other_control,
+            created_by=self.owner,
+        )
+
+        response = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        entry = response.data[0]
+        self.assertEqual(
+            [label["system_key"] for label in entry["labels"]], ["unstained"]
+        )
+        # file_name "unstained_ctrl.fcs" → heurística sugere unstained
+        self.assertEqual(entry["suggested_labels"], ["unstained"])
+
+    # --- heurística (função pura) ---
+
+    def test_suggest_labels_by_filename(self):
+        self.assertEqual(suggest_labels("A1_unstained.fcs"), ["unstained"])
+        self.assertEqual(suggest_labels("fmo_cd4.fcs"), ["fmo"])
+        self.assertEqual(suggest_labels("iso_type_control.fcs"), ["isotype"])
+        self.assertEqual(suggest_labels("comp_beads_PE.fcs"), ["single_stain"])
+        self.assertEqual(suggest_labels("sample_42.fcs"), [])
+        self.assertEqual(suggest_labels(None), [])
+
+    def test_suggestion_never_returns_two_controls(self):
+        # Mesmo com dois padrões casando, só uma sugestão (exclusividade).
+        self.assertEqual(len(suggest_labels("unstained_fmo_beads.fcs")), 1)

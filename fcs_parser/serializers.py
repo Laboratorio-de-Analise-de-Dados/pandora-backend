@@ -11,6 +11,7 @@ from .models import (
     ExperimentModel,
     ExperimentTypeModel,
     FileDataModel,
+    SampleLabelModel,
     SubsampleModel,
 )
 
@@ -303,12 +304,60 @@ class SubsampleSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class SampleLabelSerializer(serializers.ModelSerializer):
+    """Vocabulário de labels de amostra (BE-34).
+
+    Na leitura expõe a semântica completa; na escrita só ``name``,
+    ``color`` e ``organization`` são aceitos — ``system_key``,
+    ``category="control"`` e ``scope`` são deduzidos na view (labels de
+    usuário nunca viram de sistema por API).
+    """
+
+    class Meta:
+        model = SampleLabelModel
+        fields = [
+            "id",
+            "name",
+            "system_key",
+            "category",
+            "color",
+            "scope",
+            "organization",
+        ]
+        read_only_fields = ["id", "system_key", "category", "scope"]
+
+    def validate_name(self, value):
+        name = " ".join(value.split())
+        if not name:
+            raise serializers.ValidationError("Nome da label é obrigatório.")
+        return name
+
+    def validate_color(self, value):
+        import re
+
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", value or ""):
+            raise serializers.ValidationError("Cor inválida — use hex #RRGGBB.")
+        return value.lower()
+
+
+class FileLabelsUpdateSerializer(serializers.Serializer):
+    """Entrada de PUT /experiment/file/<id>/labels — conjunto completo."""
+
+    labels = serializers.ListField(
+        child=serializers.IntegerField(), required=True, allow_empty=True
+    )
+
+
 class ListFileDataSerializer(serializers.ModelSerializer):
 
     gates = ListGateSerializer(many=True, read_only=True)
     # BE-22: a amostra traz $SPILLOVER/$COMP nos headers? O front usa para
     # marcar o arquivo com um indicador de compensação disponível.
     has_embedded_compensation = serializers.SerializerMethodField()
+    # BE-34: chips semânticos. `labels` é o M2M (prefetch no queryset);
+    # `suggested_labels` é heurística por filename — informativa.
+    labels = SampleLabelSerializer(many=True, read_only=True)
+    suggested_labels = serializers.SerializerMethodField()
 
     class Meta:
         model = FileDataModel
@@ -321,6 +370,8 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "active",
             "deactivated_at",
             "has_embedded_compensation",
+            "labels",
+            "suggested_labels",
         ]
         read_only_fields = ["id", "source_path", "active", "deactivated_at"]
 
@@ -328,6 +379,11 @@ class ListFileDataSerializer(serializers.ModelSerializer):
         from fcs_parser.services.compensation import parse_spillover
 
         return parse_spillover(obj.headers) is not None
+
+    def get_suggested_labels(self, obj) -> list[str]:
+        from fcs_parser.services.labels import suggest_labels
+
+        return suggest_labels(obj.file_name)
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):

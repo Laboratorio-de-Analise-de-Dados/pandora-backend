@@ -297,6 +297,14 @@ class FileDataModel(models.Model):
         on_delete=models.SET_NULL,
         related_name="deactivated_files",
     )
+    # BE-34: labels semânticas por amostra (chips). Tipos de controle são
+    # labels de sistema; labels de usuário são vocabulário por escopo.
+    labels = models.ManyToManyField(
+        "SampleLabelModel",
+        through="FileLabelModel",
+        related_name="labeled_files",
+        blank=True,
+    )
 
     class Meta:
         db_table = "file_data"
@@ -416,3 +424,127 @@ class FileDataModel(models.Model):
                 self.pk,
             )
             return None
+
+
+class SampleLabelModel(models.Model):
+    """Vocabulário de labels de amostra (BE-34).
+
+    Labels de ``scope="system"`` são seeded por migration e carregam a
+    semântica que o código consome — o código referencia ``system_key``,
+    nunca ``name``. Labels de usuário são vocabulário extensível por
+    escopo (organização ou pessoal), mesmo padrão do BE-25/28: texto
+    livre fragmenta, enum congela.
+
+    ``category="control"`` tem regra de exclusividade por amostra — uma
+    amostra não é FMO e unstained ao mesmo tempo. A regra não cabe em
+    constraint SQL (a categoria mora na label), então toda escrita passa
+    por ``fcs_parser.services.labels.set_file_labels``.
+    """
+
+    SCOPE_SYSTEM = "system"
+    SCOPE_ORGANIZATION = "organization"
+    SCOPE_PERSONAL = "personal"
+    SCOPE_CHOICES = [
+        (SCOPE_SYSTEM, "Sistema"),
+        (SCOPE_ORGANIZATION, "Organização"),
+        (SCOPE_PERSONAL, "Pessoal"),
+    ]
+
+    CATEGORY_CONTROL = "control"
+    CATEGORY_GENERAL = "general"
+    CATEGORY_CHOICES = [
+        (CATEGORY_CONTROL, "Controle"),
+        (CATEGORY_GENERAL, "Geral"),
+    ]
+
+    id = models.BigAutoField(primary_key=True)
+    # `name` é o casing canônico; o dedup é por `name_normalized` dentro
+    # do escopo (ver `scope_key`).
+    name = models.CharField(max_length=100)
+    name_normalized = models.CharField(max_length=100)
+    # Chave estável referenciada pelo código (ex.: "fmo", "unstained").
+    # Só labels de sistema têm — null em labels de usuário.
+    system_key = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    category = models.CharField(
+        max_length=20, choices=CATEGORY_CHOICES, default=CATEGORY_GENERAL
+    )
+    color = models.CharField(max_length=7, default="#6b7280")
+    scope = models.CharField(max_length=20, choices=SCOPE_CHOICES)
+    organization = models.ForeignKey(
+        Organization,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="sample_labels",
+    )
+    created_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_sample_labels",
+    )
+    # Chave de unicidade por escopo, preenchida no save: "system",
+    # "org:<id>" ou "user:<id>". Resolve o problema de NULLs distintos
+    # no UniqueConstraint (Postgres não deduplica NULL).
+    scope_key = models.CharField(max_length=64)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "sample_labels"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scope_key", "name_normalized"],
+                name="unique_label_name_per_scope",
+            )
+        ]
+
+    @staticmethod
+    def normalize(name: str) -> str:
+        return " ".join(name.split()).lower()
+
+    def save(self, *args, **kwargs):
+        self.name_normalized = self.normalize(self.name)
+        if self.scope == self.SCOPE_SYSTEM:
+            self.scope_key = "system"
+        elif self.scope == self.SCOPE_ORGANIZATION:
+            self.scope_key = f"org:{self.organization_id}"
+        else:
+            self.scope_key = f"user:{self.created_by_id}"
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class FileLabelModel(models.Model):
+    """Vínculo amostra ↔ label (through explícito de `FileData.labels`).
+
+    Escrita exclusiva via ``set_file_labels`` — é lá que a regra "uma
+    label de controle por amostra" é validada.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    file_data = models.ForeignKey(
+        FileDataModel, on_delete=models.CASCADE, related_name="file_labels"
+    )
+    label = models.ForeignKey(
+        SampleLabelModel, on_delete=models.CASCADE, related_name="file_links"
+    )
+    created_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_file_labels",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "file_labels"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["file_data", "label"], name="unique_label_per_file"
+            )
+        ]

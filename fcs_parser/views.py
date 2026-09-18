@@ -7,7 +7,7 @@ import zipfile
 
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import (
     Case,
     CharField,
@@ -48,7 +48,9 @@ from fcs_parser.models import (
     ExperimentModel,
     ExperimentTypeModel,
     FileDataModel,
+    FileLabelModel,
     FileModel,
+    SampleLabelModel,
     SubsampleModel,
 )
 from fcs_parser.permissions import (
@@ -75,9 +77,11 @@ from fcs_parser.serializers import (
     ExperimentFileInitSerializer,
     ExperimentInitSerializer,
     ExperimentTypeSerializer,
+    FileLabelsUpdateSerializer,
     ListExperimentSerializer,
     ListFileDataSerializer,
     ParamListDataSerializer,
+    SampleLabelSerializer,
     SubsampleSerializer,
     UpdateExperimentSerializer,
 )
@@ -1258,7 +1262,8 @@ class GetExperimentFiles(generics.ListAPIView):
         )
         if self.request.query_params.get("include_inactive") != "true":
             queryset = queryset.filter(active=True)
-        return queryset
+        # BE-34: labels serializadas por amostra — prefetch evita N+1.
+        return queryset.prefetch_related("labels")
 
     @extend_schema(
         parameters=[
@@ -2188,3 +2193,153 @@ class ExperimentDownloadView(APIView):
         candidate = f"{base}_{i}{ext}"
         used.add(candidate)
         return candidate
+
+
+class LabelListCreateView(generics.ListCreateAPIView):
+    """GET/POST /experiment/labels/ — vocabulário de labels (BE-34).
+
+    GET lista o vocabulário visível: labels de sistema + das
+    organizações do usuário + pessoais dele. POST cria label de
+    usuário: com ``organization`` → escopo organização (exige
+    membership ativa), sem → pessoal. ``system_key`` e
+    ``category="control"`` são só de sistema — a API nunca cria.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = SampleLabelSerializer
+
+    def get_queryset(self):
+        from fcs_parser.services.labels import labels_visible_to
+
+        queryset = labels_visible_to(self.request.user)
+        category = self.request.query_params.get("category")
+        if category:
+            queryset = queryset.filter(category=category)
+        return queryset.order_by("category", Lower("name"))
+
+    def create(self, request, *args, **kwargs):
+        from fcs_parser.services.labels import labels_visible_to
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        organization = serializer.validated_data.get("organization")
+        scope = SampleLabelModel.SCOPE_PERSONAL
+        if organization is not None:
+            if not is_org_member(request.user, organization.id):
+                raise PermissionDenied("Você não é membro ativo deste laboratório.")
+            scope = SampleLabelModel.SCOPE_ORGANIZATION
+
+        # Dedup por escopo: nome normalizado já existe → devolve a
+        # existente (criar label é idempotente para o mesmo vocabulário).
+        name_normalized = SampleLabelModel.normalize(serializer.validated_data["name"])
+        existing = labels_visible_to(request.user).filter(
+            name_normalized=name_normalized
+        )
+        existing = (
+            existing.filter(organization=organization)
+            if organization
+            else existing.filter(created_by=request.user)
+        ).first()
+        if existing:
+            return Response(
+                SampleLabelSerializer(existing).data,
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            with transaction.atomic():
+                label = serializer.save(
+                    scope=scope,
+                    organization=organization,
+                    created_by=request.user,
+                    system_key=None,
+                    category=SampleLabelModel.CATEGORY_GENERAL,
+                )
+        except IntegrityError:
+            # Race entre a checagem e o insert: a existente venceu.
+            raise serializers.ValidationError(
+                {"name": "Já existe uma label com este nome neste escopo."}
+            )
+        return Response(
+            SampleLabelSerializer(label).data, status=status.HTTP_201_CREATED
+        )
+
+
+class LabelDetailView(generics.RetrieveUpdateAPIView):
+    """PATCH /experiment/labels/<id>/ — renomeia/recolore label de usuário.
+
+    Labels de sistema são imutáveis por API (só migration). A label
+    inativa some do vocabulário mas mantém vínculos (A API nunca
+    deleta) — por isso não há DELETE aqui: inativação é via PATCH
+    ``active=false`` quando houver caso de uso.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = SampleLabelSerializer
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_queryset(self):
+        from fcs_parser.services.labels import labels_visible_to
+
+        return labels_visible_to(self.request.user)
+
+    def perform_update(self, serializer):
+        from fcs_parser.services.labels import can_edit_label
+
+        if not can_edit_label(self.request.user, serializer.instance):
+            raise PermissionDenied(
+                "Labels de sistema não podem ser alteradas pela API."
+            )
+        serializer.save()
+
+
+class FileLabelsView(APIView):
+    """PUT /experiment/file/<file_id>/labels — define as labels da amostra.
+
+    Substituição completa do conjunto (payload = ids). A exclusividade
+    de controle e a visibilidade são garantidas por ``set_file_labels``,
+    o único caminho de escrita (BE-34).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=FileLabelsUpdateSerializer,
+        responses=ListFileDataSerializer,
+    )
+    def put(self, request, file_id):
+        from fcs_parser.services.labels import set_file_labels
+
+        file_data = get_object_or_404(
+            file_data_visible_to(request.user).select_related("experiment"),
+            id=file_id,
+        )
+        require_can_edit_file_data(request.user, file_data)
+
+        serializer = FileLabelsUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _invalid(serializer)
+
+        before = sorted(file_data.labels.values_list("id", flat=True))
+        labels = set_file_labels(
+            file_data, serializer.validated_data["labels"], request.user
+        )
+        after = sorted(label.id for label in labels)
+        if before != after:
+            names = ", ".join(label.name for label in labels) or "—"
+            record_revision(
+                experiment=file_data.experiment,
+                action=AnalysisRevision.ACTION_LABELS,
+                target_type=AnalysisRevision.TARGET_FILE,
+                target_id=file_data.id,
+                user=request.user,
+                payload_before={"targets": {str(file_data.id): {"labels": before}}},
+                payload_after={"targets": {str(file_data.id): {"labels": after}}},
+                affected_ids=[file_data.id],
+                summary=(f'etiquetou a amostra "{file_data.file_name}": {names}'),
+            )
+
+        return Response(
+            ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
+        )
