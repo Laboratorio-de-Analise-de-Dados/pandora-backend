@@ -2,7 +2,7 @@
 
 **Repo:** pandora-backend · **Tipo:** feature · **Base:** `main`
 **Branch sugerida:** `feat/sample-tags`
-**Status:** não iniciado.
+**Status:** em implementação (PR #114).
 **Relacionado:** BE-26 (identificação de controles — vira consumidor),
 BE-25/28 (mesmo padrão de vocabulário controlado), FE-34/35 (UI de
 atribuição) e FE-37 (templates — consome tags de controle na revisão).
@@ -37,6 +37,11 @@ FE-34/35 chips na árvore/mapa de placa, FE-37 revisão assistida por
 controle, Juvia). O `control_type`/`control_channel` do subsample
 **não migra** neste PRD — a compensação continua lendo o campo atual;
 a convergência é decisão do BE-26 quando ele rodar.
+
+A mecânica inclui um ponto de apoio no **subsample** (§4): o grupo já
+declara papel de controle via `control_type` (grupo homogêneo, BE-22)
+e pode carregar tags de contexto — a amostra **herda** o que o grupo
+diz, com a tag explícita dela sempre vencendo.
 
 ## Escopo
 
@@ -94,17 +99,56 @@ class FileTagModel:  # through explícito
   `comp`, `beads`) expõe `suggested_tags` na listagem — informativo,
   nunca aplicado. Função pura em `fcs_parser/services/`, testável.
 
+### 4. Tags em subsample + herança virtual
+
+O subsample é o ponto de apoio de contexto do grupo — é onde o
+laboratório pensa ("esse diretório da placa são os controles"):
+
+- `SubsampleModel.tags` — M2M de **contexto** (`category="general"`
+  apenas; papel de controle do grupo continua sendo `control_type` —
+  grupo homogêneo, réplicas do mesmo papel no cálculo de compensação).
+- `control_type` → tag de sistema homônima (`unstained`→`unstained`,
+  `single_stain`→`single_stain`): marcar o tipo do grupo já etiqueta
+  semanticamente os membros.
+- **Herança virtual** — nada é copiado para a amostra: a listagem
+  expõe `inherited_tags` calculado na leitura
+  (`control_type`→tag + tags do grupo). Tirar a tag do grupo ou mover
+  a amostra de subsample já resolve; não há estado a sincronizar nem
+  coluna de proveniência.
+- **Precedência**: a tag explícita da amostra sempre vence — se ela
+  tem tag de controle própria, o controle herdado não entra (override
+  por arquivo: "esse arquivo do grupo na verdade é FMO"). Ids já
+  próprios não duplicam.
+- Escrita no grupo: `tag_ids` no payload de create/PATCH de subsample
+  (mesma validação de visibilidade; tag de `category="control"` → 400
+  com mensagem apontando `control_type`). Mudança registra
+  `AnalysisRevision` com before/after.
+- Na UI (FE-34/35), chip herdado renderiza diferente do próprio
+  (ex.: contornado + tooltip "herdada de <subsample>").
+
+### 5. Setup inicial do experimento
+
+- `POST /experiment/` aceita `subsamples: [{name, control_type?,
+  control_channel?}]` opcional — o wizard cria o grupo de controles já
+  tipado na criação, antes do upload. Sem validação de canal aqui
+  (ainda não há amostras); o canal é conferido contra os headers na
+  primeira edição do subsample.
+
 ## Arquivos a tocar
 
 - `fcs_parser/models.py` + migration — `SampleTagModel`,
-  `FileTagModel`, seeds de sistema
+  `FileTagModel`, `SubsampleModel.tags`, seeds de sistema
 - `fcs_parser/serializers.py` — vocabulário, `PUT` de tags,
-  `tags`/`suggested_tags` na listagem (ADR-0009)
-- `fcs_parser/views.py` + `urls.py` — endpoints
+  `tag_ids` em `SubsampleSerializer`, `subsamples` em
+  `ExperimentCreateSerializer`, `tags`/`inherited_tags`/
+  `suggested_tags` na listagem (ADR-0009)
+- `fcs_parser/views.py` + `urls.py` — endpoints; create de
+  experimento materializa subsamples do setup
 - `fcs_parser/permissions.py` — edição via `can_edit_experiment`;
   vocabulário de usuário: dono/org
-- `fcs_parser/services/` — `set_file_tags` (único escritor),
-  heurística de sugestão
+- `fcs_parser/services/` — `set_file_tags`/`set_subsample_tags`
+  (únicos escritores), `resolve_tags` (validador compartilhado),
+  `inherited_tags` (herança virtual), heurística de sugestão
 
 ## Critérios de aceite
 
@@ -113,7 +157,13 @@ class FileTagModel:  # through explícito
 - [ ] `PUT` define conjunto de tags; segunda tag de controle → 400
 - [ ] Tag de usuário criada por usuário sem org → `scope=personal`,
       não vaza para outras contas
-- [ ] Listagem expõe `tags` + `suggested_tags` sem N+1
+- [ ] Listagem expõe `tags` + `inherited_tags` + `suggested_tags`
+      sem N+1
+- [ ] Subsample com `control_type` → membros herdam a tag de sistema;
+      tag de controle explícita da amostra vence a herdada
+- [ ] Tag de `category="control"` em `tag_ids` de subsample → 400
+      apontando `control_type`
+- [ ] `POST /experiment/` com `subsamples` cria os grupos no setup
 - [ ] Nenhum comportamento existente muda: `control_type` do subsample
       segue intacto e consumido só pela compensação
 - [ ] `python manage.py test` verde; `makemigrations --check` limpo
@@ -127,7 +177,5 @@ class FileTagModel:  # through explícito
   ou se o campo permanece só para comp)
 - Propagação de tag por `content_guid` entre experimentos — ideia
   registrada; abre quando um consumidor pedir
-- Tag no nível de subsample/grupo — o alvo deste PRD é `file_data`;
-  tag de grupo entra se um caso real pedir
 - Vocabulário global compartilhado entre organizações (tags de
   usuário ficam por escopo; promover a "system" é via migration)
