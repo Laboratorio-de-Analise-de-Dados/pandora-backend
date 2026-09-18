@@ -1,16 +1,13 @@
 # Documentação do Pandora (backend)
 
-- `prd/` — o **que** cada entrega faz: escopo, contrato de API, arquivos tocados e
-  critérios de aceite. Um PRD por MR.
-- `adr/` — **por que** o sistema é assim: cada ADR registra uma decisão
-  arquitetural, as alternativas que foram descartadas e as consequências
-  (inclusive as ruins) de ter escolhido esse caminho.
-- `server_config.md` — configuração do servidor de produção.
-
-Os PRDs e ADRs do front vivem em `pandora-front/docs/`, com numeração própria e
-independente desta. Decisão de produto/domínio (o que o sistema garante) fica
-aqui; decisão de UI/arquitetura de front fica lá, com link cruzado por nome
-(`pandora-backend/docs/adr/0006`) — nunca duplicada, para não divergirem.
+- `adr/` — **por que** o sistema é assim: ADRs de domínio/convenção ficam aqui,
+  junto do código que governam.
+- **PRDs e ADRs sensíveis** (segurança, infra, auth, storage de dado de
+  paciente) vivem no repo privado
+  [`pandora-docs`](https://github.com/Laboratorio-de-Analise-de-Dados/pandora-docs)
+  — clone como repo irmão: `../pandora-docs/prd/` (PRDs `BE-*`),
+  `../pandora-docs/adr/backend/` (ADRs sensíveis), `../pandora-docs/ops/`
+  (runbooks de servidor).
 
 ## Convenções
 

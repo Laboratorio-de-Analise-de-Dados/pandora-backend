@@ -99,3 +99,10 @@ Alternativa: o usuário aprova na UI (Actions → run → Review deployments).
 - Se a release muda contrato de API (endpoint novo/removido), a release do
   **backend vai antes**; avisar o usuário para rodar a release do front
   depois (a skill equivalente existe em `pandora-front/.devin/skills/`).
+
+## Passo 7 — atualizar o board
+
+Deploy verificado = os cards das features que entraram na release vão
+para 🚀 Em produção, com comentário citando a tag. O que está mergeado
+mas ainda não saiu em release permanece em 📦 Entregue. Convenções do
+board na skill `/trello-board`.

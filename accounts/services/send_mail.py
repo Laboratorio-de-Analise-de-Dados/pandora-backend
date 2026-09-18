@@ -24,13 +24,18 @@ def create_invite(email: str, organization: Organization, role: Role) -> Invite:
 
 
 def send_invite_email(invite: Invite) -> bool:
+    # Sem token no link (decisão de segurança): o aceite acontece no sino
+    # depois do login. A URL base vai no corpo senão o convidado não sabe
+    # onde fica o app.
+    app_url = settings.FRONTEND_URL.rstrip("/")
     subject = (
         f"Você foi convidado para entrar na organização {invite.organization.name}"
     )
     text_content = (
         f"Você foi convidado para participar da organização {invite.organization.name}\n"
         f"como {invite.role.name}.\n\n"
-        f"Para aceitar, acesse o Pandora com este email e confirme o convite na página inicial.\n"
+        f"Para aceitar, acesse {app_url} com este email e confirme o convite "
+        f"no sino de notificações.\n"
         f"Se ainda não tem conta, cadastre-se com este mesmo email."
     )
     html_content = f"""
@@ -39,7 +44,12 @@ def send_invite_email(invite: Invite) -> bool:
             <h2 style="color: #2c3e50;">Você foi convidado para <strong>{invite.organization.name}</strong></h2>
             <p>Você foi convidado para participar da organização <strong>{invite.organization.name}</strong>
             como <strong>{invite.role.name}</strong>.</p>
-            <p>Para aceitar o convite, acesse o Pandora com este email e confirme o convite na página inicial.</p>
+            <p>Para aceitar o convite, acesse o Pandora com este email e confirme o convite no sino de notificações.</p>
+            <p style="margin:20px 0;">
+                <a href="{app_url}" style="background-color:#4CAF50; color:white; padding:10px 15px; text-decoration:none; border-radius:5px;">
+                    Acessar o Pandora
+                </a>
+            </p>
             <p>Se ainda não tem conta, cadastre-se usando este mesmo email.</p>
         </body>
         </html>

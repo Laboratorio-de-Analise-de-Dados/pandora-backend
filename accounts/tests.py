@@ -2,6 +2,7 @@ from datetime import timedelta
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
+from django.core import mail
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -24,6 +25,7 @@ from accounts.services.oauth import (
     resolve_microsoft_email,
     unique_username_for_email,
 )
+from accounts.services.send_mail import send_invite_email
 
 
 class InviteAcceptTests(APITestCase):
@@ -220,6 +222,35 @@ class InviteAcceptTests(APITestCase):
                 user=other, organization=self.organization
             ).exists()
         )
+
+
+@override_settings(
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    FRONTEND_URL="https://app.example.com",
+    DEFAULT_FROM_EMAIL="no-reply@example.com",
+)
+class InviteEmailTests(TestCase):
+    """Convidado precisa saber onde acessar: o e-mail aponta a URL base do
+    app, mas nunca carrega o token (o aceite é pelo sino, após login)."""
+
+    def test_invite_email_links_to_app_without_token(self):
+        roles = get_or_create_default_roles()
+        organization = Organization.objects.create(name="Lab A", org_type="lab")
+        invite = Invite.objects.create(
+            email="guest@example.com",
+            organization=organization,
+            role=roles[Role.MEMBER],
+            token="token-secreto",
+            status="pending",
+        )
+
+        self.assertTrue(send_invite_email(invite))
+
+        self.assertEqual(len(mail.outbox), 1)
+        message = mail.outbox[0]
+        body = message.body + "".join(content for content, _ in message.alternatives)
+        self.assertIn("https://app.example.com", body)
+        self.assertNotIn("token-secreto", body)
 
 
 class ResolveMicrosoftEmailTests(SimpleTestCase):

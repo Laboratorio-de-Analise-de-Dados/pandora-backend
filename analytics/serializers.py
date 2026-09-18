@@ -444,7 +444,10 @@ class CompensationComputeSerializer(serializers.Serializer):
     """Override explícito do mapeamento canal→controle (ADR-0019).
 
     Sem payload, o compute deriva dos subsamples marcados; quando
-    ``controls``/``negative`` vêm, substituem a descoberta.
+    ``controls``/``negative`` vêm, substituem a descoberta. As chaves de
+    ``controls`` precisam ser canais fluorescentes do experimento — a
+    mesma regra que vale para ``control_channel`` de subsample, senão a
+    matriz sai com uma coluna que nunca acha evento.
     """
 
     name = serializers.CharField(required=False, allow_blank=True, max_length=256)
@@ -455,3 +458,30 @@ class CompensationComputeSerializer(serializers.Serializer):
         child=serializers.ListField(child=serializers.IntegerField(min_value=1)),
         required=False,
     )
+
+    def validate(self, attrs):
+        controls = attrs.get("controls")
+        if not controls:
+            return attrs
+        experiment = self.context.get("experiment")
+        if experiment is None:
+            return attrs
+        from fcs_parser.services.compensation import fluorescent_channels
+        from utils.density import normalize_column_name
+
+        valid = {normalize_column_name(c) for c in fluorescent_channels(experiment)}
+        invalid = [
+            channel
+            for channel in controls
+            if normalize_column_name(channel) not in valid
+        ]
+        if invalid:
+            raise serializers.ValidationError(
+                {
+                    "controls": (
+                        "Canais não fluorescentes do experimento: "
+                        + ", ".join(sorted(invalid))
+                    )
+                }
+            )
+        return attrs

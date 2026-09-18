@@ -11,6 +11,7 @@ from .models import (
     ExperimentModel,
     ExperimentTypeModel,
     FileDataModel,
+    SampleTagModel,
     SubsampleModel,
 )
 
@@ -78,17 +79,46 @@ class ExperimentTypeSerializer(serializers.ModelSerializer):
         return name
 
 
+class SubsampleSetupSerializer(serializers.Serializer):
+    """Spec de subsample no setup inicial do experimento (BE-34).
+
+    Sem validação de canal aqui: na criação do experimento ainda não
+    há amostras — o canal é conferido contra os headers na primeira
+    edição do subsample.
+    """
+
+    name = serializers.CharField()
+    control_type = serializers.ChoiceField(
+        choices=SubsampleModel.CONTROL_TYPE_CHOICES,
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    control_channel = serializers.CharField(
+        required=False, allow_blank=True, default=""
+    )
+
+    def validate_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError("Nome do subsample é obrigatório.")
+        return name
+
+
 class ExperimentCreateSerializer(serializers.Serializer):
     """Entrada de POST /experiment/ — cria experimento sem arquivo (BE-24).
 
     O experimento nasce ``status="new"``/``file_status="pending"`` (defaults
     do modelo); as amostras chegam depois via ``/experiment/<id>/files/init``.
+    ``subsamples`` (BE-34) permite já criar os grupos no setup — ex.: o
+    subsample de controles antes do upload da placa.
     """
 
     title = serializers.CharField()
     type = serializers.CharField()
     description = serializers.CharField(required=False, allow_blank=True, default="")
     organizationId = serializers.IntegerField(required=False, allow_null=True)
+    subsamples = SubsampleSetupSerializer(many=True, required=False)
 
     def validate_title(self, value):
         title = value.strip().replace(" ", "_")
@@ -212,8 +242,51 @@ class ExperimentSerializer(serializers.ModelSerializer):
         return super().validate(data)
 
 
+class SampleTagSerializer(serializers.ModelSerializer):
+    """Vocabulário de tags de amostra (BE-34).
+
+    Na leitura expõe a semântica completa; na escrita só ``name``,
+    ``color`` e ``organization`` são aceitos — ``system_key``,
+    ``category="control"`` e ``scope`` são deduzidos na view (tags de
+    usuário nunca viram de sistema por API).
+    """
+
+    class Meta:
+        model = SampleTagModel
+        fields = [
+            "id",
+            "name",
+            "system_key",
+            "category",
+            "color",
+            "scope",
+            "organization",
+        ]
+        read_only_fields = ["id", "system_key", "category", "scope"]
+
+    def validate_name(self, value):
+        name = " ".join(value.split())
+        if not name:
+            raise serializers.ValidationError("Nome da tag é obrigatório.")
+        return name
+
+    def validate_color(self, value):
+        import re
+
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", value or ""):
+            raise serializers.ValidationError("Cor inválida — use hex #RRGGBB.")
+        return value.lower()
+
+
 class SubsampleSerializer(serializers.ModelSerializer):
     files_count = serializers.SerializerMethodField()
+    # BE-34: tags de contexto do grupo (leitura = objetos; escrita = ids
+    # em ``tag_ids``). Só ``category="general"`` — controle do grupo é
+    # ``control_type``, validado em ``set_subsample_tags``.
+    tags = SampleTagSerializer(many=True, read_only=True)
+    tag_ids = serializers.ListField(
+        child=serializers.IntegerField(), write_only=True, required=False
+    )
 
     class Meta:
         model = SubsampleModel
@@ -226,6 +299,8 @@ class SubsampleSerializer(serializers.ModelSerializer):
             "files_count",
             "control_type",
             "control_channel",
+            "tags",
+            "tag_ids",
         ]
         read_only_fields = ["id", "source_path", "active", "created_at"]
 
@@ -237,6 +312,32 @@ class SubsampleSerializer(serializers.ModelSerializer):
         if not name:
             raise serializers.ValidationError("Nome do subsample é obrigatório.")
         return name
+
+    def validate_tag_ids(self, value):
+        from fcs_parser.services.tags import resolve_tags
+
+        # Resolve já validando visibilidade/exclusividade; a lista
+        # resolvida vai para ``create``/``update`` via contexto.
+        self.context["resolved_tags"] = resolve_tags(
+            value, self.context["request"].user, allow_control=False
+        )
+        return value
+
+    def create(self, validated_data):
+        resolved = self.context.pop("resolved_tags", None)
+        validated_data.pop("tag_ids", None)
+        instance = super().create(validated_data)
+        if resolved is not None:
+            instance.tags.set(resolved)
+        return instance
+
+    def update(self, instance, validated_data):
+        resolved = self.context.pop("resolved_tags", None)
+        validated_data.pop("tag_ids", None)
+        instance = super().update(instance, validated_data)
+        if resolved is not None:
+            instance.tags.set(resolved)
+        return instance
 
     def validate(self, attrs):
         """Validação de controle de compensação (BE-22, ADR-0019)."""
@@ -303,12 +404,26 @@ class SubsampleSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class FileTagsUpdateSerializer(serializers.Serializer):
+    """Entrada de PUT /experiment/file/<id>/tags — conjunto completo."""
+
+    tags = serializers.ListField(
+        child=serializers.IntegerField(), required=True, allow_empty=True
+    )
+
+
 class ListFileDataSerializer(serializers.ModelSerializer):
 
     gates = ListGateSerializer(many=True, read_only=True)
     # BE-22: a amostra traz $SPILLOVER/$COMP nos headers? O front usa para
     # marcar o arquivo com um indicador de compensação disponível.
     has_embedded_compensation = serializers.SerializerMethodField()
+    # BE-34: chips semânticos. `tags` é o M2M (prefetch no queryset);
+    # `inherited_tags` vem do subsample (herança virtual — tag explícita
+    # vence a herdada); `suggested_tags` é heurística por filename.
+    tags = SampleTagSerializer(many=True, read_only=True)
+    inherited_tags = serializers.SerializerMethodField()
+    suggested_tags = serializers.SerializerMethodField()
 
     class Meta:
         model = FileDataModel
@@ -321,6 +436,9 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "active",
             "deactivated_at",
             "has_embedded_compensation",
+            "tags",
+            "inherited_tags",
+            "suggested_tags",
         ]
         read_only_fields = ["id", "source_path", "active", "deactivated_at"]
 
@@ -328,6 +446,18 @@ class ListFileDataSerializer(serializers.ModelSerializer):
         from fcs_parser.services.compensation import parse_spillover
 
         return parse_spillover(obj.headers) is not None
+
+    def get_inherited_tags(self, obj) -> list:
+        from fcs_parser.services.tags import inherited_tags
+
+        return SampleTagSerializer(
+            inherited_tags(obj), many=True, context=self.context
+        ).data
+
+    def get_suggested_tags(self, obj) -> list[str]:
+        from fcs_parser.services.tags import suggest_tags
+
+        return suggest_tags(obj.file_name)
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):
