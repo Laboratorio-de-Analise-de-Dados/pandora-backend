@@ -32,8 +32,9 @@
 | [BE-28](BE-28-tipo-de-experimento-vocabulario.md) | Tipo de experimento como vocabulário controlado (admin ou dono do experimento; `/experiment/types/` + dedup normalizado) | Implementado em `feat/experiment-type` (ADR-0023) |
 | [BE-29](BE-29-vinculacao-identity-providers.md) | Conta central vinculável a N IdPs (`SocialAccount`), log de auth (`AuthEvent`), aviso de vínculo no login, unlink com regra do último acesso | Implementado — PR #95 (ADR-0025). Google: código pronto, ativação adiada para fase 2 (pré-v1) |
 | [BE-30](BE-30-merge-de-contas.md) | Merge de contas duplicadas: migra memberships, autoria e vínculos; conta absorvida inativa | Implementado em `feat/account-merge` |
-| [BE-31](BE-31-processamento-resiliente-advisory-lock.md) | Processamento resiliente: advisory lock, retomada de órfão, retry interno e `error_info` na API | Não iniciado (ADR-0027 Proposto; front FE-33) |
+| [BE-31](BE-31-processamento-resiliente-advisory-lock.md) | Processamento resiliente: advisory lock, retomada de órfão, retry interno e `error_info` na API | Implementado — PR #104 |
 | [BE-32](BE-32-reuso-de-blob-por-hash.md) | Reuso de blob por `sha256` no upload (dedup de storage) + GC por refcount | Visão (ADR-0028 Proposto) |
+| [BE-33](BE-33-figuras-de-analise.md) | Figuras de análise persistidas: `AnalysisFigure` (spec + `result_cache` + âncora `result_revision`), CRUD + `recompute/`, `is_stale` por procedência | Não iniciado (consumida pelo FE-36) |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na
