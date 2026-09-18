@@ -27,9 +27,12 @@ from fcs_parser.models import (
     ExperimentModel,
     ExperimentTypeModel,
     FileDataModel,
+    FileTagModel,
     FileModel,
+    SampleTagModel,
     SubsampleModel,
 )
+from fcs_parser.services.tags import suggest_tags
 from fcs_parser.services.process_experiment_file import (
     subsample_for_path,
     extract_fcs_from_zip,
@@ -2333,3 +2336,384 @@ class ExperimentTypeTestCase(TestCase):
 
         self.assertIsNone(exp.experiment_type_id)
         self.assertEqual(ExperimentTypeModel.objects.count(), 0)
+
+
+class SampleTagsApiTestCase(TestCase):
+    """BE-34: tags semânticas por amostra — mecânica desacoplada."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp-tags", type="tipo", created_by=self.owner
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="amostras.zip", experiment=self.experiment
+        )
+        self.file_data = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="unstained_ctrl.fcs",
+            source_path="unstained_ctrl.fcs",
+            file=self.file_model,
+        )
+        self.control_tag = SampleTagModel.objects.get(system_key="fmo")
+        self.other_control = SampleTagModel.objects.get(system_key="unstained")
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def tags_url(self):
+        return "/experiment/tags/"
+
+    def tag_url(self, tag):
+        return f"/experiment/tags/{tag.id}/"
+
+    def file_tags_url(self):
+        return f"/experiment/file/{self.file_data.id}/tags"
+
+    def _create_user_tag(self, name="lote 3", **kwargs):
+        return SampleTagModel.objects.create(
+            name=name,
+            scope=SampleTagModel.SCOPE_PERSONAL,
+            created_by=self.owner,
+            **kwargs,
+        )
+
+    # --- vocabulário ---
+
+    def test_system_tags_are_seeded(self):
+        keys = set(
+            SampleTagModel.objects.filter(scope="system").values_list(
+                "system_key", flat=True
+            )
+        )
+        self.assertEqual(
+            keys,
+            {"unstained", "fmo", "isotype", "single_stain", "biological_ref", "beads"},
+        )
+
+    def test_list_returns_system_and_own_tags(self):
+        self._create_user_tag()
+        SampleTagModel.objects.create(
+            name="alheia",
+            scope=SampleTagModel.SCOPE_PERSONAL,
+            created_by=self.stranger,
+        )
+
+        response = self.client.get(self.tags_url())
+
+        self.assertEqual(response.status_code, 200)
+        names = {tag["name"] for tag in response.data}
+        self.assertIn("FMO", names)
+        self.assertIn("lote 3", names)
+        self.assertNotIn("alheia", names)
+
+    def test_list_filters_by_category(self):
+        self._create_user_tag()
+        response = self.client.get(self.tags_url() + "?category=control")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(all(tag["category"] == "control" for tag in response.data))
+
+    def test_post_creates_personal_tag(self):
+        response = self.client.post(self.tags_url(), {"name": "repetir"}, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        tag = SampleTagModel.objects.get(name="repetir")
+        self.assertEqual(tag.scope, "personal")
+        self.assertEqual(tag.category, "general")
+        self.assertIsNone(tag.system_key)
+        self.assertEqual(tag.created_by, self.owner)
+
+    def test_post_with_org_creates_organization_tag(self):
+        org = Organization.objects.create(name="Lab X", org_type="lab")
+        role = Role.objects.create(name="member")
+        Membership.objects.create(
+            user=self.owner, organization=org, role=role, status="active"
+        )
+
+        response = self.client.post(
+            self.tags_url(),
+            {"name": "controle interno", "organization": org.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        tag = SampleTagModel.objects.get(name="controle interno")
+        self.assertEqual(tag.scope, "organization")
+        self.assertEqual(tag.organization_id, org.id)
+
+    def test_post_with_foreign_org_is_forbidden(self):
+        org = Organization.objects.create(name="Lab X", org_type="lab")
+
+        response = self.client.post(
+            self.tags_url(),
+            {"name": "x", "organization": org.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_post_cannot_create_system_tag(self):
+        response = self.client.post(
+            self.tags_url(),
+            {"name": "hack", "system_key": "hack", "category": "control"},
+            format="json",
+        )
+
+        tag = SampleTagModel.objects.get(name="hack")
+        self.assertIsNone(tag.system_key)
+        self.assertEqual(tag.category, "general")
+        self.assertNotEqual(tag.scope, "system")
+
+    def test_post_same_name_returns_existing(self):
+        self._create_user_tag(name="lote 3")
+
+        response = self.client.post(self.tags_url(), {"name": "Lote  3"}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(SampleTagModel.objects.filter(scope="personal").count(), 1)
+
+    # --- edição do vocabulário ---
+
+    def test_patch_renames_own_tag(self):
+        tag = self._create_user_tag()
+
+        response = self.client.patch(
+            self.tag_url(tag), {"name": "lote 4"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        tag.refresh_from_db()
+        self.assertEqual(tag.name, "lote 4")
+
+    def test_patch_system_tag_is_forbidden(self):
+        response = self.client.patch(
+            self.tag_url(self.control_tag), {"name": "x"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_patch_foreign_personal_tag_is_404(self):
+        alheia = SampleTagModel.objects.create(
+            name="alheia",
+            scope=SampleTagModel.SCOPE_PERSONAL,
+            created_by=self.stranger,
+        )
+
+        response = self.client.patch(self.tag_url(alheia), {"name": "x"}, format="json")
+
+        self.assertEqual(response.status_code, 404)
+
+    # --- atribuição na amostra ---
+
+    def test_put_assigns_tags_to_file(self):
+        user_tag = self._create_user_tag()
+
+        response = self.client.put(
+            self.file_tags_url(),
+            {"tags": [self.control_tag.id, user_tag.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        assigned_ids = set(self.file_data.tags.values_list("id", flat=True))
+        self.assertEqual(assigned_ids, {self.control_tag.id, user_tag.id})
+        names = {tag["name"] for tag in response.data["tags"]}
+        self.assertEqual(names, {"FMO", "lote 3"})
+
+    def test_put_replaces_full_set(self):
+        self.client.put(
+            self.file_tags_url(),
+            {"tags": [self.control_tag.id]},
+            format="json",
+        )
+        response = self.client.put(self.file_tags_url(), {"tags": []}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.file_data.tags.count(), 0)
+
+    def test_second_control_tag_is_rejected(self):
+        response = self.client.put(
+            self.file_tags_url(),
+            {"tags": [self.control_tag.id, self.other_control.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.file_data.tags.count(), 0)
+
+    def test_invisible_tag_id_is_rejected(self):
+        alheia = SampleTagModel.objects.create(
+            name="alheia",
+            scope=SampleTagModel.SCOPE_PERSONAL,
+            created_by=self.stranger,
+        )
+
+        response = self.client.put(
+            self.file_tags_url(), {"tags": [alheia.id]}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_put_records_revision(self):
+        self.client.put(
+            self.file_tags_url(),
+            {"tags": [self.control_tag.id]},
+            format="json",
+        )
+
+        revision = AnalysisRevision.objects.filter(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_TAGS,
+            target_id=self.file_data.id,
+        ).get()
+        self.assertIn("FMO", revision.summary)
+
+    def test_stranger_gets_404_on_file_tags(self):
+        self.client.force_authenticate(self.stranger)
+
+        response = self.client.put(self.file_tags_url(), {"tags": []}, format="json")
+
+        self.assertEqual(response.status_code, 404)
+
+    # --- listagem de amostras ---
+
+    def test_file_listing_exposes_tags_and_suggestion(self):
+        FileTagModel.objects.create(
+            file_data=self.file_data,
+            tag=self.other_control,
+            created_by=self.owner,
+        )
+
+        response = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        entry = response.data[0]
+        self.assertEqual([tag["system_key"] for tag in entry["tags"]], ["unstained"])
+        # file_name "unstained_ctrl.fcs" → heurística sugere unstained
+        self.assertEqual(entry["suggested_tags"], ["unstained"])
+
+    # --- heurística (função pura) ---
+
+    def test_suggest_tags_by_filename(self):
+        self.assertEqual(suggest_tags("A1_unstained.fcs"), ["unstained"])
+        self.assertEqual(suggest_tags("fmo_cd4.fcs"), ["fmo"])
+        self.assertEqual(suggest_tags("iso_type_control.fcs"), ["isotype"])
+        self.assertEqual(suggest_tags("comp_beads_PE.fcs"), ["single_stain"])
+        self.assertEqual(suggest_tags("sample_42.fcs"), [])
+        self.assertEqual(suggest_tags(None), [])
+
+    def test_suggestion_never_returns_two_controls(self):
+        # Mesmo com dois padrões casando, só uma sugestão (exclusividade).
+        self.assertEqual(len(suggest_tags("unstained_fmo_beads.fcs")), 1)
+
+    # --- tags em subsample + herança virtual ---
+
+    def _control_subsample(self, control_type="unstained"):
+        subsample = SubsampleModel.objects.create(
+            experiment=self.experiment,
+            name="controles",
+            control_type=control_type,
+            created_by=self.owner,
+        )
+        self.file_data.subsample = subsample
+        self.file_data.save(update_fields=["subsample"])
+        return subsample
+
+    def _list_entry(self):
+        response = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+        self.assertEqual(response.status_code, 200)
+        return response.data[0]
+
+    def test_subsample_patch_sets_context_tags(self):
+        subsample = self._control_subsample()
+        tag = self._create_user_tag()
+
+        response = self.client.patch(
+            f"/experiment/{self.experiment.id}/subsamples/{subsample.id}/",
+            {"tag_ids": [tag.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(subsample.tags.values_list("id", flat=True)), [tag.id])
+        self.assertEqual(response.data["tags"][0]["id"], tag.id)
+
+    def test_control_tag_rejected_on_subsample(self):
+        subsample = self._control_subsample()
+
+        response = self.client.patch(
+            f"/experiment/{self.experiment.id}/subsamples/{subsample.id}/",
+            {"tag_ids": [self.control_tag.id]},
+            format="json",
+        )
+
+        # Controle de grupo vai em control_type, não em tag.
+        self.assertEqual(response.status_code, 400)
+
+    def test_inherited_tags_from_control_subsample(self):
+        self._control_subsample("unstained")
+
+        entry = self._list_entry()
+
+        # control_type="unstained" → herda a tag de sistema homônima.
+        self.assertEqual(
+            [tag["system_key"] for tag in entry["inherited_tags"]],
+            ["unstained"],
+        )
+        self.assertEqual(entry["tags"], [])
+
+    def test_inherited_tags_include_group_context_tags(self):
+        subsample = self._control_subsample(None)
+        context = self._create_user_tag()
+        subsample.tags.set([context])
+
+        entry = self._list_entry()
+
+        self.assertEqual([tag["id"] for tag in entry["inherited_tags"]], [context.id])
+
+    def test_explicit_control_tag_beats_inherited(self):
+        """Override por arquivo: tag de controle própria vence a herdada."""
+        self._control_subsample("unstained")
+        self.client.put(
+            self.file_tags_url(), {"tags": [self.control_tag.id]}, format="json"
+        )
+
+        entry = self._list_entry()
+
+        # A amostra é FMO (explícita) — o unstained do grupo não aparece.
+        self.assertEqual([tag["system_key"] for tag in entry["tags"]], ["fmo"])
+        self.assertEqual(entry["inherited_tags"], [])
+
+    def test_inherited_tags_empty_without_subsample(self):
+        entry = self._list_entry()
+
+        self.assertEqual(entry["inherited_tags"], [])
+
+    def test_experiment_create_with_subsamples(self):
+        response = self.client.post(
+            "/experiment/",
+            {
+                "title": "placa-nova",
+                "type": "cba",
+                "subsamples": [
+                    {"name": "controles", "control_type": "unstained"},
+                    {"name": "amostras"},
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        experiment_id = response.data["id"]
+        subsamples = SubsampleModel.objects.filter(
+            experiment_id=experiment_id
+        ).order_by("name")
+        self.assertEqual([s.name for s in subsamples], ["amostras", "controles"])
+        controles = subsamples.get(name="controles")
+        self.assertEqual(controles.control_type, "unstained")

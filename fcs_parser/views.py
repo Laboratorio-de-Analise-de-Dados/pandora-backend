@@ -7,7 +7,7 @@ import zipfile
 
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import (
     Case,
     CharField,
@@ -48,7 +48,9 @@ from fcs_parser.models import (
     ExperimentModel,
     ExperimentTypeModel,
     FileDataModel,
+    FileTagModel,
     FileModel,
+    SampleTagModel,
     SubsampleModel,
 )
 from fcs_parser.permissions import (
@@ -75,9 +77,11 @@ from fcs_parser.serializers import (
     ExperimentFileInitSerializer,
     ExperimentInitSerializer,
     ExperimentTypeSerializer,
+    FileTagsUpdateSerializer,
     ListExperimentSerializer,
     ListFileDataSerializer,
     ParamListDataSerializer,
+    SampleTagSerializer,
     SubsampleSerializer,
     UpdateExperimentSerializer,
 )
@@ -368,6 +372,15 @@ class ExperimentListView(generics.ListCreateAPIView):
             return Response(
                 {"detail": "Título já criado para esse laboratório."},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        # BE-34: subsamples do setup inicial (ex.: grupo de controles).
+        for spec in data.get("subsamples") or []:
+            SubsampleModel.objects.create(
+                experiment=experiment,
+                name=spec["name"],
+                control_type=spec.get("control_type"),
+                control_channel=spec.get("control_channel", ""),
+                created_by=request.user,
             )
         return Response(
             ListExperimentSerializer(experiment).data, status=status.HTTP_201_CREATED
@@ -1118,11 +1131,26 @@ class SubsampleDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_update(self, serializer):
         self.check_can_edit(serializer.instance)
         old_name = serializer.instance.name
+        old_tags = sorted(serializer.instance.tags.values_list("id", flat=True))
         try:
             subsample = serializer.save()
         except IntegrityError:
             raise serializers.ValidationError(
                 {"name": "Já existe um subsample com esse nome neste experimento."}
+            )
+        new_tags = sorted(subsample.tags.values_list("id", flat=True))
+        if new_tags != old_tags:
+            names = ", ".join(tag.name for tag in subsample.tags.all()) or "—"
+            record_revision(
+                experiment=subsample.experiment,
+                action=AnalysisRevision.ACTION_TAGS,
+                target_type=AnalysisRevision.TARGET_SUBSAMPLE,
+                target_id=subsample.id,
+                user=self.request.user,
+                payload_before={"targets": {str(subsample.id): {"tags": old_tags}}},
+                payload_after={"targets": {str(subsample.id): {"tags": new_tags}}},
+                affected_ids=[subsample.id],
+                summary=f'etiquetou o subsample "{subsample.name}": {names}',
             )
         if subsample.name != old_name:
             record_revision(
@@ -1258,7 +1286,11 @@ class GetExperimentFiles(generics.ListAPIView):
         )
         if self.request.query_params.get("include_inactive") != "true":
             queryset = queryset.filter(active=True)
-        return queryset
+        # BE-34: tags próprias + herdadas do subsample — prefetch/select
+        # evitam N+1 ao calcular `inherited_tags` por amostra.
+        return queryset.select_related("subsample").prefetch_related(
+            "tags", "subsample__tags"
+        )
 
     @extend_schema(
         parameters=[
@@ -2188,3 +2220,145 @@ class ExperimentDownloadView(APIView):
         candidate = f"{base}_{i}{ext}"
         used.add(candidate)
         return candidate
+
+
+class TagListCreateView(generics.ListCreateAPIView):
+    """GET/POST /experiment/tags/ — vocabulário de tags (BE-34).
+
+    GET lista o vocabulário visível: tags de sistema + das
+    organizações do usuário + pessoais dele. POST cria tag de
+    usuário: com ``organization`` → escopo organização (exige
+    membership ativa), sem → pessoal. ``system_key`` e
+    ``category="control"`` são só de sistema — a API nunca cria.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = SampleTagSerializer
+
+    def get_queryset(self):
+        from fcs_parser.services.tags import tags_visible_to
+
+        queryset = tags_visible_to(self.request.user)
+        category = self.request.query_params.get("category")
+        if category:
+            queryset = queryset.filter(category=category)
+        return queryset.order_by("category", Lower("name"))
+
+    def create(self, request, *args, **kwargs):
+        from fcs_parser.services.tags import tags_visible_to
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        organization = serializer.validated_data.get("organization")
+        scope = SampleTagModel.SCOPE_PERSONAL
+        if organization is not None:
+            if not is_org_member(request.user, organization.id):
+                raise PermissionDenied("Você não é membro ativo deste laboratório.")
+            scope = SampleTagModel.SCOPE_ORGANIZATION
+
+        # Dedup por escopo: nome normalizado já existe → devolve a
+        # existente (criar tag é idempotente para o mesmo vocabulário).
+        name_normalized = SampleTagModel.normalize(serializer.validated_data["name"])
+        existing = tags_visible_to(request.user).filter(name_normalized=name_normalized)
+        existing = (
+            existing.filter(organization=organization)
+            if organization
+            else existing.filter(created_by=request.user)
+        ).first()
+        if existing:
+            return Response(
+                SampleTagSerializer(existing).data,
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            with transaction.atomic():
+                tag = serializer.save(
+                    scope=scope,
+                    organization=organization,
+                    created_by=request.user,
+                    system_key=None,
+                    category=SampleTagModel.CATEGORY_GENERAL,
+                )
+        except IntegrityError:
+            # Race entre a checagem e o insert: a existente venceu.
+            raise serializers.ValidationError(
+                {"name": "Já existe uma tag com este nome neste escopo."}
+            )
+        return Response(SampleTagSerializer(tag).data, status=status.HTTP_201_CREATED)
+
+
+class TagDetailView(generics.RetrieveUpdateAPIView):
+    """PATCH /experiment/tags/<id>/ — renomeia/recolore tag de usuário.
+
+    Tags de sistema são imutáveis por API (só migration). A tag
+    inativa some do vocabulário mas mantém vínculos (A API nunca
+    deleta) — por isso não há DELETE aqui: inativação é via PATCH
+    ``active=false`` quando houver caso de uso.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = SampleTagSerializer
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_queryset(self):
+        from fcs_parser.services.tags import tags_visible_to
+
+        return tags_visible_to(self.request.user)
+
+    def perform_update(self, serializer):
+        from fcs_parser.services.tags import can_edit_tag
+
+        if not can_edit_tag(self.request.user, serializer.instance):
+            raise PermissionDenied("Tags de sistema não podem ser alteradas pela API.")
+        serializer.save()
+
+
+class FileTagsView(APIView):
+    """PUT /experiment/file/<file_id>/tags — define as tags da amostra.
+
+    Substituição completa do conjunto (payload = ids). A exclusividade
+    de controle e a visibilidade são garantidas por ``set_file_tags``,
+    o único caminho de escrita (BE-34).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=FileTagsUpdateSerializer,
+        responses=ListFileDataSerializer,
+    )
+    def put(self, request, file_id):
+        from fcs_parser.services.tags import set_file_tags
+
+        file_data = get_object_or_404(
+            file_data_visible_to(request.user).select_related("experiment"),
+            id=file_id,
+        )
+        require_can_edit_file_data(request.user, file_data)
+
+        serializer = FileTagsUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _invalid(serializer)
+
+        before = sorted(file_data.tags.values_list("id", flat=True))
+        tags = set_file_tags(file_data, serializer.validated_data["tags"], request.user)
+        after = sorted(tag.id for tag in tags)
+        if before != after:
+            names = ", ".join(tag.name for tag in tags) or "—"
+            record_revision(
+                experiment=file_data.experiment,
+                action=AnalysisRevision.ACTION_TAGS,
+                target_type=AnalysisRevision.TARGET_FILE,
+                target_id=file_data.id,
+                user=request.user,
+                payload_before={"targets": {str(file_data.id): {"tags": before}}},
+                payload_after={"targets": {str(file_data.id): {"tags": after}}},
+                affected_ids=[file_data.id],
+                summary=(f'etiquetou a amostra "{file_data.file_name}": {names}'),
+            )
+
+        return Response(
+            ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
+        )
