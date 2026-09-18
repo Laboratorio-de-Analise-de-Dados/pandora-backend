@@ -33,6 +33,7 @@
 | [BE-29](BE-29-vinculacao-identity-providers.md) | Conta central vinculável a N IdPs (`SocialAccount`), log de auth (`AuthEvent`), aviso de vínculo no login, unlink com regra do último acesso | Implementado — PR #95 (ADR-0025). Google: código pronto, ativação adiada para fase 2 (pré-v1) |
 | [BE-30](BE-30-merge-de-contas.md) | Merge de contas duplicadas: migra memberships, autoria e vínculos; conta absorvida inativa | Implementado em `feat/account-merge` |
 | [BE-31](BE-31-processamento-resiliente-advisory-lock.md) | Processamento resiliente: advisory lock, retomada de órfão, retry interno e `error_info` na API | Não iniciado (ADR-0027 Proposto; front FE-33) |
+| [BE-32](BE-32-reuso-de-blob-por-hash.md) | Reuso de blob por `sha256` no upload (dedup de storage) + GC por refcount | Visão — exige ADR próprio |
 
 Fora dos PRDs, já entregues: desanexar cópia no reshape (#71), geometria com
 escopo + sobrescrita ao aplicar (#72), autor do gate na árvore (#74), membros na
@@ -52,3 +53,8 @@ listagem de organizações (#75), gestão de roles/remoção de membros (#76),
   [ADR-0009](../adr/0009-validacao-em-serializers.md). Resolvido no fluxo de
   upload (BE-13); segue aberto para `FileSubsampleView` e demais pontos com
   checagem manual de campo.
+- Reuso de blob por `sha256` no upload (dedup de storage cross-experiment)
+  — descartado no BE-12, reaberto como [BE-32](BE-32-reuso-de-blob-por-hash.md):
+  pendente de ADR definindo escopo do pool (tenant vs. global — oráculo de
+  existência), momento (silencioso vs. `check-hash`) e GC por contagem de
+  referências (ADR-0013).
