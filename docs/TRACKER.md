@@ -14,6 +14,7 @@ ou alinhe com o responsável.
 | Feature | Área afetada | Branch | Sessão | Desde |
 |---|---|---|---|---|
 | BE-31 resiliência de processamento | `docs/prd/BE-31*`, `fcs_parser/services/*` | `docs/be-31-processing-resilience` | outra sessão | 2026-09 |
+| Docs: revisão do PRD BE-26 (marcação por arquivo + placa) | `docs/prd/BE-26*`, `docs/prd/README.md` | `docs/be-26-controles-arquivo` | devin | 2026-09 |
 
 ## Concluído nesta branch
 
@@ -42,7 +43,7 @@ ou alinhe com o responsável.
 |---|---|
 | Google SSO — ativação (fase 2) | Código pronto (BE-29); falta só OAuth client no Google Cloud + envs `GOOGLE_*`. Decisão 2026-09: ativar antes da virada para v1 em prod — ver seção "Ativação do Google" no PRD BE-29 |
 | **Environment `production` sem required reviewers** | Descoberto na validação do release (2026-09): o gate `environment: production` existe no YAML mas o environment no GitHub só tem `branch_policy` — `workflow_dispatch` **deploya imediatamente, sem aprovação**. Configurar Required reviewers em Settings → Environments → production, ou tratar todo dispatch como deploy real |
-| BE-26 identificar controles | Não iniciado — estende ADR-0019; fecha o ciclo da compensação (BE-22) |
+| BE-26 identificar controles | Não iniciado — PRD revisado 2026-09: marcação por **arquivo** (`FileDataModel`), PATCH em lote, `well_id`/`suggested_control` na listagem. Frente à parte junto do Juvia |
 | FE: UI de "derivar análise" (BE-19) | Backend pronto — consumir `POST /experiment/<id>/derive-analysis/` no front (PRD: `pandora-front/docs/prd/FE-28`) |
 | FE: UI de branches (BE-23) | Backend pronto — seletor de branch (`?branch=` nas leituras), criar/renomear/arquivar, tela de diff + resolução de conflitos do merge (PRD: `pandora-front/docs/prd/FE-29`) |
 | BE-19 workspaces/templates (objeto persistido) | Visão no PRD — ADR-0021 escolheu snapshot sem template; reabrir só se o caso de uso pedir catálogo |
