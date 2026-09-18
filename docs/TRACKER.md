@@ -26,6 +26,7 @@ ou alinhe com o responsável.
 | BE-24 | `POST /experiment/` cria experimento sem arquivo, `description` livre, `values` read-only (derivado dos FCS) |
 | BE-29 | SocialAccount + AuthEvent + link/unlink + aviso de vínculo (ADR-0025/0026) — mergeado no PR #95 |
 | BE-30 | Merge de contas: `POST /accounts/merge/confirm/`, `merge_accounts()` migra memberships/FKs/SocialAccount, conta absorvida inativa com `merged_into` — mergeado no PR #97 |
+| BE-33 (PRD) | Figuras de análise persistidas (spec + `result_cache` + `result_revision` + `is_stale` + `recompute/`) — documentado em `docs/be-33-figures`; implementação livre para pegar (consumida pelo FE-36 do front) |
 | Limpeza de branches (2026-09-17) | `fix/security-secret-image` rebaseada + PR #94 mergeada (ADR-0024 — imagem sem registry/segredos); branches obsoletas removidas: `feat/email-smtp-config` (SMTP já estava na main — `EMAIL_*` em settings + compose prod), `chore/dev-compose-juvia` e `chore/remove-juvia-service` (main já sem serviço juvia), `docs/prd-be-21-*` e `docs/adr-0022-*` (conteúdo já na main / cherry-pickado) |
 | Sync de status de PRDs | README de PRDs corrigido: BE-19 parcial (derivação ok, template é visão), BE-23 implementado (ADR-0020), BE-25 substituído por BE-28 |
 
