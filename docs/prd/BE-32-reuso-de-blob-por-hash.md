@@ -1,7 +1,8 @@
 # BE-32 — Reuso de blob por hash no upload (dedup de storage)
 
 **Repo:** pandora-backend · **Tipo:** feature/otimização · **Base:** `main`
-**Status:** Visão — exige ADR próprio antes de implementar.
+**Status:** Visão — [ADR-0028](../adr/0028-reuso-de-blob-por-hash-escopado-a-organizacao.md)
+Proposto aguardando aceite antes de implementar.
 Conversa com [BE-10](BE-10-identidade-de-conteudo-e-blob-compartilhado.md)
 (identidade de conteúdo), [BE-12](BE-12-dedup-no-upload.md) (dedup escopado
 ao experimento, entregue) e ADR-0013 (blob compartilhado entre
