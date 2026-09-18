@@ -74,11 +74,18 @@ usuário decide "é o mesmo arquivo". Protege contra falso positivo de
 `guid` mal gerado por vendor e mantém o upload previsível ("subiu o que
 eu mandei").
 
-### D) Compartilhar `FileDataModel`/`parquet_path` entre experimentos
+### D) Compartilhar `FileDataModel` entre experimentos (amostra N:N)
 
-Descartado nesta iteração. Muda o modelo de posse da amostra e das
-análises; o custo grande já está no ZIP. Parquet por `content_sha256`
-fica como refinamento futuro se o cache quente pesar.
+Descartado. O que é compartilhável é o **blob** (`FileModel`) — e isso já
+acontece sem mudar o modelo: `fd.file` aponta para o `FileModel` que
+contém os bytes, qualquer que seja o experimento dono do upload. A linha
+`FileDataModel` é a *amostra lógica* e precisa ser por experimento:
+`subsample` (a organização em pastas pode divergir entre experimentos),
+`active`/`deactivated_by`, `parquet_path` e as referências de análise
+(gates, histórico) são estado por-experimento — compartilhar a linha
+faria uma edição em A vazar para B. A linha também é metadado barato: o
+peso real está no ZIP (dedupado aqui) e no Parquet, que pode virar cache
+por `content_sha256` como refinamento futuro sem tocar o modelo.
 
 ## Consequências
 
