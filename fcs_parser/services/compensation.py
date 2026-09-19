@@ -21,7 +21,7 @@ import pandas as pd
 
 from utils.density import default_scale, normalize_column_name
 
-SPILLOVER_KEYS = ("$spillover", "$comp")
+SPILLOVER_KEYS = ("$spillover", "$comp", "spill")
 
 
 def parse_spillover(headers: dict | None) -> dict | None:

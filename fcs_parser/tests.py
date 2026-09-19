@@ -1502,6 +1502,15 @@ class CompensationDetectionTestCase(TestCase):
         self.assertEqual(parsed["channels"], ["FITC-A", "PE-A"])
         self.assertEqual(parsed["matrix"], [[1.0, 0.12], [0.03, 1.0]])
 
+    def test_parse_spillover_variante_sem_cifrao(self):
+        from fcs_parser.services.compensation import parse_spillover
+
+        # Exportações que gravam SPILL sem o "$" do padrão FCS (FACSDiva).
+        parsed = parse_spillover({"SPILL": "2,FITC-A,PE-A,1,0.12,0.03,1"})
+
+        self.assertEqual(parsed["channels"], ["FITC-A", "PE-A"])
+        self.assertEqual(parsed["matrix"], [[1.0, 0.12], [0.03, 1.0]])
+
     def test_parse_spillover_malformado_devolve_none(self):
         from fcs_parser.services.compensation import parse_spillover
 
