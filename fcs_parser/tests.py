@@ -1842,6 +1842,238 @@ class CompensationControlsTestCase(TestCase):
         self.assertTrue(res.data["is_applied"])
 
 
+class CompensationManualTestCase(TestCase):
+    """BE-35: POST .../compensations/ cria matriz manual do zero ou
+    derivada — valores imutáveis, proveniência em ``derived_from``."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp",
+            type="t",
+            created_by=self.owner,
+            status="done",
+            values=["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def url(self, experiment=None):
+        experiment = experiment or self.experiment
+        return f"/experiment/{experiment.id}/compensations/"
+
+    def _create_source(self, **kwargs):
+        from analytics.models import CompensationMatrix
+
+        defaults = {
+            "experiment": self.experiment,
+            "name": "Calculada",
+            "channels": ["FITC-A", "PE-A"],
+            "matrix": [[1.0, 0.12], [0.03, 1.0]],
+            "source": CompensationMatrix.SOURCE_COMPUTED,
+        }
+        defaults.update(kwargs)
+        return CompensationMatrix.objects.create(**defaults)
+
+    def test_cria_matriz_manual_do_zero(self):
+        res = self.client.post(
+            self.url(),
+            {
+                "channels": ["FITC-A", "PE-A"],
+                "matrix": [[1.0, 0.12], [0.03, 1.0]],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["source"], "manual")
+        self.assertEqual(res.data["name"], "Manual")
+        self.assertIsNone(res.data["derived_from"])
+        self.assertFalse(res.data["is_applied"])
+
+    def test_derivada_registra_origem_e_nao_toca_original(self):
+        origin = self._create_source()
+
+        res = self.client.post(
+            self.url(),
+            {
+                "channels": ["FITC-A", "PE-A"],
+                "matrix": [[1.0, 0.2], [0.03, 1.0]],
+                "derived_from": origin.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["derived_from"], origin.id)
+        self.assertEqual(res.data["derived_from_name"], "Calculada")
+        self.assertEqual(res.data["name"], "Calculada (ajustada)")
+        origin.refresh_from_db()
+        self.assertEqual(origin.matrix, [[1.0, 0.12], [0.03, 1.0]])
+        self.assertEqual(origin.source, "computed")
+
+    def test_listagem_expoe_proveniencia(self):
+        origin = self._create_source()
+        self.client.post(
+            self.url(),
+            {
+                "channels": ["FITC-A"],
+                "matrix": [[1.0]],
+                "derived_from": origin.id,
+            },
+            format="json",
+        )
+
+        res = self.client.get(self.url())
+
+        entry = next(m for m in res.data if m["source"] == "manual")
+        self.assertEqual(entry["derived_from"], origin.id)
+        self.assertEqual(entry["derived_from_name"], "Calculada")
+
+    def test_canal_nao_fluorescente_da_400(self):
+        res = self.client.post(
+            self.url(),
+            {"channels": ["FSC-A"], "matrix": [[1.0]]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("FSC-A", str(res.data))
+
+    def test_canal_duplicado_da_400(self):
+        res = self.client.post(
+            self.url(),
+            {"channels": ["FITC-A", "FITC-A"], "matrix": [[1.0, 0], [0, 1.0]]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_matriz_nao_quadrada_da_400(self):
+        res = self.client.post(
+            self.url(),
+            {"channels": ["FITC-A", "PE-A"], "matrix": [[1.0, 0.1]]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_valor_nao_numerico_da_400(self):
+        for bad in ("x", True, None):
+            res = self.client.post(
+                self.url(),
+                {"channels": ["FITC-A"], "matrix": [[bad]]},
+                format="json",
+            )
+            self.assertEqual(res.status_code, 400, f"valor {bad!r} aceito")
+
+        # NaN/Infinity não passam pelo encoder estrito do test client —
+        # o corpo cru simula o que o parser laxista do DRF aceitaria.
+        for raw in ("NaN", "Infinity"):
+            res = self.client.post(
+                self.url(),
+                f'{{"channels": ["FITC-A"], "matrix": [[{raw}]]}}',
+                content_type="application/json",
+            )
+            self.assertEqual(res.status_code, 400, f"valor {raw} aceito")
+
+    def test_derived_from_de_outro_experimento_da_400(self):
+        outro = ExperimentModel.objects.create(
+            title="exp2", type="t", created_by=self.owner, status="done"
+        )
+        alheia = self._create_source(experiment=outro)
+
+        res = self.client.post(
+            self.url(),
+            {
+                "channels": ["FITC-A"],
+                "matrix": [[1.0]],
+                "derived_from": alheia.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_derived_from_inativa_ou_inexistente_da_400(self):
+        alheia = self._create_source(active=False)
+
+        for derived_from in (alheia.id, 999999):
+            res = self.client.post(
+                self.url(),
+                {
+                    "channels": ["FITC-A"],
+                    "matrix": [[1.0]],
+                    "derived_from": derived_from,
+                },
+                format="json",
+            )
+            self.assertEqual(res.status_code, 400)
+
+    def test_apply_true_cria_e_aplica_com_revisao(self):
+        res = self.client.post(
+            self.url(),
+            {
+                "channels": ["FITC-A", "PE-A"],
+                "matrix": [[1.0, 0.12], [0.03, 1.0]],
+                "apply": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(res.data["is_applied"])
+        self.assertTrue(
+            AnalysisRevision.objects.filter(
+                experiment=self.experiment,
+                action=AnalysisRevision.ACTION_COMPENSATION_APPLY,
+                target_id=res.data["id"],
+            ).exists()
+        )
+
+    def test_criacao_sem_apply_nao_grava_revisao(self):
+        self.client.post(
+            self.url(),
+            {"channels": ["FITC-A"], "matrix": [[1.0]]},
+            format="json",
+        )
+
+        self.assertFalse(
+            AnalysisRevision.objects.filter(experiment=self.experiment).exists()
+        )
+
+    def test_patch_recusa_campos_imutaveis(self):
+        matrix = self._create_source()
+
+        for field in ("matrix", "channels", "source"):
+            res = self.client.patch(
+                f"/analytics/compensations/{matrix.id}/",
+                {"name": "novo nome", field: []},
+                format="json",
+            )
+            self.assertEqual(res.status_code, 400, f"{field} não foi recusado")
+            self.assertIn(field, res.data["detail"])
+
+        matrix.refresh_from_db()
+        self.assertEqual(matrix.name, "Calculada")
+
+    def test_usuario_sem_acesso_nao_cria(self):
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.post(
+            self.url(),
+            {"channels": ["FITC-A"], "matrix": [[1.0]]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 404)
+
+
 class DeriveAnalysisApiTestCase(TestCase):
     """BE-19/ADR-0021: derivar a estratégia de um experimento em outro —
     match por content_guid (fallback file_name), snapshot sem copied_from."""

@@ -1644,6 +1644,20 @@ class CompensationDetailView(APIView):
         matrix = self._get_matrix(request, pk)
         if not can_edit_experiment(request.user, matrix.experiment):
             raise PermissionDenied("Editar compensação exige permissão de escrita.")
+        # BE-35: valores são imutáveis — ajuste = nova matriz derivada.
+        immutable = sorted({"matrix", "channels", "source"} & set(request.data))
+        if immutable:
+            return Response(
+                {
+                    "detail": (
+                        f"Campo(s) imutáveis: {', '.join(immutable)}. "
+                        "Para ajustar valores, crie uma matriz derivada "
+                        "(POST /experiment/<id>/compensations/ com "
+                        "'derived_from')."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         name = request.data.get("name")
         if name is None:
             return Response(

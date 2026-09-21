@@ -464,6 +464,16 @@ class CompensationMatrix(models.Model):
     channels = models.JSONField(default=list)
     matrix = models.JSONField(default=list)
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    # BE-35: proveniência do ajuste manual — "esta matriz é um ajuste
+    # daquela". Os valores são imutáveis: editar uma matriz cria uma nova
+    # derivada, e a cadeia calculada → ajustada → re-ajustada fica no banco.
+    derived_from = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="adjustments",
+    )
     is_applied = models.BooleanField(default=False)
     active = models.BooleanField(default=True, db_index=True)
     created_by = models.ForeignKey(

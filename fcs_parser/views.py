@@ -713,7 +713,12 @@ class ExperimentEmbeddedCompensationView(APIView):
 
 
 class ExperimentCompensationListView(generics.ListAPIView):
-    """GET /experiment/<id>/compensations/ — matrizes do experimento (BE-22)."""
+    """GET/POST /experiment/<id>/compensations/ — matrizes do experimento.
+
+    GET lista as ativas (BE-22). POST cria uma matriz ``source="manual"``
+    do zero ou derivada de outra (BE-35) — os valores são imutáveis, o
+    ajuste de uma existente é sempre uma nova com ``derived_from``.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -732,6 +737,52 @@ class ExperimentCompensationListView(generics.ListAPIView):
         return CompensationMatrix.objects.filter(
             experiment=experiment, active=True
         ).order_by("-created_at")
+
+    def post(self, request, experiment_id):
+        from analytics.models import CompensationMatrix
+        from analytics.serializers import (
+            CompensationManualCreateSerializer,
+            CompensationMatrixSerializer,
+        )
+        from fcs_parser.services.compensation import set_applied_compensation
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+
+        payload = CompensationManualCreateSerializer(
+            data=request.data, context={"experiment": experiment}
+        )
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+
+        origin = data.get("derived_from")
+        if data["name"]:
+            name = data["name"]
+        elif origin is not None:
+            name = f"{origin.name or f'matriz {origin.id}'} (ajustada)"
+        else:
+            name = "Manual"
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=experiment,
+            name=name,
+            channels=data["channels"],
+            matrix=data["matrix"],
+            source=CompensationMatrix.SOURCE_MANUAL,
+            derived_from=origin,
+            created_by=request.user,
+        )
+        # apply=true: cria e já aplica — grava a revisão
+        # `compensation_apply` e invalida densidade de graça.
+        if data["apply"]:
+            set_applied_compensation(experiment, matrix, request.user)
+            matrix.refresh_from_db()
+        return Response(
+            CompensationMatrixSerializer(matrix).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class ExperimentCompensationFromHeaderView(APIView):
