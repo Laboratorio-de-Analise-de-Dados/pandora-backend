@@ -24,6 +24,7 @@ from .views import (
     FileDensityView,
     FileHashCheckView,
     FileHeadersView,
+    FilePlotConfigView,
     FileTagsView,
     FileStatsView,
     FileSubsampleView,
@@ -98,6 +99,11 @@ urlpatterns = [
         "file/<int:file_id>/subsample",
         FileSubsampleView.as_view(),
         name="file_subsample",
+    ),
+    path(
+        "file/<int:file_id>/plot-config",
+        FilePlotConfigView.as_view(),
+        name="file_plot_config",
     ),
     path(
         "file/<int:file_id>/tags",

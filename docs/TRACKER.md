@@ -25,6 +25,7 @@ ou alinhe com o responsável.
 | BE-34 tags de amostra (+ subsample/herança/setup) | ✅ concluído — mergeado (PRs #113/#114), deploy v0.4.0 | — | — | — |
 | Fix e-mail de convite (FE-10 passo 1) | `accounts/services/send_mail.py`, `accounts/tests.py` | `fix/invite-email-url` | devin | 2026-09 |
 | Docs: revisão do PRD BE-26 (marcação por arquivo + placa) | `pandora-docs/prd/BE-26*` | `docs/be-26-controles-arquivo` | devin | 2026-09 |
+| plot_config da amostra raiz (card #71) | `FileDataModel.plot_config`, `FilePlotConfigView`, `ListFileDataSerializer` | `feat/plot-config-file` | devin | 2026-09 |
 
 ## Concluído nesta branch
 
