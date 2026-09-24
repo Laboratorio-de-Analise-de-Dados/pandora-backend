@@ -1811,6 +1811,34 @@ class CompensationControlsTestCase(TestCase):
         self.assertFalse(matrix.active)
         self.assertFalse(matrix.is_applied)
 
+    def test_patch_rejeita_campos_imutaveis(self):
+        # BE-35: valores são imutáveis — matrix/channels/source no PATCH
+        # viram 400 explícito em vez de serem ignorados pelo serializer.
+        from analytics.models import CompensationMatrix
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+        )
+        url = f"/analytics/compensations/{matrix.id}/"
+        for payload in (
+            {"matrix": [[0.9]]},
+            {"name": "x", "channels": ["PE-A"]},
+            {"source": "computed"},
+        ):
+            res = self.client.patch(url, payload, format="json")
+            self.assertEqual(res.status_code, 400)
+            self.assertIn("imutáveis", str(res.data["detail"]))
+        matrix.refresh_from_db()
+        self.assertEqual(matrix.matrix, [[1.0]])
+
+        res = self.client.patch(url, {"name": "  nova  "}, format="json")
+        self.assertEqual(res.status_code, 200)
+        matrix.refresh_from_db()
+        self.assertEqual(matrix.name, "nova")
+
     def test_density_reflete_compensacao_aplicada(self):
         from analytics.models import CompensationMatrix
 
