@@ -564,3 +564,32 @@ class CompensationManualCreateSerializer(serializers.Serializer):
                 )
             attrs["derived_from"] = origin
         return attrs
+
+
+class CompensationMatrixUpdateSerializer(serializers.Serializer):
+    """PATCH /analytics/compensations/<id>/ — só ``name`` é editável;
+    o valor é aparado e truncado no limite da coluna.
+
+    ``matrix``/``channels``/``source`` são imutáveis (BE-35): ajustar
+    valores = criar matriz derivada. A rejeição é explícita — ignorar
+    silenciosamente deixaria o usuário achar que editou os valores."""
+
+    name = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        immutable = sorted({"matrix", "channels", "source"} & set(self.initial_data))
+        if immutable:
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        f"Campo(s) imutáveis: {', '.join(immutable)}. "
+                        "Para ajustar valores, crie uma matriz derivada "
+                        "(POST /experiment/<id>/compensations/ com "
+                        "'derived_from')."
+                    )
+                }
+            )
+        if "name" not in attrs:
+            raise serializers.ValidationError({"detail": "Só 'name' é editável."})
+        attrs["name"] = attrs["name"].strip()[:256]
+        return attrs

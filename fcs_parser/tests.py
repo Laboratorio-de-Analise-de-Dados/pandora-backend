@@ -2057,7 +2057,7 @@ class CompensationManualTestCase(TestCase):
                 format="json",
             )
             self.assertEqual(res.status_code, 400, f"{field} não foi recusado")
-            self.assertIn(field, res.data["detail"])
+            self.assertIn(field, str(res.data["detail"]))
 
         matrix.refresh_from_db()
         self.assertEqual(matrix.name, "Calculada")
