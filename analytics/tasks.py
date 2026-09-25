@@ -66,7 +66,12 @@ def calculate_cytometry_metrics(
                 continue
             mean_val = channel_data.mean()
             median_val = channel_data.median()
+            # std com ddof=1 é NaN para n=1 — um gate de evento único
+            # não tem dispersão; emitir NaN quebraria o insert no JSONB
+            # (Postgres não aceita o token "NaN").
             std_dev_val = channel_data.std()
+            if not np.isfinite(std_dev_val):
+                std_dev_val = 0.0
             q16, q84 = np.percentile(channel_data, [16, 84])
 
             metrics["channel_statistics"][channel] = {
