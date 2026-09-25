@@ -33,12 +33,15 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from utils.density import (
     DEFAULT_COFACTOR,
+    apply_gate_filter,
     compute_density,
     compute_histogram,
     default_scale,
     density_cache_key,
     get_cached_density,
     invalidate_density,
+    missing_gate_channels,
+    normalize_column_name,
     normalize_columns,
     parse_range,
     set_cached_density,
@@ -127,6 +130,60 @@ def get_active_file_data_or_error(user, file_id):
             {"detail": INACTIVE_FILE_DETAIL}, status=status.HTTP_409_CONFLICT
         )
     return file_data, None
+
+
+def _filter_dataset_by_gate(dataset, gate, columns):
+    """Filtra o dataset pela cadeia de ancestrais do gate (raiz → gate),
+    como o GateDensityView faz com a compensação persistida.
+
+    Retorna ``(dataset_filtrado, None)`` ou ``(None, Response 400)``
+    quando um gate da cadeia referencia canal ausente na amostra.
+    """
+    path = [gate]
+    while gate.parent:
+        gate = gate.parent
+        path.insert(0, gate)
+
+    for g in path:
+        missing = missing_gate_channels(g, columns)
+        if missing:
+            return None, Response(
+                {
+                    "detail": (
+                        f"O gate '{g.name}' referencia o(s) canal(is) "
+                        f"{', '.join(missing)}, ausente(s) nesta amostra."
+                    ),
+                    "missing_channels": missing,
+                    "gate_id": g.id,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        dataset = apply_gate_filter(dataset, g)
+        if dataset.empty:
+            break
+    return dataset, None
+
+
+def _population_stats(dataset, channels, columns):
+    """Mediana/mean/count por canal sobre um recorte do dataset.
+
+    A mediana é o MFI que o fluxo de compensação manual compara entre
+    populações (negativo vs positivo no canal de spillover). Chaves =
+    nomes crus enviados no payload; comparação usa coluna normalizada.
+    """
+    stats = {}
+    for channel in channels:
+        col = normalize_column_name(channel)
+        if col not in columns:
+            continue
+        series = dataset[col]
+        count = int(series.count())
+        stats[channel] = {
+            "median": float(series.median()) if count else None,
+            "mean": float(series.mean()) if count else None,
+            "count": count,
+        }
+    return stats
 
 
 class ExperimentInitView(generics.CreateAPIView):
@@ -951,6 +1008,11 @@ class ExperimentCompensationPreviewView(APIView):
     — é o caminho do FE-41 para mostrar o efeito da matriz sendo editada
     sem poluir a lista de matrizes nem o histórico do experimento.
     Leitura basta (``experiments_visible_to``): nada é escrito.
+
+    A resposta inclui ``channel_stats`` (mediana/mean/count por canal)
+    para ``"file"`` (amostra inteira) e cada id de ``gates`` do payload
+    — o MFI por população que o ajuste manual compara. ``gate`` filtra a
+    densidade à população do gate (espelha a fonte do workspace).
     """
 
     permission_classes = [IsAuthenticated]
@@ -994,6 +1056,9 @@ class ExperimentCompensationPreviewView(APIView):
         # Cache por conteúdo (ADR-0004): o sha256 do payload normalizado
         # entra no lugar do :comp<id> — matrizes em edição mudam a cada
         # tecla, mas valores repetidos reutilizam o cache do density.
+        gate = data.get("gate")
+        stat_gates = data.get("gates") or []
+
         digest = hashlib.sha256(
             json.dumps(
                 {
@@ -1003,6 +1068,8 @@ class ExperimentCompensationPreviewView(APIView):
                     "x_axis": x_param,
                     "y_axis": y_param,
                     "params": params,
+                    "gate": gate.id if gate else None,
+                    "gates": [g.id for g in stat_gates],
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -1033,6 +1100,25 @@ class ExperimentCompensationPreviewView(APIView):
 
         dataset = normalize_columns(file_data.get_dataframe())
         dataset = apply_compensation(dataset, data["channels"], data["matrix"])
+        columns = set(dataset.columns)
+
+        # channel_stats (BE-36 §1.1): mediana/mean/count por canal sobre
+        # os dados compensados — "file" = amostra inteira, cada gate da
+        # lista vira uma entrada com a sua população (ancestrais inclusos).
+        stats_channels = list(dict.fromkeys([*data["channels"], x_param, y_param]))
+        channel_stats = {"file": _population_stats(dataset, stats_channels, columns)}
+        for g in stat_gates:
+            gated, error = _filter_dataset_by_gate(dataset, g, columns)
+            if error is not None:
+                return error
+            channel_stats[str(g.id)] = _population_stats(gated, stats_channels, columns)
+
+        # Fonte = gate no workspace: a densidade da prévia espelha o
+        # recorte que o usuário está vendo (BE-36 §1.2).
+        if gate is not None:
+            dataset, error = _filter_dataset_by_gate(dataset, gate, columns)
+            if error is not None:
+                return error
 
         base = {
             "mode": mode,
@@ -1076,7 +1162,7 @@ class ExperimentCompensationPreviewView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        response_payload = {**base, **result}
+        response_payload = {**base, **result, "channel_stats": channel_stats}
         set_cached_density(cache_key, response_payload)
         return Response(response_payload, status=status.HTTP_200_OK)
 

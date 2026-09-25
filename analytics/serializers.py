@@ -613,6 +613,14 @@ class CompensationPreviewSerializer(serializers.Serializer):
     x_axis = serializers.CharField(required=False, default="FSC-A")
     y_axis = serializers.CharField(required=False, default="SSC-A")
     params = serializers.DictField(required=False, default=dict)
+    # População cujos eventos alimentam a densidade (fonte = gate no
+    # workspace). ``gates`` lista populações extras p/ channel_stats.
+    gate = serializers.IntegerField(min_value=1, required=False)
+    gates = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        max_length=10,
+    )
 
     def validate(self, attrs):
         from fcs_parser.models import FileDataModel
@@ -655,4 +663,48 @@ class CompensationPreviewSerializer(serializers.Serializer):
                 {"file": "Amostra não encontrada neste experimento (ou inativa)."}
             )
         attrs["file"] = file_data
+
+        # Gates resolvem no arquivo selecionado (mesma amostra, branch ativa)
+        # — gate de outra amostra/experimento vira 400 nomeando o id.
+        from analytics.models import GateModel
+
+        if attrs.get("gate") is not None:
+            gate_obj = (
+                GateModel.objects.filter(
+                    id=attrs["gate"], file_data=file_data, branch__active=True
+                )
+                .select_related("branch")
+                .first()
+            )
+            if gate_obj is None:
+                raise serializers.ValidationError(
+                    {
+                        "gate": (
+                            f"Gate {attrs['gate']} não pertence a esta "
+                            "amostra (ou está em branch arquivada)."
+                        )
+                    }
+                )
+            attrs["gate"] = gate_obj
+
+        gate_ids = attrs.get("gates") or []
+        if gate_ids:
+            resolved = {
+                g.id: g
+                for g in GateModel.objects.filter(
+                    id__in=gate_ids, file_data=file_data, branch__active=True
+                ).select_related("branch")
+            }
+            missing = [gid for gid in gate_ids if gid not in resolved]
+            if missing:
+                raise serializers.ValidationError(
+                    {
+                        "gates": (
+                            "Gates não pertencem a esta amostra (ou estão em "
+                            "branch arquivada): " + ", ".join(str(g) for g in missing)
+                        )
+                    }
+                )
+            attrs["gates"] = [resolved[gid] for gid in gate_ids]
+
         return attrs
