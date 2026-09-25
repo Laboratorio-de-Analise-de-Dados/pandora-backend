@@ -25,6 +25,7 @@ from accounts.models import Membership, Organization
 from analytics.history import record_revision
 from analytics.models import AnalysisRevision, GateModel
 from analytics.serializers import CompensationFromHeaderSerializer
+from analytics.tasks import calculate_cytometry_metrics
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework.response import Response
 from rest_framework import status
@@ -1937,32 +1938,12 @@ class FileStatsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        total_events = len(dataset)
-        all_channel_names = list(dataset.columns)
-
-        channel_statistics = {}
-        for channel in all_channel_names:
-            channel_data = dataset[channel]
-            if channel_data.empty:
-                continue
-            mean_val = float(channel_data.mean())
-            median_val = float(channel_data.median())
-            std_dev_val = float(channel_data.std())
-            channel_statistics[channel] = {
-                "mean_mfi": mean_val,
-                "median_mfi": median_val,
-                "std_dev": std_dev_val,
-                "cv": (std_dev_val / mean_val * 100) if mean_val != 0 else 0,
-            }
-
-        payload = {
-            "summary_metrics": {
-                "count": total_events,
-                "percent_of_total_population": 1.0,
-                "percent_of_parent_population": 1.0,
-            },
-            "channel_statistics": channel_statistics,
-        }
+        # Mesma função do recálculo de gates: com o dataset inteiro como
+        # "pai", count/%total/%parent saem 100% e as stats por canal
+        # (incluindo n/rcv) seguem uma única implementação.
+        payload = calculate_cytometry_metrics(
+            dataset, len(dataset), dataset, list(dataset.columns)
+        )
 
         return Response(payload, status=status.HTTP_200_OK)
 

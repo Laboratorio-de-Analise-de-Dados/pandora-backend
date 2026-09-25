@@ -3528,3 +3528,49 @@ class FilePlotConfigApiTestCase(TestCase):
         self.assertFalse(
             AnalysisRevision.objects.filter(experiment=self.experiment).exists()
         )
+
+
+class FileStatsTestCase(TestCase):
+    """Auditoria de stats: /file/<id>/stats compartilha a implementação de
+    métricas dos gates — mesmas chaves, mesmas convenções (n, rcv)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="tipo", created_by=self.user
+        )
+        self.upload = FileModel.objects.create(
+            file_name="amostras.zip", experiment=self.experiment
+        )
+        self.file_data = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            source_path="a1.fcs",
+            file=self.upload,
+            data_set=[
+                {"FSC-A": 10.0, "FITC-A": 100.0},
+                {"FSC-A": 20.0, "FITC-A": 200.0},
+                {"FSC-A": 30.0, "FITC-A": None},
+            ],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_stats_expoe_metricas_conhecidas_com_n_e_rcv(self):
+        res = self.client.get(f"/experiment/file/{self.file_data.id}/stats")
+
+        self.assertEqual(res.status_code, 200)
+        summary = res.data["summary_metrics"]
+        self.assertEqual(summary["count"], 3)
+        self.assertEqual(summary["percent_of_total_population"], 1.0)
+        self.assertEqual(summary["percent_of_parent_population"], 1.0)
+
+        fitc = res.data["channel_statistics"]["fitc_a"]
+        self.assertEqual(fitc["n"], 2)  # NaN não entra na média/mediana
+        self.assertAlmostEqual(fitc["mean_mfi"], 150.0)
+        self.assertAlmostEqual(fitc["median_mfi"], 150.0)
+        self.assertIn("rcv", fitc)
+        self.assertIn("cv", fitc)

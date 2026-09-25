@@ -271,9 +271,9 @@ def _points_in_polygon(xs, ys, vertices) -> np.ndarray:
 def gate_axis_channels(gate) -> tuple[str | None, str | None]:
     """Canais (crus, como gravados) que o gate referencia nos eixos X e Y.
 
-    Mesma resolução de `apply_gate_filter`: interval/quadrant leem
-    `gate_coordinates.x_axis`/`y_axis` com fallback nos labels do dashboard;
-    os demais tipos usam só os labels do dashboard (default fsc_a/ssc_a).
+    Mesma resolução de `apply_gate_filter`: `x_axis`/`y_axis` gravados em
+    `gate_coordinates` têm precedência em qualquer tipo de gate; os labels
+    do dashboard são apenas o fallback quando a coordenada não os carrega.
     Gate de intervalo não tem eixo Y — retorna `(x, None)`.
     """
     coords = gate.gate_coordinates or {}
@@ -286,12 +286,9 @@ def gate_axis_channels(gate) -> tuple[str | None, str | None]:
         x_label = config.get("x_axis_label") or x_label
         y_label = config.get("y_axis_label") or y_label
 
-    gate_type = coords.get("type")
-    if gate_type in ("interval", "quadrant"):
-        x_col = coords.get("x_axis") or x_label
-        y_col = coords.get("y_axis") or y_label
-        return (x_col, None) if gate_type == "interval" else (x_col, y_col)
-    return x_label, y_label
+    x_col = coords.get("x_axis") or x_label
+    y_col = coords.get("y_axis") or y_label
+    return (x_col, None) if coords.get("type") == "interval" else (x_col, y_col)
 
 
 def missing_gate_channels(gate, columns) -> list[str]:
@@ -359,9 +356,14 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
 
     gate_type = gate_coords.get("type")
 
+    # `x_axis`/`y_axis` gravados no gate_coordinates têm precedência para
+    # qualquer tipo; os labels do dashboard são o fallback quando o gate
+    # não carrega os eixos (gates antigos, por exemplo).
+    x_col = normalize_column_name(gate_coords.get("x_axis") or "") or x_label
+    y_col = normalize_column_name(gate_coords.get("y_axis") or "") or y_label
+
     # Gate de intervalo (1D, apenas eixo X — histograma).
     if gate_type == "interval":
-        x_col = normalize_column_name(gate_coords.get("x_axis", "")) or x_label
         if x_col not in dataset.columns:
             return dataset
         start_x = gate_coords.get("startX")
@@ -372,8 +374,6 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
 
     # Gate de quadrante: filtra um dos 4 quadrantes a partir do centro da cruz.
     if gate_type == "quadrant":
-        x_col = normalize_column_name(gate_coords.get("x_axis", "")) or x_label
-        y_col = normalize_column_name(gate_coords.get("y_axis", "")) or y_label
         if x_col not in dataset.columns or y_col not in dataset.columns:
             return dataset
         cx = gate_coords.get("center_x")
@@ -391,7 +391,7 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
             return dataset[(dataset[x_col] >= cx) & (dataset[y_col] < cy)]
         return dataset
 
-    if x_label not in dataset.columns or y_label not in dataset.columns:
+    if x_col not in dataset.columns or y_col not in dataset.columns:
         return dataset
 
     # Gate poligonal: lista de vertices [[x, y], ...].
@@ -399,7 +399,7 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
         vertices = gate_coords.get("vertices") or []
         if len(vertices) >= 3:
             mask = _points_in_polygon(
-                dataset[x_label].values, dataset[y_label].values, vertices
+                dataset[x_col].values, dataset[y_col].values, vertices
             )
             return dataset[mask]
         return dataset
@@ -412,10 +412,10 @@ def apply_gate_filter(dataset: pd.DataFrame, gate) -> pd.DataFrame:
 
     if all(v is not None for v in (start_x, end_x, start_y, end_y)):
         return dataset[
-            (dataset[x_label] >= start_x)
-            & (dataset[x_label] <= end_x)
-            & (dataset[y_label] >= start_y)
-            & (dataset[y_label] <= end_y)
+            (dataset[x_col] >= start_x)
+            & (dataset[x_col] <= end_x)
+            & (dataset[y_col] >= start_y)
+            & (dataset[y_col] <= end_y)
         ]
     return dataset
 
