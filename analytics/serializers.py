@@ -419,6 +419,8 @@ class BranchMergeSerializer(serializers.Serializer):
 
 class CompensationMatrixSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField()
+    # BE-35: proveniência do ajuste — o front mostra "ajustada de <nome>".
+    derived_from_name = serializers.SerializerMethodField()
 
     class Meta:
         model = CompensationMatrix
@@ -429,6 +431,8 @@ class CompensationMatrixSerializer(serializers.ModelSerializer):
             "matrix",
             "source",
             "is_applied",
+            "derived_from",
+            "derived_from_name",
             "created_by_name",
             "created_at",
         ]
@@ -438,6 +442,12 @@ class CompensationMatrixSerializer(serializers.ModelSerializer):
         if not author:
             return None
         return author_display_name(author.first_name, author.last_name, author.username)
+
+    def get_derived_from_name(self, obj):
+        origin = obj.derived_from
+        if origin is None:
+            return None
+        return origin.name or origin.get_source_display()
 
 
 class CompensationComputeSerializer(serializers.Serializer):
@@ -484,4 +494,165 @@ class CompensationComputeSerializer(serializers.Serializer):
                     )
                 }
             )
+        return attrs
+
+
+class CompensationManualCreateSerializer(serializers.Serializer):
+    """POST /experiment/<id>/compensations/ — matriz manual (BE-35).
+
+    Cria ``source="manual"`` do zero ou ajustada de outra matriz do mesmo
+    experimento: ``derived_from`` registra a proveniência — os valores
+    vêm explícitos em ``channels``/``matrix``, o campo não copia nada.
+    ``apply=True`` cria e já aplica num passo.
+    """
+
+    name = serializers.CharField(
+        required=False, allow_blank=True, max_length=256, default=""
+    )
+    channels = serializers.ListField(
+        child=serializers.CharField(allow_blank=False), min_length=1
+    )
+    matrix = serializers.ListField(min_length=1)
+    derived_from = serializers.IntegerField(required=False, min_value=1)
+    apply = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        from fcs_parser.services.compensation import (
+            fluorescent_channels,
+            validate_spillover_grid,
+        )
+        from utils.density import normalize_column_name
+
+        experiment = self.context["experiment"]
+        channels = attrs["channels"]
+
+        valid = {normalize_column_name(c) for c in fluorescent_channels(experiment)}
+        normed = [normalize_column_name(c) for c in channels]
+        invalid = [c for c, n in zip(channels, normed) if n not in valid]
+        if invalid:
+            raise serializers.ValidationError(
+                {
+                    "channels": (
+                        "Canais não fluorescentes do experimento: "
+                        + ", ".join(sorted(set(invalid)))
+                    )
+                }
+            )
+        if len(set(normed)) != len(normed):
+            raise serializers.ValidationError(
+                {"channels": "Canais duplicados na lista."}
+            )
+
+        try:
+            validate_spillover_grid(channels, attrs["matrix"])
+        except ValueError as e:
+            raise serializers.ValidationError({"matrix": str(e)})
+
+        origin_id = attrs.get("derived_from")
+        if origin_id is not None:
+            origin = CompensationMatrix.objects.filter(
+                id=origin_id, experiment=experiment, active=True
+            ).first()
+            if origin is None:
+                raise serializers.ValidationError(
+                    {
+                        "derived_from": (
+                            "Matriz de origem não encontrada neste "
+                            "experimento (ou está descartada)."
+                        )
+                    }
+                )
+            attrs["derived_from"] = origin
+        return attrs
+
+
+class CompensationMatrixUpdateSerializer(serializers.Serializer):
+    """PATCH /analytics/compensations/<id>/ — só ``name`` é editável;
+    o valor é aparado e truncado no limite da coluna.
+
+    ``matrix``/``channels``/``source`` são imutáveis (BE-35): ajustar
+    valores = criar matriz derivada. A rejeição é explícita — ignorar
+    silenciosamente deixaria o usuário achar que editou os valores."""
+
+    name = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        immutable = sorted({"matrix", "channels", "source"} & set(self.initial_data))
+        if immutable:
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        f"Campo(s) imutáveis: {', '.join(immutable)}. "
+                        "Para ajustar valores, crie uma matriz derivada "
+                        "(POST /experiment/<id>/compensations/ com "
+                        "'derived_from')."
+                    )
+                }
+            )
+        if "name" not in attrs:
+            raise serializers.ValidationError({"detail": "Só 'name' é editável."})
+        attrs["name"] = attrs["name"].strip()[:256]
+        return attrs
+
+
+class CompensationPreviewSerializer(serializers.Serializer):
+    """POST .../compensations/preview — densidade de uma matriz ad-hoc (BE-36).
+
+    ``channels``/``matrix`` passam pela mesma validação do BE-35
+    (subconjunto dos canais fluorescentes, N×N, só números finitos);
+    ``file`` resolve para um FileData ativo do experimento. ``x_axis``/
+    ``y_axis`` e ``params`` espelham os parâmetros do endpoint density —
+    a resposta tem a mesma estrutura para o front reusar o renderer.
+    """
+
+    channels = serializers.ListField(
+        child=serializers.CharField(allow_blank=False), min_length=1
+    )
+    matrix = serializers.ListField(min_length=1)
+    file = serializers.IntegerField(min_value=1)
+    x_axis = serializers.CharField(required=False, default="FSC-A")
+    y_axis = serializers.CharField(required=False, default="SSC-A")
+    params = serializers.DictField(required=False, default=dict)
+
+    def validate(self, attrs):
+        from fcs_parser.models import FileDataModel
+        from fcs_parser.services.compensation import (
+            fluorescent_channels,
+            validate_spillover_grid,
+        )
+        from utils.density import normalize_column_name
+
+        experiment = self.context["experiment"]
+        channels = attrs["channels"]
+
+        valid = {normalize_column_name(c) for c in fluorescent_channels(experiment)}
+        normed = [normalize_column_name(c) for c in channels]
+        invalid = [c for c, n in zip(channels, normed) if n not in valid]
+        if invalid:
+            raise serializers.ValidationError(
+                {
+                    "channels": (
+                        "Canais não fluorescentes do experimento: "
+                        + ", ".join(sorted(set(invalid)))
+                    )
+                }
+            )
+        if len(set(normed)) != len(normed):
+            raise serializers.ValidationError(
+                {"channels": "Canais duplicados na lista."}
+            )
+
+        try:
+            validate_spillover_grid(channels, attrs["matrix"])
+        except ValueError as e:
+            raise serializers.ValidationError({"matrix": str(e)})
+
+        file_data = FileDataModel.objects.filter(
+            id=attrs["file"], experiment=experiment, active=True
+        ).first()
+        if file_data is None:
+            raise serializers.ValidationError(
+                {"file": "Amostra não encontrada neste experimento (ou inativa)."}
+            )
+        attrs["file"] = file_data
         return attrs

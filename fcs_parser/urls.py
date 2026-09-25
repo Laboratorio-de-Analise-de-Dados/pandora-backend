@@ -7,6 +7,7 @@ from .views import (
     ExperimentCompensationComputeView,
     ExperimentCompensationFromHeaderView,
     ExperimentCompensationListView,
+    ExperimentCompensationPreviewView,
     ExperimentCompensationRemoveView,
     ExperimentCompleteView,
     ExperimentCopyView,
@@ -71,6 +72,10 @@ urlpatterns = [
     path(
         "<int:experiment_id>/compensations/compute",
         ExperimentCompensationComputeView.as_view(),
+    ),
+    path(
+        "<int:experiment_id>/compensations/preview",
+        ExperimentCompensationPreviewView.as_view(),
     ),
     path(
         "<int:experiment_id>/compensations/<int:matrix_id>/apply",

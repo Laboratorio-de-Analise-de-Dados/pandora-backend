@@ -1638,19 +1638,18 @@ class CompensationDetailView(APIView):
         )
 
     def patch(self, request, pk):
-        from analytics.serializers import CompensationMatrixSerializer
+        from analytics.serializers import (
+            CompensationMatrixSerializer,
+            CompensationMatrixUpdateSerializer,
+        )
         from fcs_parser.permissions import can_edit_experiment
 
         matrix = self._get_matrix(request, pk)
         if not can_edit_experiment(request.user, matrix.experiment):
             raise PermissionDenied("Editar compensação exige permissão de escrita.")
-        name = request.data.get("name")
-        if name is None:
-            return Response(
-                {"detail": "Só 'name' é editável."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        matrix.name = str(name).strip()[:256]
+        payload = CompensationMatrixUpdateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        matrix.name = payload.validated_data["name"]
         matrix.save(update_fields=["name"])
         return Response(CompensationMatrixSerializer(matrix).data)
 
