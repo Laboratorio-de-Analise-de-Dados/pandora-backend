@@ -1842,6 +1842,219 @@ class CompensationControlsTestCase(TestCase):
         self.assertTrue(res.data["is_applied"])
 
 
+class CompensationPreviewTestCase(TestCase):
+    """BE-36: POST .../compensations/preview — densidade de matriz ad-hoc
+    sem persistir nada (nem CompensationMatrix, nem AnalysisRevision)."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp",
+            type="t",
+            created_by=self.owner,
+            status="done",
+            values=["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="e" * 64,
+            experiment=self.experiment,
+        )
+        self.file_data = self._file(
+            "a1.fcs",
+            {"FSC-A": [10, 20], "FITC-A": [1000, 1000], "PE-A": [130, 130]},
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _file(self, name, data, **kwargs):
+        return FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name=name,
+            file=self.file_model,
+            data_set=data,
+            **kwargs,
+        )
+
+    def url(self, experiment=None):
+        experiment = experiment or self.experiment
+        return f"/experiment/{experiment.id}/compensations/preview"
+
+    def payload(self, **overrides):
+        data = {
+            "channels": ["FITC-A", "PE-A"],
+            "matrix": [[1.0, 0.5], [0.0, 1.0]],
+            "file": self.file_data.id,
+            "x_axis": "FITC-A",
+            "y_axis": "PE-A",
+            "params": {
+                "mode": "histogram",
+                "bins": 4,
+                "xscale": "linear",
+                "xmin": 0,
+                "xmax": 2000,
+            },
+        }
+        data.update(overrides)
+        return data
+
+    def test_preview_devolve_mesma_estrutura_do_density(self):
+        res = self.client.post(self.url(), self.payload(), format="json")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["mode"], "histogram")
+        self.assertEqual(res.data["x_label"], "FITC-A")
+        self.assertEqual(res.data["y_label"], "PE-A")
+        self.assertEqual(res.data["total_events"], 2)
+        self.assertIn("counts", res.data)
+
+    def test_preview_compensado_difere_do_cru(self):
+        raw = self.client.get(
+            f"/experiment/file/{self.file_data.id}/density"
+            "?x=FITC-A&y=PE-A&mode=histogram&bins=4&xscale=linear"
+            "&xmin=0&xmax=2000"
+        )
+        comp = self.client.post(self.url(), self.payload(), format="json")
+
+        self.assertEqual(raw.status_code, 200)
+        self.assertEqual(comp.status_code, 200)
+        # Spill do PE no FITC desloca os valores — bins compensados ≠ crus.
+        self.assertNotEqual(raw.data["counts"], comp.data["counts"])
+
+    def test_preview_nao_persiste_matriz_nem_revisao(self):
+        from analytics.models import AnalysisRevision, CompensationMatrix
+
+        for _ in range(3):
+            res = self.client.post(self.url(), self.payload(), format="json")
+            self.assertEqual(res.status_code, 200)
+
+        self.assertFalse(
+            CompensationMatrix.objects.filter(experiment=self.experiment).exists()
+        )
+        self.assertFalse(
+            AnalysisRevision.objects.filter(experiment=self.experiment).exists()
+        )
+
+    @patch("fcs_parser.views.compute_histogram")
+    def test_mesmo_payload_reusa_cache(self, mock_hist):
+        mock_hist.return_value = {"counts": [1, 2, 3, 4], "edges": [0, 1, 2]}
+
+        first = self.client.post(self.url(), self.payload(), format="json")
+        second = self.client.post(self.url(), self.payload(), format="json")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data, second.data)
+        mock_hist.assert_called_once()
+
+    def test_payload_diferente_nao_colide_no_cache(self):
+        base = self.client.post(self.url(), self.payload(), format="json")
+        # Spill 5.0 desloca FITC-A para outro bin — se a chave de cache
+        # ignorasse a matriz, devolveria os counts do primeiro payload.
+        outra = self.client.post(
+            self.url(),
+            self.payload(matrix=[[1.0, 5.0], [0.0, 1.0]]),
+            format="json",
+        )
+
+        self.assertEqual(base.status_code, 200)
+        self.assertEqual(outra.status_code, 200)
+        self.assertNotEqual(base.data["counts"], outra.data["counts"])
+
+    def test_canal_nao_fluorescente_da_400(self):
+        res = self.client.post(
+            self.url(),
+            self.payload(channels=["FSC-A"], matrix=[[1.0]]),
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("FSC-A", str(res.data))
+
+    def test_canal_duplicado_da_400(self):
+        res = self.client.post(
+            self.url(),
+            self.payload(
+                channels=["FITC-A", "FITC-A"], matrix=[[1.0, 0.0], [0.0, 1.0]]
+            ),
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_matriz_nao_quadrada_e_valor_invalido_da_400(self):
+        for matrix in (
+            [[1.0, 0.5]],  # menos linhas que canais
+            [[1.0], [0.0]],  # linha sem 2 colunas
+            [[1.0, "x"], [0.0, 1.0]],  # string
+            [[1.0, True], [0.0, 1.0]],  # bool
+        ):
+            res = self.client.post(
+                self.url(), self.payload(matrix=matrix), format="json"
+            )
+            self.assertEqual(res.status_code, 400, f"matriz {matrix!r} aceita")
+
+        # NaN/Infinity só chegam via JSON cru — o encoder do test client é estrito.
+        for raw in ("NaN", "Infinity"):
+            res = self.client.post(
+                self.url(),
+                "{"
+                f'"channels": ["FITC-A", "PE-A"], "file": {self.file_data.id}, '
+                f'"matrix": [[1.0, {raw}], [0.0, 1.0]]'
+                "}",
+                content_type="application/json",
+            )
+            self.assertEqual(res.status_code, 400, f"valor {raw} aceito")
+
+    def test_file_de_outro_experimento_ou_inativo_da_400(self):
+        other_exp = ExperimentModel.objects.create(
+            title="outro",
+            type="t",
+            created_by=self.owner,
+            status="done",
+            values=["FITC-A"],
+        )
+        other_fm = FileModel.objects.create(
+            file_name="o.zip", file="o.zip", sha256="f" * 64, experiment=other_exp
+        )
+        foreign = FileDataModel.objects.create(
+            headers={},
+            experiment=other_exp,
+            file_name="b.fcs",
+            file=other_fm,
+            data_set={},
+        )
+        inactive = self._file("inativa.fcs", {}, active=False)
+
+        for file_id in (foreign.id, inactive.id):
+            res = self.client.post(
+                self.url(), self.payload(file=file_id), format="json"
+            )
+            self.assertEqual(res.status_code, 400)
+
+    def test_experimento_alheio_da_404(self):
+        self.client.force_authenticate(self.stranger)
+        other_exp = ExperimentModel.objects.create(
+            title="outro",
+            type="t",
+            created_by=self.stranger,
+            status="done",
+            values=["FITC-A"],
+        )
+        self.client.force_authenticate(self.owner)
+
+        res = self.client.post(self.url(other_exp), self.payload(), format="json")
+
+        self.assertEqual(res.status_code, 404)
+
+
 class DeriveAnalysisApiTestCase(TestCase):
     """BE-19/ADR-0021: derivar a estratégia de um experimento em outro —
     match por content_guid (fallback file_name), snapshot sem copied_from."""

@@ -485,3 +485,66 @@ class CompensationComputeSerializer(serializers.Serializer):
                 }
             )
         return attrs
+
+
+class CompensationPreviewSerializer(serializers.Serializer):
+    """POST .../compensations/preview — densidade de uma matriz ad-hoc (BE-36).
+
+    ``channels``/``matrix`` passam pela mesma validação do BE-35
+    (subconjunto dos canais fluorescentes, N×N, só números finitos);
+    ``file`` resolve para um FileData ativo do experimento. ``x_axis``/
+    ``y_axis`` e ``params`` espelham os parâmetros do endpoint density —
+    a resposta tem a mesma estrutura para o front reusar o renderer.
+    """
+
+    channels = serializers.ListField(
+        child=serializers.CharField(allow_blank=False), min_length=1
+    )
+    matrix = serializers.ListField(min_length=1)
+    file = serializers.IntegerField(min_value=1)
+    x_axis = serializers.CharField(required=False, default="FSC-A")
+    y_axis = serializers.CharField(required=False, default="SSC-A")
+    params = serializers.DictField(required=False, default=dict)
+
+    def validate(self, attrs):
+        from fcs_parser.models import FileDataModel
+        from fcs_parser.services.compensation import (
+            fluorescent_channels,
+            validate_spillover_grid,
+        )
+        from utils.density import normalize_column_name
+
+        experiment = self.context["experiment"]
+        channels = attrs["channels"]
+
+        valid = {normalize_column_name(c) for c in fluorescent_channels(experiment)}
+        normed = [normalize_column_name(c) for c in channels]
+        invalid = [c for c, n in zip(channels, normed) if n not in valid]
+        if invalid:
+            raise serializers.ValidationError(
+                {
+                    "channels": (
+                        "Canais não fluorescentes do experimento: "
+                        + ", ".join(sorted(set(invalid)))
+                    )
+                }
+            )
+        if len(set(normed)) != len(normed):
+            raise serializers.ValidationError(
+                {"channels": "Canais duplicados na lista."}
+            )
+
+        try:
+            validate_spillover_grid(channels, attrs["matrix"])
+        except ValueError as e:
+            raise serializers.ValidationError({"matrix": str(e)})
+
+        file_data = FileDataModel.objects.filter(
+            id=attrs["file"], experiment=experiment, active=True
+        ).first()
+        if file_data is None:
+            raise serializers.ValidationError(
+                {"file": "Amostra não encontrada neste experimento (ou inativa)."}
+            )
+        attrs["file"] = file_data
+        return attrs

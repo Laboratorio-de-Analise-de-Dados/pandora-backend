@@ -142,6 +142,39 @@ def applied_compensation(experiment):
     ).first()
 
 
+# --- Matriz manual (BE-35) -----------------------------------------------
+
+
+def validate_spillover_grid(channels: list, matrix: list) -> None:
+    """Confere a grade de uma matriz manual contra ``channels``.
+
+    Exige N×N casando com a lista de canais e só números finitos por
+    célula (int/float JSON — bool, NaN, Infinity e strings são recusados).
+    Diagonal e faixa de valores não são forçadas: o usuário é autoridade
+    sobre os coeficientes. Levanta ``ValueError`` com a mensagem de
+    domínio — a borda converte em 400.
+    """
+    n = len(channels)
+    if not isinstance(matrix, (list, tuple)) or len(matrix) != n:
+        raise ValueError(
+            f"A matriz precisa ser {n}×{n} — uma linha por canal "
+            f"({len(channels)} canais)."
+        )
+    for i, row in enumerate(matrix):
+        if not isinstance(row, (list, tuple)) or len(row) != n:
+            raise ValueError(f"Linha {i + 1} da matriz não tem {n} colunas.")
+        for j, value in enumerate(row):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not np.isfinite(value)
+            ):
+                raise ValueError(
+                    f"Valor inválido em matrix[{i}][{j}] — "
+                    "só números finitos são aceitos."
+                )
+
+
 # --- Controles e cálculo (ADR-0019) --------------------------------------
 
 
