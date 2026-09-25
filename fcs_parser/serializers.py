@@ -6,7 +6,7 @@ from accounts.models import Organization
 from accounts.serializers import OrganizationListSerializer
 from fcs_parser.permissions import can_create_experiment_type, is_org_member
 from analytics.serializers import ListGateSerializer
-from utils.validators import experiment_file_extension, validate_zip_file
+from utils.validators import experiment_file_extension
 from .models import (
     ExperimentModel,
     ExperimentTypeModel,
@@ -217,31 +217,6 @@ class ExperimentCompleteSerializer(serializers.Serializer):
         return value
 
 
-class ExperimentSerializer(serializers.ModelSerializer):
-    file = serializers.FileField(allow_empty_file=False, write_only=True)
-    values = serializers.ListField(child=serializers.CharField(), required=False)
-    error_info = serializers.JSONField(read_only=True)
-
-    class Meta:
-        model = ExperimentModel
-        fields = [
-            "id",
-            "title",
-            "file",
-            "type",
-            "values",
-            "active",
-            "status",
-            "error_info",
-        ]
-        read_only_fields = ["id", "active", "status", "error_info"]
-
-    def validate(self, data):
-        if "file" in data:
-            validate_zip_file(data["file"])
-        return super().validate(data)
-
-
 class SampleTagSerializer(serializers.ModelSerializer):
     """Vocabulário de tags de amostra (BE-34).
 
@@ -282,7 +257,7 @@ class SubsampleSerializer(serializers.ModelSerializer):
     files_count = serializers.SerializerMethodField()
     # BE-34: tags de contexto do grupo (leitura = objetos; escrita = ids
     # em ``tag_ids``). Só ``category="general"`` — controle do grupo é
-    # ``control_type``, validado em ``set_subsample_tags``.
+    # ``control_type``, validado no ``validate`` abaixo.
     tags = SampleTagSerializer(many=True, read_only=True)
     tag_ids = serializers.ListField(
         child=serializers.IntegerField(), write_only=True, required=False
@@ -657,10 +632,3 @@ class ListExperimentSerializer(serializers.ModelSerializer):
 
     def get_compensated(self, obj):
         return getattr(obj, "compensated", False)
-
-
-class CreateFileModelSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = FileDataModel
-        fields = ["id", "file_name", "file"]
-        read_only_fields = ["id"]

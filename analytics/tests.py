@@ -1479,7 +1479,7 @@ class StatsAuditTestCase(TestCase):
         )
 
     def test_retangulo_prefere_eixos_das_coordenadas(self):
-        from utils.density import apply_gate_filter, gate_axis_channels
+        from analytics.gate_filter import apply_gate_filter, gate_axis_channels
 
         # Pelos labels do dashboard (fsc/ssc) só 1 evento entraria no
         # retângulo; pelos eixos gravados nas coords (fitc/apc) entram os 2.
@@ -1500,7 +1500,7 @@ class StatsAuditTestCase(TestCase):
         self.assertEqual(len(apply_gate_filter(self._df(), gate)), 2)
 
     def test_poligono_prefere_eixos_das_coordenadas(self):
-        from utils.density import apply_gate_filter
+        from analytics.gate_filter import apply_gate_filter
 
         gate = self._gate(
             {
@@ -1515,7 +1515,7 @@ class StatsAuditTestCase(TestCase):
         self.assertEqual(len(apply_gate_filter(self._df(), gate)), 2)
 
     def test_gate_sem_eixos_nas_coords_cai_no_dashboard(self):
-        from utils.density import apply_gate_filter, gate_axis_channels
+        from analytics.gate_filter import apply_gate_filter, gate_axis_channels
 
         gate = self._gate(
             {"type": "rectangle", "startX": 0, "endX": 10, "startY": 0, "endY": 10},

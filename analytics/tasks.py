@@ -100,11 +100,11 @@ def recalculate_gate_analysis(gate_id: int):
         applied_compensation,
         apply_compensation,
     )
-    from utils.density import (
+    from analytics.gate_filter import (
         apply_gate_filter,
         missing_gate_channels,
-        normalize_columns,
     )
+    from utils.density import normalize_columns
 
     logger.info("Iniciando recálculo para gate ID %s...", gate_id)
     try:

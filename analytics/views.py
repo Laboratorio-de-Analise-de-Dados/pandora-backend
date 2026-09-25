@@ -59,17 +59,19 @@ from analytics.serializers import (
     RestoreSerializer,
     RevertRevisionSerializer,
 )
+from analytics.gate_filter import (
+    apply_gate_filter,
+    file_data_channels,
+    missing_gate_channels,
+)
 from utils.density import (
     DEFAULT_COFACTOR,
-    apply_gate_filter,
     compute_density,
     compute_histogram,
     default_scale,
     density_cache_key,
     empty_density_result,
-    file_data_channels,
     get_cached_density,
-    missing_gate_channels,
     normalize_column_name,
     normalize_columns,
     parse_range,
@@ -432,7 +434,7 @@ class GetGateDataView(generics.ListAPIView):
     ) -> pd.DataFrame:
         """Aplica o filtro de um gate (retangulo ou poligono) ao dataset.
 
-        Delega ao helper compartilhado (utils.density.apply_gate_filter), que
+        Delega ao helper compartilhado (analytics.gate_filter.apply_gate_filter), que
         trata retangulo e poligono de forma vetorizada.
         """
         return apply_gate_filter(dataset, gate)

@@ -33,16 +33,15 @@ from rest_framework import generics, serializers
 from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
+from analytics.gate_filter import apply_gate_filter, missing_gate_channels
 from utils.density import (
     DEFAULT_COFACTOR,
-    apply_gate_filter,
     compute_density,
     compute_histogram,
     default_scale,
     density_cache_key,
     get_cached_density,
     invalidate_density,
-    missing_gate_channels,
     normalize_column_name,
     normalize_columns,
     parse_range,

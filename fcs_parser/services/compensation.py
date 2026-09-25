@@ -69,10 +69,6 @@ def parse_spillover(headers: dict | None) -> dict | None:
     return {"channels": channels, "matrix": matrix}
 
 
-def headers_have_spillover(headers: dict | None) -> bool:
-    return parse_spillover(headers) is not None
-
-
 SPILLOVER_KEY_PATTERN = re.compile(r"^\$?(spillover|comp)$", re.IGNORECASE)
 
 
