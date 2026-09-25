@@ -3331,3 +3331,87 @@ class SampleTagsApiTestCase(TestCase):
         self.assertEqual([s.name for s in subsamples], ["amostras", "controles"])
         controles = subsamples.get(name="controles")
         self.assertEqual(controles.control_type, "unstained")
+
+
+class FilePlotConfigApiTestCase(TestCase):
+    """plot_config da amostra raiz: persiste via PATCH e volta na listagem."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, status="done"
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip", experiment=self.experiment
+        )
+        self.file_data = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def url(self):
+        return f"/experiment/file/{self.file_data.id}/plot-config"
+
+    def test_patch_persiste_plot_config(self):
+        config = {"xAxis": "FITC-A", "yAxis": "PE-A", "xScale": "log"}
+
+        res = self.client.patch(self.url(), {"plot_config": config}, format="json")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["plot_config"], config)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.plot_config, config)
+
+    def test_plot_config_volta_na_listagem(self):
+        config = {"xAxis": "FITC-A", "plotMode": "dot"}
+        self.client.patch(self.url(), {"plot_config": config}, format="json")
+
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+
+        self.assertEqual(res.status_code, 200)
+        entry = next(f for f in res.data if f["id"] == self.file_data.id)
+        self.assertEqual(entry["plot_config"], config)
+
+    def test_listagem_sem_config_devolve_objeto_vazio(self):
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+
+        entry = next(f for f in res.data if f["id"] == self.file_data.id)
+        self.assertEqual(entry["plot_config"], {})
+
+    def test_payload_sem_plot_config_da_400(self):
+        res = self.client.patch(self.url(), {}, format="json")
+
+        self.assertEqual(res.status_code, 400)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.plot_config, {})
+
+    def test_usuario_sem_acesso_recebe_404(self):
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.patch(
+            self.url(), {"plot_config": {"xAxis": "PE-A"}}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 404)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.plot_config, {})
+
+    def test_plot_config_nao_grava_revisao(self):
+        # Preferência de exibição não é mutação de análise — o histórico
+        # não registra cada ajuste debounced do plot.
+        self.client.patch(
+            self.url(), {"plot_config": {"xAxis": "FITC-A"}}, format="json"
+        )
+
+        self.assertFalse(
+            AnalysisRevision.objects.filter(experiment=self.experiment).exists()
+        )

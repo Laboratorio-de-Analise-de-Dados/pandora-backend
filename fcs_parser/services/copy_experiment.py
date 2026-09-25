@@ -130,6 +130,7 @@ def copy_experiment(
             content_sha256=fd.content_sha256,
             subsample=subsample_map.get(fd.subsample_id),
             headers=fd.headers,
+            plot_config=fd.plot_config,
             data_set=None,
             parquet_path=None,
             fcs_path=fd.fcs_path,

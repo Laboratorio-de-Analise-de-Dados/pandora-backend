@@ -81,6 +81,7 @@ from fcs_parser.serializers import (
     ExperimentFileInitSerializer,
     ExperimentInitSerializer,
     ExperimentTypeSerializer,
+    FilePlotConfigSerializer,
     FileTagsUpdateSerializer,
     ListExperimentSerializer,
     ListFileDataSerializer,
@@ -1546,6 +1547,34 @@ class FileSubsampleView(APIView):
                 ),
             )
 
+        return Response(
+            ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
+        )
+
+
+class FilePlotConfigView(APIView):
+    """PATCH /experiment/file/<file_id>/plot-config — config de visualização
+    da amostra raiz.
+
+    Mesmo papel do ``plot_config`` de gate (PATCH /analytics/gate/<id>),
+    para quando a fonte do plot é o arquivo inteiro. É preferência de
+    exibição, não análise — não gera revisão nem invalida densidade.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=FilePlotConfigSerializer, responses=ListFileDataSerializer)
+    def patch(self, request, file_id):
+        file_data = get_object_or_404(
+            file_data_visible_to(request.user).select_related("experiment"),
+            id=file_id,
+        )
+        require_can_edit_file_data(request.user, file_data)
+
+        payload = FilePlotConfigSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        file_data.plot_config = payload.validated_data["plot_config"]
+        file_data.save(update_fields=["plot_config"])
         return Response(
             ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
         )

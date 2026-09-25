@@ -311,6 +311,10 @@ class FileDataModel(models.Model):
         related_name="tagged_files",
         blank=True,
     )
+    # Config de visualização (eixos, escalas, limites, modo) da amostra
+    # raiz — mesmo papel do `plot_config` de GateModel, mas para quando a
+    # fonte do plot é o arquivo inteiro (sem gate selecionado).
+    plot_config = models.JSONField(default=dict, blank=True)
 
     class Meta:
         db_table = "file_data"
