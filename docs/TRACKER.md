@@ -22,7 +22,7 @@ ou alinhe com o responsável.
 |---|---|---|---|---|
 | BE-31 resiliência de processamento | `docs/prd/BE-31*`, `fcs_parser/services/*` | `docs/be-31-processing-resilience` | outra sessão | 2026-09 |
 | BE-32/ADR-0028 dedup de storage (docs) | `docs/prd`, `docs/adr` | `docs/be-32-blob-dedup` | devin | 2026-09 |
-| BE-36 preview de compensação ad-hoc (card #82) | `POST .../compensations/preview` + `channel_stats` por população + `gate`/`gates` | `feat/compensation-preview-stats` (PR #121) | devin | 2026-09 |
+| BE-36 preview de compensação ad-hoc (card #82) | ✅ concluído — mergeado (PRs #119/#121), deploy v0.5.0 | — | — | — |
 | BE-34 tags de amostra (+ subsample/herança/setup) | ✅ concluído — mergeado (PRs #113/#114), deploy v0.4.0 | — | — | — |
 | Fix e-mail de convite (FE-10 passo 1) | `accounts/services/send_mail.py`, `accounts/tests.py` | `fix/invite-email-url` | devin | 2026-09 |
 | Docs: revisão do PRD BE-26 (marcação por arquivo + placa) | `pandora-docs/prd/BE-26*` | `docs/be-26-controles-arquivo` | devin | 2026-09 |
