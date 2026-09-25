@@ -1842,6 +1842,451 @@ class CompensationControlsTestCase(TestCase):
         self.assertTrue(res.data["is_applied"])
 
 
+class CompensationManualTestCase(TestCase):
+    """BE-35: POST .../compensations/ cria matriz manual do zero ou
+    derivada — valores imutáveis, proveniência em ``derived_from``."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp",
+            type="t",
+            created_by=self.owner,
+            status="done",
+            values=["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def url(self, experiment=None):
+        experiment = experiment or self.experiment
+        return f"/experiment/{experiment.id}/compensations/"
+
+    def _create_source(self, **kwargs):
+        from analytics.models import CompensationMatrix
+
+        defaults = {
+            "experiment": self.experiment,
+            "name": "Calculada",
+            "channels": ["FITC-A", "PE-A"],
+            "matrix": [[1.0, 0.12], [0.03, 1.0]],
+            "source": CompensationMatrix.SOURCE_COMPUTED,
+        }
+        defaults.update(kwargs)
+        return CompensationMatrix.objects.create(**defaults)
+
+    def test_cria_matriz_manual_do_zero(self):
+        res = self.client.post(
+            self.url(),
+            {
+                "channels": ["FITC-A", "PE-A"],
+                "matrix": [[1.0, 0.12], [0.03, 1.0]],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["source"], "manual")
+        self.assertEqual(res.data["name"], "Manual")
+        self.assertIsNone(res.data["derived_from"])
+        self.assertFalse(res.data["is_applied"])
+
+    def test_derivada_registra_origem_e_nao_toca_original(self):
+        origin = self._create_source()
+
+        res = self.client.post(
+            self.url(),
+            {
+                "channels": ["FITC-A", "PE-A"],
+                "matrix": [[1.0, 0.2], [0.03, 1.0]],
+                "derived_from": origin.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["derived_from"], origin.id)
+        self.assertEqual(res.data["derived_from_name"], "Calculada")
+        self.assertEqual(res.data["name"], "Calculada (ajustada)")
+        origin.refresh_from_db()
+        self.assertEqual(origin.matrix, [[1.0, 0.12], [0.03, 1.0]])
+        self.assertEqual(origin.source, "computed")
+
+    def test_listagem_expoe_proveniencia(self):
+        origin = self._create_source()
+        self.client.post(
+            self.url(),
+            {
+                "channels": ["FITC-A"],
+                "matrix": [[1.0]],
+                "derived_from": origin.id,
+            },
+            format="json",
+        )
+
+        res = self.client.get(self.url())
+
+        entry = next(m for m in res.data if m["source"] == "manual")
+        self.assertEqual(entry["derived_from"], origin.id)
+        self.assertEqual(entry["derived_from_name"], "Calculada")
+
+    def test_canal_nao_fluorescente_da_400(self):
+        res = self.client.post(
+            self.url(),
+            {"channels": ["FSC-A"], "matrix": [[1.0]]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("FSC-A", str(res.data))
+
+    def test_canal_duplicado_da_400(self):
+        res = self.client.post(
+            self.url(),
+            {"channels": ["FITC-A", "FITC-A"], "matrix": [[1.0, 0], [0, 1.0]]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_matriz_nao_quadrada_da_400(self):
+        res = self.client.post(
+            self.url(),
+            {"channels": ["FITC-A", "PE-A"], "matrix": [[1.0, 0.1]]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_valor_nao_numerico_da_400(self):
+        for bad in ("x", True, None):
+            res = self.client.post(
+                self.url(),
+                {"channels": ["FITC-A"], "matrix": [[bad]]},
+                format="json",
+            )
+            self.assertEqual(res.status_code, 400, f"valor {bad!r} aceito")
+
+        # NaN/Infinity não passam pelo encoder estrito do test client —
+        # o corpo cru simula o que o parser laxista do DRF aceitaria.
+        for raw in ("NaN", "Infinity"):
+            res = self.client.post(
+                self.url(),
+                f'{{"channels": ["FITC-A"], "matrix": [[{raw}]]}}',
+                content_type="application/json",
+            )
+            self.assertEqual(res.status_code, 400, f"valor {raw} aceito")
+
+    def test_derived_from_de_outro_experimento_da_400(self):
+        outro = ExperimentModel.objects.create(
+            title="exp2", type="t", created_by=self.owner, status="done"
+        )
+        alheia = self._create_source(experiment=outro)
+
+        res = self.client.post(
+            self.url(),
+            {
+                "channels": ["FITC-A"],
+                "matrix": [[1.0]],
+                "derived_from": alheia.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_derived_from_inativa_ou_inexistente_da_400(self):
+        alheia = self._create_source(active=False)
+
+        for derived_from in (alheia.id, 999999):
+            res = self.client.post(
+                self.url(),
+                {
+                    "channels": ["FITC-A"],
+                    "matrix": [[1.0]],
+                    "derived_from": derived_from,
+                },
+                format="json",
+            )
+            self.assertEqual(res.status_code, 400)
+
+    def test_apply_true_cria_e_aplica_com_revisao(self):
+        res = self.client.post(
+            self.url(),
+            {
+                "channels": ["FITC-A", "PE-A"],
+                "matrix": [[1.0, 0.12], [0.03, 1.0]],
+                "apply": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(res.data["is_applied"])
+        self.assertTrue(
+            AnalysisRevision.objects.filter(
+                experiment=self.experiment,
+                action=AnalysisRevision.ACTION_COMPENSATION_APPLY,
+                target_id=res.data["id"],
+            ).exists()
+        )
+
+    def test_criacao_sem_apply_nao_grava_revisao(self):
+        self.client.post(
+            self.url(),
+            {"channels": ["FITC-A"], "matrix": [[1.0]]},
+            format="json",
+        )
+
+        self.assertFalse(
+            AnalysisRevision.objects.filter(experiment=self.experiment).exists()
+        )
+
+    def test_patch_recusa_campos_imutaveis(self):
+        matrix = self._create_source()
+
+        for field in ("matrix", "channels", "source"):
+            res = self.client.patch(
+                f"/analytics/compensations/{matrix.id}/",
+                {"name": "novo nome", field: []},
+                format="json",
+            )
+            self.assertEqual(res.status_code, 400, f"{field} não foi recusado")
+            self.assertIn(field, str(res.data["detail"]))
+
+        matrix.refresh_from_db()
+        self.assertEqual(matrix.name, "Calculada")
+
+    def test_usuario_sem_acesso_nao_cria(self):
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.post(
+            self.url(),
+            {"channels": ["FITC-A"], "matrix": [[1.0]]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 404)
+
+
+class CompensationPreviewTestCase(TestCase):
+    """BE-36: POST .../compensations/preview — densidade de matriz ad-hoc
+    sem persistir nada (nem CompensationMatrix, nem AnalysisRevision)."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp",
+            type="t",
+            created_by=self.owner,
+            status="done",
+            values=["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="e" * 64,
+            experiment=self.experiment,
+        )
+        self.file_data = self._file(
+            "a1.fcs",
+            {"FSC-A": [10, 20], "FITC-A": [1000, 1000], "PE-A": [130, 130]},
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _file(self, name, data, **kwargs):
+        return FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name=name,
+            file=self.file_model,
+            data_set=data,
+            **kwargs,
+        )
+
+    def url(self, experiment=None):
+        experiment = experiment or self.experiment
+        return f"/experiment/{experiment.id}/compensations/preview"
+
+    def payload(self, **overrides):
+        data = {
+            "channels": ["FITC-A", "PE-A"],
+            "matrix": [[1.0, 0.5], [0.0, 1.0]],
+            "file": self.file_data.id,
+            "x_axis": "FITC-A",
+            "y_axis": "PE-A",
+            "params": {
+                "mode": "histogram",
+                "bins": 4,
+                "xscale": "linear",
+                "xmin": 0,
+                "xmax": 2000,
+            },
+        }
+        data.update(overrides)
+        return data
+
+    def test_preview_devolve_mesma_estrutura_do_density(self):
+        res = self.client.post(self.url(), self.payload(), format="json")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["mode"], "histogram")
+        self.assertEqual(res.data["x_label"], "FITC-A")
+        self.assertEqual(res.data["y_label"], "PE-A")
+        self.assertEqual(res.data["total_events"], 2)
+        self.assertIn("counts", res.data)
+
+    def test_preview_compensado_difere_do_cru(self):
+        raw = self.client.get(
+            f"/experiment/file/{self.file_data.id}/density"
+            "?x=FITC-A&y=PE-A&mode=histogram&bins=4&xscale=linear"
+            "&xmin=0&xmax=2000"
+        )
+        comp = self.client.post(self.url(), self.payload(), format="json")
+
+        self.assertEqual(raw.status_code, 200)
+        self.assertEqual(comp.status_code, 200)
+        # Spill do PE no FITC desloca os valores — bins compensados ≠ crus.
+        self.assertNotEqual(raw.data["counts"], comp.data["counts"])
+
+    def test_preview_nao_persiste_matriz_nem_revisao(self):
+        from analytics.models import AnalysisRevision, CompensationMatrix
+
+        for _ in range(3):
+            res = self.client.post(self.url(), self.payload(), format="json")
+            self.assertEqual(res.status_code, 200)
+
+        self.assertFalse(
+            CompensationMatrix.objects.filter(experiment=self.experiment).exists()
+        )
+        self.assertFalse(
+            AnalysisRevision.objects.filter(experiment=self.experiment).exists()
+        )
+
+    @patch("fcs_parser.views.compute_histogram")
+    def test_mesmo_payload_reusa_cache(self, mock_hist):
+        mock_hist.return_value = {"counts": [1, 2, 3, 4], "edges": [0, 1, 2]}
+
+        first = self.client.post(self.url(), self.payload(), format="json")
+        second = self.client.post(self.url(), self.payload(), format="json")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data, second.data)
+        mock_hist.assert_called_once()
+
+    def test_payload_diferente_nao_colide_no_cache(self):
+        base = self.client.post(self.url(), self.payload(), format="json")
+        # Spill 5.0 desloca FITC-A para outro bin — se a chave de cache
+        # ignorasse a matriz, devolveria os counts do primeiro payload.
+        outra = self.client.post(
+            self.url(),
+            self.payload(matrix=[[1.0, 5.0], [0.0, 1.0]]),
+            format="json",
+        )
+
+        self.assertEqual(base.status_code, 200)
+        self.assertEqual(outra.status_code, 200)
+        self.assertNotEqual(base.data["counts"], outra.data["counts"])
+
+    def test_canal_nao_fluorescente_da_400(self):
+        res = self.client.post(
+            self.url(),
+            self.payload(channels=["FSC-A"], matrix=[[1.0]]),
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("FSC-A", str(res.data))
+
+    def test_canal_duplicado_da_400(self):
+        res = self.client.post(
+            self.url(),
+            self.payload(
+                channels=["FITC-A", "FITC-A"], matrix=[[1.0, 0.0], [0.0, 1.0]]
+            ),
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_matriz_nao_quadrada_e_valor_invalido_da_400(self):
+        for matrix in (
+            [[1.0, 0.5]],  # menos linhas que canais
+            [[1.0], [0.0]],  # linha sem 2 colunas
+            [[1.0, "x"], [0.0, 1.0]],  # string
+            [[1.0, True], [0.0, 1.0]],  # bool
+        ):
+            res = self.client.post(
+                self.url(), self.payload(matrix=matrix), format="json"
+            )
+            self.assertEqual(res.status_code, 400, f"matriz {matrix!r} aceita")
+
+        # NaN/Infinity só chegam via JSON cru — o encoder do test client é estrito.
+        for raw in ("NaN", "Infinity"):
+            res = self.client.post(
+                self.url(),
+                "{"
+                f'"channels": ["FITC-A", "PE-A"], "file": {self.file_data.id}, '
+                f'"matrix": [[1.0, {raw}], [0.0, 1.0]]'
+                "}",
+                content_type="application/json",
+            )
+            self.assertEqual(res.status_code, 400, f"valor {raw} aceito")
+
+    def test_file_de_outro_experimento_ou_inativo_da_400(self):
+        other_exp = ExperimentModel.objects.create(
+            title="outro",
+            type="t",
+            created_by=self.owner,
+            status="done",
+            values=["FITC-A"],
+        )
+        other_fm = FileModel.objects.create(
+            file_name="o.zip", file="o.zip", sha256="f" * 64, experiment=other_exp
+        )
+        foreign = FileDataModel.objects.create(
+            headers={},
+            experiment=other_exp,
+            file_name="b.fcs",
+            file=other_fm,
+            data_set={},
+        )
+        inactive = self._file("inativa.fcs", {}, active=False)
+
+        for file_id in (foreign.id, inactive.id):
+            res = self.client.post(
+                self.url(), self.payload(file=file_id), format="json"
+            )
+            self.assertEqual(res.status_code, 400)
+
+    def test_experimento_alheio_da_404(self):
+        self.client.force_authenticate(self.stranger)
+        other_exp = ExperimentModel.objects.create(
+            title="outro",
+            type="t",
+            created_by=self.stranger,
+            status="done",
+            values=["FITC-A"],
+        )
+        self.client.force_authenticate(self.owner)
+
+        res = self.client.post(self.url(other_exp), self.payload(), format="json")
+
+        self.assertEqual(res.status_code, 404)
+
+
 class DeriveAnalysisApiTestCase(TestCase):
     """BE-19/ADR-0021: derivar a estratégia de um experimento em outro —
     match por content_guid (fallback file_name), snapshot sem copied_from."""

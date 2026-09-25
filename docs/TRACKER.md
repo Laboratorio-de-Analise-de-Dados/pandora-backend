@@ -26,6 +26,7 @@ ou alinhe com o responsável.
 | Fix e-mail de convite (FE-10 passo 1) | `accounts/services/send_mail.py`, `accounts/tests.py` | `fix/invite-email-url` | devin | 2026-09 |
 | Docs: revisão do PRD BE-26 (marcação por arquivo + placa) | `pandora-docs/prd/BE-26*` | `docs/be-26-controles-arquivo` | devin | 2026-09 |
 | plot_config da amostra raiz (card #71) | `FileDataModel.plot_config`, `FilePlotConfigView`, `ListFileDataSerializer` | `feat/plot-config-file` | devin | 2026-09 |
+| BE-35/BE-36 compensação manual + preview (cards #73/#82) | ✅ mergeado (PR #119); falta `channel_stats`/`gates` no preview — ver PRD BE-36 | `feat/compensation-preview-stats` | devin | 2026-09 |
 
 ## Concluído nesta branch
 
