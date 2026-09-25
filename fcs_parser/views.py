@@ -64,6 +64,7 @@ from fcs_parser.permissions import (
     require_can_edit_file_data,
     uploads_visible_to,
 )
+from analytics.serializers import CompensationPreviewSerializer
 from fcs_parser.services.compensation import (
     applied_compensation,
     apply_compensation,
@@ -941,6 +942,143 @@ class ExperimentCompensationRemoveView(APIView):
         require_can_edit_experiment(request.user, experiment)
         set_applied_compensation(experiment, None, request.user)
         return Response({"is_applied": False}, status=status.HTTP_200_OK)
+
+
+class ExperimentCompensationPreviewView(APIView):
+    """POST .../compensations/preview — densidade de uma matriz ad-hoc (BE-36).
+
+    Read-only de fato: nunca cria CompensationMatrix nem AnalysisRevision
+    — é o caminho do FE-41 para mostrar o efeito da matriz sendo editada
+    sem poluir a lista de matrizes nem o histórico do experimento.
+    Leitura basta (``experiments_visible_to``): nada é escrito.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=CompensationPreviewSerializer,
+        responses={200: None, 400: None},
+    )
+    def post(self, request, experiment_id):
+        import hashlib
+
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        payload = CompensationPreviewSerializer(
+            data=request.data, context={"experiment": experiment}
+        )
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+        file_data = data["file"]
+        params = data.get("params") or {}
+
+        x_param = data["x_axis"]
+        y_param = data["y_axis"]
+        try:
+            mode = str(params.get("mode", "heatmap"))
+            bins = int(params.get("bins", 200))
+            sample = int(params.get("sample", 5000))
+            x_scale = params.get("xscale") or default_scale(x_param)
+            y_scale = params.get("yscale") or default_scale(y_param)
+            cofactor = float(params.get("cofactor", DEFAULT_COFACTOR))
+            cutoff = max(int(params.get("cutoff", 0)), 0)
+            x_range = parse_range(params, "xmin", "xmax")
+            y_range = parse_range(params, "ymin", "ymax")
+        except (TypeError, ValueError):
+            return Response(
+                {"params": "Parâmetros de renderização inválidos."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Cache por conteúdo (ADR-0004): o sha256 do payload normalizado
+        # entra no lugar do :comp<id> — matrizes em edição mudam a cada
+        # tecla, mas valores repetidos reutilizam o cache do density.
+        digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "channels": data["channels"],
+                    "matrix": data["matrix"],
+                    "file": file_data.id,
+                    "x_axis": x_param,
+                    "y_axis": y_param,
+                    "params": params,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()[:16]
+        cache_key = density_cache_key(
+            "file",
+            file_data.id,
+            file_data.id,
+            x_param,
+            y_param,
+            mode,
+            bins,
+            sample,
+            x_scale,
+            y_scale,
+            cofactor,
+            cutoff,
+        )
+        if x_range:
+            cache_key += f":xr{x_range[0]}:{x_range[1]}"
+        if y_range:
+            cache_key += f":yr{y_range[0]}:{y_range[1]}"
+        cache_key += f":comp-preview:{digest}"
+        cached = get_cached_density(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        dataset = normalize_columns(file_data.get_dataframe())
+        dataset = apply_compensation(dataset, data["channels"], data["matrix"])
+
+        base = {
+            "mode": mode,
+            "total_events": len(dataset),
+            "x_label": x_param,
+            "y_label": y_param,
+        }
+        if mode == "scatter":
+            result = subsample_scatter(
+                dataset,
+                x_param,
+                y_param,
+                sample,
+                x_scale,
+                y_scale,
+                cofactor,
+                x_range,
+                y_range,
+            )
+        elif mode == "histogram":
+            result = compute_histogram(
+                dataset, x_param, bins, x_scale, cofactor, x_range
+            )
+        else:
+            result = compute_density(
+                dataset,
+                x_param,
+                y_param,
+                bins,
+                x_scale,
+                y_scale,
+                cofactor,
+                cutoff,
+                x_range,
+                y_range,
+            )
+
+        if result is None:
+            return Response(
+                {"detail": f"Columns '{x_param}' or '{y_param}' not found in dataset."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        response_payload = {**base, **result}
+        set_cached_density(cache_key, response_payload)
+        return Response(response_payload, status=status.HTTP_200_OK)
 
 
 class ExperimentRestoreView(APIView):
