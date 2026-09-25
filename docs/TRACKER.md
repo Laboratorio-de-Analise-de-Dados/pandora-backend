@@ -23,6 +23,7 @@ ou alinhe com o responsável.
 | BE-31 resiliência de processamento | `docs/prd/BE-31*`, `fcs_parser/services/*` | `docs/be-31-processing-resilience` | outra sessão | 2026-09 |
 | BE-32/ADR-0028 dedup de storage (docs) | `docs/prd`, `docs/adr` | `docs/be-32-blob-dedup` | devin | 2026-09 |
 | BE-36 preview de compensação ad-hoc (card #82) | ✅ concluído — mergeado (PRs #119/#121), deploy v0.5.0 | — | — | — |
+| Dívida: validação inline → serializers (ADR-0009) + auditoria de stats (eixos de gate_coordinates com precedência, `n`/`rcv` por canal, `FileStatsView` reusando `calculate_cytometry_metrics`, `std_dev` sanitizado p/ n=1) + domínio de gate em `analytics/gate_filter.py` + remoção de código morto | `*/serializers.py`, `*/views.py`, `*/tests.py`, `analytics/gate_filter.py`, `utils/density.py`, `analytics/tasks.py`, `fcs_parser/services/*` | `refactor/inline-validation-serializers` | devin | 2026-09 |
 | BE-34 tags de amostra (+ subsample/herança/setup) | ✅ concluído — mergeado (PRs #113/#114), deploy v0.4.0 | — | — | — |
 | Fix e-mail de convite (FE-10 passo 1) | `accounts/services/send_mail.py`, `accounts/tests.py` | `fix/invite-email-url` | devin | 2026-09 |
 | Docs: revisão do PRD BE-26 (marcação por arquivo + placa) | `pandora-docs/prd/BE-26*` | `docs/be-26-controles-arquivo` | devin | 2026-09 |

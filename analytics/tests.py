@@ -1,3 +1,7 @@
+from types import SimpleNamespace
+
+import numpy as np
+import pandas as pd
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -8,7 +12,7 @@ from analytics.models import (
     DashboardModel,
     GateModel,
 )
-from analytics.tasks import recalculate_gate_analysis
+from analytics.tasks import calculate_cytometry_metrics, recalculate_gate_analysis
 from fcs_parser.models import (
     ExperimentModel,
     FileDataModel,
@@ -310,6 +314,28 @@ class GateScopeTestCase(GateFixtureMixin, TestCase):
         self.assertEqual(res.status_code, 201)
         copy = GateModel.objects.get(file_data=self.file_b, name="P8")
         self.assertEqual(copy.created_by_id, self.user.id)
+
+    def test_apply_requires_both_lists(self):
+        res = self.client.post("/analytics/gate/apply", {}, format="json")
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_apply_rejects_unknown_on_conflict(self):
+        # Antes do serializer, um valor fora das choices caía
+        # silenciosamente no rename; agora é 400 (ADR-0009).
+        source = self._gate(self.file_a, "P8")
+
+        res = self.client.post(
+            "/analytics/gate/apply",
+            {
+                "source_gate_ids": [source.id],
+                "target_file_data_ids": [self.file_b.id],
+                "on_conflict": "bogus",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
 
     def test_gate_list_exposes_author_name(self):
         self.source.created_by = self.user
@@ -1429,3 +1455,121 @@ class BranchWorkflowTestCase(GateFixtureMixin, TestCase):
         actions_main = [(r["action"], r["branch"]) for r in res_main.data["results"]]
         self.assertIn(("rename", self.main.id), actions_main)
         self.assertNotIn(("rename", branch.id), actions_main)
+
+
+class StatsAuditTestCase(TestCase):
+    """Auditoria de stats (dívida): eixos de gate_coordinates têm precedência
+    sobre os labels do dashboard em qualquer tipo de gate, e as métricas por
+    canal expõem `n`/`rcv` calculados só sobre valores finitos."""
+
+    def _gate(self, coords, dash_config=None):
+        return SimpleNamespace(
+            gate_coordinates=coords,
+            dashboard=SimpleNamespace(dashboard_config=dash_config),
+        )
+
+    def _df(self):
+        return pd.DataFrame(
+            {
+                "fsc_a": [1.0, 100.0],
+                "ssc_a": [1.0, 100.0],
+                "fitc_a": [5.0, 5.0],
+                "apc_a": [5.0, 5.0],
+            }
+        )
+
+    def test_retangulo_prefere_eixos_das_coordenadas(self):
+        from analytics.gate_filter import apply_gate_filter, gate_axis_channels
+
+        # Pelos labels do dashboard (fsc/ssc) só 1 evento entraria no
+        # retângulo; pelos eixos gravados nas coords (fitc/apc) entram os 2.
+        gate = self._gate(
+            {
+                "type": "rectangle",
+                "x_axis": "FITC-A",
+                "y_axis": "APC-A",
+                "startX": 0,
+                "endX": 10,
+                "startY": 0,
+                "endY": 10,
+            },
+            {"x_axis_label": "FSC-A", "y_axis_label": "SSC-A"},
+        )
+
+        self.assertEqual(gate_axis_channels(gate), ("FITC-A", "APC-A"))
+        self.assertEqual(len(apply_gate_filter(self._df(), gate)), 2)
+
+    def test_poligono_prefere_eixos_das_coordenadas(self):
+        from analytics.gate_filter import apply_gate_filter
+
+        gate = self._gate(
+            {
+                "type": "polygon",
+                "x_axis": "FITC-A",
+                "y_axis": "APC-A",
+                "vertices": [[0, 0], [10, 0], [10, 10], [0, 10]],
+            },
+            {"x_axis_label": "FSC-A", "y_axis_label": "SSC-A"},
+        )
+
+        self.assertEqual(len(apply_gate_filter(self._df(), gate)), 2)
+
+    def test_gate_sem_eixos_nas_coords_cai_no_dashboard(self):
+        from analytics.gate_filter import apply_gate_filter, gate_axis_channels
+
+        gate = self._gate(
+            {"type": "rectangle", "startX": 0, "endX": 10, "startY": 0, "endY": 10},
+            {"x_axis_label": "FSC-A", "y_axis_label": "SSC-A"},
+        )
+
+        self.assertEqual(gate_axis_channels(gate), ("FSC-A", "SSC-A"))
+        self.assertEqual(len(apply_gate_filter(self._df(), gate)), 1)
+
+    def test_metrics_calcula_mean_median_cv_rcv_e_n(self):
+        df = pd.DataFrame({"fitc_a": [10.0, 20.0, 30.0, 40.0, 50.0]})
+
+        metrics = calculate_cytometry_metrics(df, 10, df, ["fitc_a"])
+
+        self.assertEqual(metrics["summary_metrics"]["count"], 5)
+        self.assertAlmostEqual(
+            metrics["summary_metrics"]["percent_of_total_population"], 0.5
+        )
+        stat = metrics["channel_statistics"]["fitc_a"]
+        self.assertEqual(stat["n"], 5)
+        self.assertAlmostEqual(stat["mean_mfi"], 30.0)
+        self.assertAlmostEqual(stat["median_mfi"], 30.0)
+        # P16 = 16.4, P84 = 43.6 → rCV = 27.2 / (2 * 30) * 100 = 45.3333
+        self.assertAlmostEqual(stat["rcv"], 45.3333, places=3)
+        self.assertAlmostEqual(stat["cv"], stat["std_dev"] / 30.0 * 100)
+
+    def test_metrics_ignora_valores_nao_finitos_mas_conta_eventos(self):
+        df = pd.DataFrame(
+            {
+                "fitc_a": [100.0, 200.0, np.nan, np.inf],
+                "fsc_a": [np.nan, np.nan, np.nan, np.nan],
+            }
+        )
+
+        metrics = calculate_cytometry_metrics(df, 4, df, ["fitc_a", "fsc_a"])
+
+        # Evento com NaN continua evento: count conta linhas; `n` conta
+        # só os valores finitos usados na média/mediana do canal.
+        self.assertEqual(metrics["summary_metrics"]["count"], 4)
+        stat = metrics["channel_statistics"]["fitc_a"]
+        self.assertEqual(stat["n"], 2)
+        self.assertAlmostEqual(stat["mean_mfi"], 150.0)
+        self.assertAlmostEqual(stat["median_mfi"], 150.0)
+        # Canal todo não-finito não emite stat NaN (quebraria o JSON).
+        self.assertNotIn("fsc_a", metrics["channel_statistics"])
+
+    def test_rcv_permanece_definido_quando_cv_quebra(self):
+        # Mediana/média negativas: comum em canal compensado. `cv` fica
+        # negativo/sem sentido; `rcv` mede a dispersão relativa à mediana.
+        df = pd.DataFrame({"bv_a": [-50.0, -40.0, -30.0, -20.0, -10.0]})
+
+        metrics = calculate_cytometry_metrics(df, 5, df, ["bv_a"])
+
+        stat = metrics["channel_statistics"]["bv_a"]
+        self.assertLess(stat["cv"], 0)
+        self.assertNotEqual(stat["rcv"], 0)
+        self.assertAlmostEqual(abs(stat["rcv"]), 45.3333, places=3)

@@ -4,9 +4,9 @@ from rest_framework.exceptions import PermissionDenied
 
 from accounts.models import Organization
 from accounts.serializers import OrganizationListSerializer
-from fcs_parser.permissions import can_create_experiment_type
+from fcs_parser.permissions import can_create_experiment_type, is_org_member
 from analytics.serializers import ListGateSerializer
-from utils.validators import experiment_file_extension, validate_zip_file
+from utils.validators import experiment_file_extension
 from .models import (
     ExperimentModel,
     ExperimentTypeModel,
@@ -217,31 +217,6 @@ class ExperimentCompleteSerializer(serializers.Serializer):
         return value
 
 
-class ExperimentSerializer(serializers.ModelSerializer):
-    file = serializers.FileField(allow_empty_file=False, write_only=True)
-    values = serializers.ListField(child=serializers.CharField(), required=False)
-    error_info = serializers.JSONField(read_only=True)
-
-    class Meta:
-        model = ExperimentModel
-        fields = [
-            "id",
-            "title",
-            "file",
-            "type",
-            "values",
-            "active",
-            "status",
-            "error_info",
-        ]
-        read_only_fields = ["id", "active", "status", "error_info"]
-
-    def validate(self, data):
-        if "file" in data:
-            validate_zip_file(data["file"])
-        return super().validate(data)
-
-
 class SampleTagSerializer(serializers.ModelSerializer):
     """Vocabulário de tags de amostra (BE-34).
 
@@ -282,7 +257,7 @@ class SubsampleSerializer(serializers.ModelSerializer):
     files_count = serializers.SerializerMethodField()
     # BE-34: tags de contexto do grupo (leitura = objetos; escrita = ids
     # em ``tag_ids``). Só ``category="general"`` — controle do grupo é
-    # ``control_type``, validado em ``set_subsample_tags``.
+    # ``control_type``, validado no ``validate`` abaixo.
     tags = SampleTagSerializer(many=True, read_only=True)
     tag_ids = serializers.ListField(
         child=serializers.IntegerField(), write_only=True, required=False
@@ -402,6 +377,116 @@ class SubsampleSerializer(serializers.ModelSerializer):
             )
         attrs["control_channel"] = channel
         return attrs
+
+
+def _validate_target_org(user, organization_id):
+    """Destino de move/copy: ``None`` = espaço pessoal; um id precisa ser
+    de organização existente onde o usuário é membro ativo."""
+    if organization_id is None:
+        return None
+    if not Organization.objects.filter(id=organization_id).exists():
+        raise serializers.ValidationError("Laboratório não encontrado.")
+    if not is_org_member(user, organization_id):
+        raise PermissionDenied("Você não é membro do laboratório de destino.")
+    return organization_id
+
+
+class FileSubsampleSerializer(serializers.Serializer):
+    """PATCH /experiment/file/<id>/subsample — move a amostra de grupo.
+
+    ``subsample`` é obrigatório no payload (``null`` desagrupa); quando
+    preenchido precisa ser um subsample ativo do mesmo experimento — a
+    instância resolvida volta em ``validated_data`` (ADR-0009).
+    """
+
+    subsample = serializers.IntegerField(
+        allow_null=True,
+        error_messages={"required": "Campo obrigatório (use null para desagrupar)."},
+    )
+
+    def validate_subsample(self, value):
+        if value is None:
+            return None
+        subsample = SubsampleModel.objects.filter(
+            id=value,
+            experiment_id=self.context["experiment"].id,
+            active=True,
+        ).first()
+        if subsample is None:
+            raise serializers.ValidationError(
+                "Subsample inválido para este experimento."
+            )
+        return subsample
+
+
+class ExperimentMoveSerializer(serializers.Serializer):
+    """PATCH /experiment/<id>/ com ``organization_id`` — troca de contexto
+    (BE-11): ``null`` move para o espaço pessoal."""
+
+    organization_id = serializers.IntegerField(
+        allow_null=True,
+        error_messages={"invalid": "organization_id inválido."},
+    )
+
+    def validate_organization_id(self, value):
+        return _validate_target_org(self.context["request"].user, value)
+
+
+class ExperimentCopySerializer(serializers.Serializer):
+    """POST /experiment/<id>/copy — título opcional e org de destino."""
+
+    title = serializers.CharField(
+        required=False,
+        allow_null=True,
+        error_messages={"blank": "Título inválido."},
+    )
+    organization_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        error_messages={"invalid": "organization_id inválido."},
+    )
+
+    def validate_organization_id(self, value):
+        return _validate_target_org(self.context["request"].user, value)
+
+
+class ExperimentDeriveAnalysisSerializer(serializers.Serializer):
+    """POST /experiment/<id>/derive-analysis/ (BE-19, ADR-0021)."""
+
+    source_experiment_id = serializers.IntegerField(
+        error_messages={
+            "required": "source_experiment_id é obrigatório.",
+            "invalid": "source_experiment_id é obrigatório.",
+            "null": "source_experiment_id é obrigatório.",
+        }
+    )
+    include_subsamples = serializers.BooleanField(required=False, default=True)
+    include_compensation = serializers.BooleanField(required=False, default=True)
+
+    def validate(self, attrs):
+        target = self.context.get("target")
+        if target is not None and attrs["source_experiment_id"] == target.id:
+            raise serializers.ValidationError(
+                {"detail": "Origem e alvo são o mesmo experimento."}
+            )
+        return attrs
+
+
+class FileHashCheckSerializer(serializers.Serializer):
+    """POST /experiment/check-hash/ — dedup de upload por SHA-256 (BE-12)."""
+
+    sha256 = serializers.CharField()
+    experiment_id = serializers.IntegerField(required=False, allow_null=True)
+
+    def validate_sha256(self, value):
+        normalized = value.lower()
+        if len(normalized) != 64 or any(
+            c not in "0123456789abcdef" for c in normalized
+        ):
+            raise serializers.ValidationError(
+                "sha256 deve ser um hash hexadecimal de 64 caracteres."
+            )
+        return normalized
 
 
 class FileTagsUpdateSerializer(serializers.Serializer):
@@ -547,10 +632,3 @@ class ListExperimentSerializer(serializers.ModelSerializer):
 
     def get_compensated(self, obj):
         return getattr(obj, "compensated", False)
-
-
-class CreateFileModelSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = FileDataModel
-        fields = ["id", "file_name", "file"]
-        read_only_fields = ["id"]

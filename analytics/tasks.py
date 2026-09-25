@@ -28,55 +28,6 @@ def load_fcs_data_from_file_data_model(file_data_id: int) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def apply_gate_to_data(fcs_data_df, gate_coordinates, x_param, y_param):
-
-    if fcs_data_df.empty:
-        return pd.DataFrame()
-
-    filtered_data = fcs_data_df.copy()
-
-    if x_param not in filtered_data.columns or y_param not in filtered_data.columns:
-        logger.warning(
-            "Parâmetros '%s' ou '%s' não encontrados nos dados.", x_param, y_param
-        )
-        return pd.DataFrame()
-
-    if gate_coordinates.get("type") == "polygon":
-        from utils.density import _points_in_polygon
-
-        vertices = gate_coordinates.get("vertices") or []
-        if len(vertices) < 3:
-            logger.warning("Polígono com menos de 3 vértices. Ignorando.")
-            return pd.DataFrame()
-        mask = _points_in_polygon(
-            filtered_data[x_param].values, filtered_data[y_param].values, vertices
-        )
-        return filtered_data[mask]
-
-    if (
-        "startX" in gate_coordinates
-        and "endX" in gate_coordinates
-        and "startY" in gate_coordinates
-        and "endY" in gate_coordinates
-    ):
-        min_x = gate_coordinates.get("startX")
-        max_x = gate_coordinates.get("endX")
-        min_y = gate_coordinates.get("startY")
-        max_y = gate_coordinates.get("endY")
-
-        filtered_data = filtered_data[
-            (filtered_data[x_param] >= min_x)
-            & (filtered_data[x_param] <= max_x)
-            & (filtered_data[y_param] >= min_y)
-            & (filtered_data[y_param] <= max_y)
-        ]
-    else:
-        logger.warning("Formato de gate_coordinates desconhecido.")
-        return pd.DataFrame()
-
-    return filtered_data
-
-
 def calculate_cytometry_metrics(
     gated_data_df,
     total_events_in_file,
@@ -104,18 +55,36 @@ def calculate_cytometry_metrics(
 
     if all_channel_names:
         for channel in all_channel_names:
-            if channel in gated_data_df.columns and not gated_data_df[channel].empty:
-                channel_data = gated_data_df[channel]
-                mean_val = channel_data.mean()
-                median_val = channel_data.median()
-                std_dev_val = channel_data.std()
+            if channel not in gated_data_df.columns:
+                continue
+            # Só valores finitos entram nas stats: `n` registra quantos
+            # eventos do gate têm valor válido no canal (o `count` do
+            # resumo continua sendo o total de eventos do gate).
+            channel_data = gated_data_df[channel]
+            channel_data = channel_data.replace([np.inf, -np.inf], np.nan).dropna()
+            if channel_data.empty:
+                continue
+            mean_val = channel_data.mean()
+            median_val = channel_data.median()
+            # std com ddof=1 é NaN para n=1 — um gate de evento único
+            # não tem dispersão; emitir NaN quebraria o insert no JSONB
+            # (Postgres não aceita o token "NaN").
+            std_dev_val = channel_data.std()
+            if not np.isfinite(std_dev_val):
+                std_dev_val = 0.0
+            q16, q84 = np.percentile(channel_data, [16, 84])
 
-                metrics["channel_statistics"][channel] = {
-                    "mean_mfi": mean_val,
-                    "median_mfi": median_val,
-                    "std_dev": std_dev_val,
-                    "cv": (std_dev_val / mean_val * 100) if mean_val != 0 else 0,
-                }
+            metrics["channel_statistics"][channel] = {
+                "n": int(channel_data.size),
+                "mean_mfi": mean_val,
+                "median_mfi": median_val,
+                "std_dev": std_dev_val,
+                "cv": (std_dev_val / mean_val * 100) if mean_val != 0 else 0,
+                # rCV (robust CV, padrão citometria): (P84 - P16) / (2 *
+                # mediana). Continua válido quando a média encosta em zero
+                # ou vira negativa (comum pós-compensação), onde cv quebra.
+                "rcv": ((q84 - q16) / 2 / median_val * 100) if median_val != 0 else 0,
+            }
 
     return metrics
 
@@ -136,11 +105,11 @@ def recalculate_gate_analysis(gate_id: int):
         applied_compensation,
         apply_compensation,
     )
-    from utils.density import (
+    from analytics.gate_filter import (
         apply_gate_filter,
         missing_gate_channels,
-        normalize_columns,
     )
+    from utils.density import normalize_columns
 
     logger.info("Iniciando recálculo para gate ID %s...", gate_id)
     try:

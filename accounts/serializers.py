@@ -470,3 +470,13 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         self.user.set_password(password)
         self.user.save(update_fields=["password"])
         return self.user
+
+
+class PasswordUpdateSerializer(serializers.Serializer):
+    """POST /accounts/users/me/password/ — troca de senha autenticada.
+
+    ``min_length`` segue a mesma política do reset por e-mail.
+    """
+
+    current_password = serializers.CharField()
+    new_password = serializers.CharField(write_only=True, min_length=6)

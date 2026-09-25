@@ -208,46 +208,6 @@ def extract_metadata_from_zip(
     return values
 
 
-def extract_metadata_from_fcs(file_model: FileModel) -> list[str]:
-    """Legado: metadados de um `.fcs` solto sem aglutinar em ZIP.
-
-    Mantido para compat com código antigo — o fluxo atual aglutina o `.fcs`
-    num ZIP no `complete/` (``wrap_fcs_as_zip``) e sempre usa
-    ``extract_metadata_from_zip``.
-    """
-    experiment = file_model.experiment
-    fcs_path = file_model.file.path
-
-    headers, _ = readfcs.view(fcs_path)
-    channels_df = readfcs.ReadFCS(fcs_path).channels
-    values = channels_df["PnN"].tolist()
-
-    FileDataModel.objects.create(
-        headers=headers,
-        data_set=None,
-        experiment=experiment,
-        file_name=file_model.file_name,
-        source_path=file_model.file_name or "",
-        content_guid=_content_guid(headers),
-        content_sha256=file_sha256(fcs_path),
-        file=file_model,
-        fcs_path=fcs_path,
-        parquet_path=None,
-    )
-
-    experiment.values = values
-    experiment.status = "done"
-    experiment.save(update_fields=["values", "status"])
-
-    logger.info(
-        "Metadados do Experimento %s ('%s') extraídos de um .fcs solto.",
-        experiment.id,
-        experiment.title,
-    )
-
-    return values
-
-
 def process_experiment_zip(file_model: FileModel) -> list[str]:
     """Process the ZIP attached to *file_model*, creating FileDataModels.
 
