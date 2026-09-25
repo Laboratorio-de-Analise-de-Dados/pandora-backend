@@ -412,6 +412,14 @@ class FileTagsUpdateSerializer(serializers.Serializer):
     )
 
 
+class FilePlotConfigSerializer(serializers.Serializer):
+    """PATCH /experiment/file/<id>/plot-config — config de visualização da
+    amostra raiz (eixos, escalas, limites, modo), mesmo contrato do
+    ``plot_config`` de gate."""
+
+    plot_config = serializers.JSONField()
+
+
 class ListFileDataSerializer(serializers.ModelSerializer):
 
     gates = ListGateSerializer(many=True, read_only=True)
@@ -433,6 +441,7 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "source_path",
             "subsample",
             "gates",
+            "plot_config",
             "active",
             "deactivated_at",
             "has_embedded_compensation",
