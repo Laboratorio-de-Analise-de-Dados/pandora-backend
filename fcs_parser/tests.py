@@ -2286,6 +2286,156 @@ class CompensationPreviewTestCase(TestCase):
 
         self.assertEqual(res.status_code, 404)
 
+    # --- channel_stats + gates (BE-36 §1.1/§1.2) ----------------------------
+
+    def _gate(self, name, coords, file_data=None, parent=None, axes=None):
+        from analytics.models import DashboardModel, GateModel
+
+        file_data = file_data or self.file_data
+        dashboard = DashboardModel.objects.create(
+            file_data=file_data,
+            name=f"dash-{name}",
+            dashboard_config=axes or {"x_axis_label": "FITC-A", "y_axis_label": "PE-A"},
+        )
+        return GateModel.objects.create(
+            file_data=file_data,
+            name=name,
+            gate_coordinates=coords,
+            dashboard=dashboard,
+            parent=parent,
+            created_by=self.owner,
+        )
+
+    def _varied_file(self):
+        return self._file(
+            "var.fcs",
+            {
+                "FSC-A": [1, 2, 3, 4],
+                "SSC-A": [1, 2, 3, 4],
+                "FITC-A": [100.0, 900.0, 100.0, 900.0],
+                "PE-A": [50.0, 50.0, 800.0, 800.0],
+            },
+        )
+
+    def test_channel_stats_file_sempre_presente(self):
+        res = self.client.post(self.url(), self.payload(), format="json")
+
+        self.assertEqual(res.status_code, 200)
+        stats = res.data["channel_stats"]
+        self.assertIn("file", stats)
+        self.assertEqual(stats["file"]["FITC-A"]["count"], 2)
+        self.assertIn("median", stats["file"]["FITC-A"])
+        self.assertIn("mean", stats["file"]["PE-A"])
+
+    def test_channel_stats_muda_com_a_matriz(self):
+        ident = self.client.post(
+            self.url(),
+            self.payload(matrix=[[1.0, 0.0], [0.0, 1.0]]),
+            format="json",
+        )
+        spill = self.client.post(self.url(), self.payload(), format="json")
+
+        med_ident = ident.data["channel_stats"]["file"]["FITC-A"]["median"]
+        med_spill = spill.data["channel_stats"]["file"]["FITC-A"]["median"]
+        self.assertNotEqual(med_ident, med_spill)
+
+    def test_channel_stats_por_gate(self):
+        file_data = self._varied_file()
+        gate = self._gate(
+            "neg",
+            {"startX": 0, "endX": 500, "startY": 0, "endY": 1000},
+            file_data=file_data,
+        )
+
+        res = self.client.post(
+            self.url(),
+            self.payload(
+                file=file_data.id,
+                matrix=[[1.0, 0.0], [0.0, 1.0]],
+                gates=[gate.id],
+            ),
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        stats = res.data["channel_stats"]
+        self.assertEqual(stats["file"]["FITC-A"]["count"], 4)
+        gate_stats = stats[str(gate.id)]
+        self.assertEqual(gate_stats["FITC-A"]["count"], 2)
+        self.assertEqual(gate_stats["FITC-A"]["median"], 100.0)
+
+    def test_channel_stats_respeita_cadeia_de_ancestrais(self):
+        file_data = self._varied_file()
+        parent = self._gate(
+            "pai",
+            {"startX": 0, "endX": 500, "startY": 0, "endY": 1000},
+            file_data=file_data,
+        )
+        child = self._gate(
+            "filho",
+            {"startX": 0, "endX": 200, "startY": 0, "endY": 100},
+            file_data=file_data,
+            parent=parent,
+        )
+
+        res = self.client.post(
+            self.url(),
+            self.payload(
+                file=file_data.id,
+                matrix=[[1.0, 0.0], [0.0, 1.0]],
+                gates=[child.id],
+            ),
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["channel_stats"][str(child.id)]["FITC-A"]["count"], 1)
+
+    def test_gate_filtra_densidade_da_previa(self):
+        file_data = self._varied_file()
+        gate = self._gate(
+            "so-um",
+            {"startX": 0, "endX": 150, "startY": 0, "endY": 100},
+            file_data=file_data,
+        )
+
+        res = self.client.post(
+            self.url(),
+            self.payload(
+                file=file_data.id,
+                matrix=[[1.0, 0.0], [0.0, 1.0]],
+                gate=gate.id,
+            ),
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["total_events"], 1)
+        self.assertEqual(res.data["channel_stats"]["file"]["FITC-A"]["count"], 4)
+
+    def test_gate_de_outra_amostra_da_400(self):
+        file_data = self._varied_file()
+        gate = self._gate(
+            "neg",
+            {"startX": 0, "endX": 500, "startY": 0, "endY": 1000},
+            file_data=file_data,
+        )
+
+        res = self.client.post(self.url(), self.payload(gate=gate.id), format="json")
+        res_list = self.client.post(
+            self.url(), self.payload(gates=[gate.id]), format="json"
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn(str(gate.id), str(res.data))
+        self.assertEqual(res_list.status_code, 400)
+        self.assertIn(str(gate.id), str(res_list.data))
+
+    def test_gate_inexistente_da_400(self):
+        res = self.client.post(self.url(), self.payload(gate=999999), format="json")
+
+        self.assertEqual(res.status_code, 400)
+
 
 class DeriveAnalysisApiTestCase(TestCase):
     """BE-19/ADR-0021: derivar a estratégia de um experimento em outro —
