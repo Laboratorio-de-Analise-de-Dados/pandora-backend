@@ -48,11 +48,14 @@ from analytics.models import (
 )
 from analytics.serializers import (
     AnalysisCheckpointSerializer,
+    AnalysisFigureListSerializer,
+    AnalysisFigureSerializer,
     AnalysisRevisionDetailSerializer,
     AnalysisRevisionSerializer,
     CheckpointCreateSerializer,
     CheckpointPatchSerializer,
     DashboardSerializer,
+    FigureWriteSerializer,
     GateBatchDeleteSerializer,
     GateSerializer,
     GateUpdateSerializer,
@@ -1911,4 +1914,229 @@ class BranchMergeView(APIView):
                 "merge_revision_id": result["merge_revision_id"],
             },
             status=status.HTTP_200_OK,
+        )
+
+
+class ExperimentFigureListCreateView(_ScopedExperimentMixin, APIView):
+    """GET/POST /analytics/experiment/<id>/figures/ (BE-33).
+
+    POST valida o spec (FigureWriteSerializer), recusa nome duplicado
+    (409) e cria a figura já com ``result_cache`` computado e a âncora
+    ``result_revision`` na revisão head do experimento.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, experiment_id):
+        from analytics.models import AnalysisFigure
+
+        experiment = self.get_experiment(request)
+        qs = (
+            experiment.analysis_figures.filter(active=True)
+            .select_related("created_by")
+            .order_by("-updated_at")
+        )
+        return Response({"results": AnalysisFigureListSerializer(qs, many=True).data})
+
+    @extend_schema(
+        request=FigureWriteSerializer,
+        responses=AnalysisFigureSerializer,
+    )
+    def post(self, request, experiment_id):
+        from fcs_parser.permissions import can_edit_experiment
+        from analytics.models import AnalysisFigure
+        from analytics.services.figures import compute_figure, head_revision
+
+        experiment = self.get_experiment(request)
+        if not can_edit_experiment(request.user, experiment):
+            raise PermissionDenied("Criar figura exige permissão de escrita.")
+
+        payload = FigureWriteSerializer(
+            data=request.data, context={"experiment": experiment}
+        )
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+
+        if not data.get("name") or not data.get("chart_type") or "spec" not in data:
+            return Response(
+                {"detail": "name, chart_type e spec são obrigatórios."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if experiment.analysis_figures.filter(name=data["name"], active=True).exists():
+            return Response(
+                {"detail": "Já existe uma figura com este nome no experimento."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        figure = AnalysisFigure(
+            experiment=experiment,
+            branch_id=data.get("branch_id"),
+            name=data["name"],
+            chart_type=data["chart_type"],
+            spec=data["spec"],
+            published=data.get("published", False),
+            created_by=request.user,
+        )
+        figure.result_cache = compute_figure(figure)
+        figure.result_revision = head_revision(figure)
+        try:
+            figure.save()
+        except IntegrityError:
+            return Response(
+                {"detail": "Já existe uma figura com este nome no experimento."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(
+            AnalysisFigureSerializer(figure).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class FigureDetailView(APIView):
+    """GET/PATCH/DELETE /analytics/figures/<id>/ (BE-33).
+
+    PATCH aceita ``name``/``spec``/``published`` (spec em figura
+    ``published`` → 409) e ``updated_at`` do cliente — divergente → 412
+    (optimistic locking). Mudar ``spec`` não regrava o cache: o
+    fingerprint do spec embutido no cache marca a figura como stale.
+    DELETE é soft delete (``active=false``).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_figure(self, request, pk):
+        from fcs_parser.permissions import experiments_visible_to
+        from analytics.models import AnalysisFigure
+
+        return get_object_or_404(
+            AnalysisFigure.objects.select_related("experiment", "created_by"),
+            id=pk,
+            active=True,
+            experiment__in=experiments_visible_to(request.user),
+        )
+
+    def get(self, request, pk):
+        figure = self._get_figure(request, pk)
+        return Response(AnalysisFigureSerializer(figure).data)
+
+    @extend_schema(
+        request=FigureWriteSerializer,
+        responses=AnalysisFigureSerializer,
+    )
+    def patch(self, request, pk):
+        from fcs_parser.permissions import can_edit_experiment
+
+        figure = self._get_figure(request, pk)
+        if not can_edit_experiment(request.user, figure.experiment):
+            raise PermissionDenied("Editar figura exige permissão de escrita.")
+
+        payload = FigureWriteSerializer(
+            data=request.data,
+            partial=True,
+            context={
+                "experiment": figure.experiment,
+                "chart_type": figure.chart_type,
+                "spec": figure.spec,
+            },
+        )
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+
+        client_updated_at = data.get("updated_at")
+        if client_updated_at is not None and figure.updated_at.replace(
+            microsecond=0
+        ) != client_updated_at.replace(microsecond=0):
+            return Response(
+                {"detail": "Figura foi alterada — recarregue antes de editar."},
+                status=status.HTTP_412_PRECONDITION_FAILED,
+            )
+
+        if "spec" in data and figure.published:
+            return Response(
+                {"detail": "Figura publicada — despublique para alterar."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        new_name = data.get("name")
+        if new_name and new_name != figure.name:
+            clash = figure.experiment.analysis_figures.filter(
+                name=new_name, active=True
+            ).exclude(id=figure.id)
+            if clash.exists():
+                return Response(
+                    {"detail": "Já existe uma figura com este nome no experimento."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            figure.name = new_name
+        if "spec" in data:
+            figure.spec = data["spec"]
+        if "chart_type" in data:
+            figure.chart_type = data["chart_type"]
+        if "published" in data:
+            figure.published = data["published"]
+        figure.save()
+        return Response(AnalysisFigureSerializer(figure).data)
+
+    def delete(self, request, pk):
+        from fcs_parser.permissions import can_edit_experiment
+
+        figure = self._get_figure(request, pk)
+        if not can_edit_experiment(request.user, figure.experiment):
+            raise PermissionDenied("Descartar figura exige permissão de escrita.")
+        figure.active = False
+        figure.save(update_fields=["active", "updated_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class FigureRecomputeView(APIView):
+    """POST /analytics/figures/<id>/recompute/ (BE-33 §5).
+
+    Recalcula ``result_cache``, move ``result_revision`` para a head
+    atual e devolve a figura + ``removed_since_last`` — o que estava
+    resolvido e deixou de estar (gate renomeado, amostra arquivada).
+    Recompute é manual: figura de relatório nunca absorve dados novos
+    sozinha.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from fcs_parser.permissions import (
+            can_edit_experiment,
+            experiments_visible_to,
+        )
+        from analytics.models import AnalysisFigure
+        from analytics.services.figures import (
+            compute_figure,
+            head_revision,
+            removed_since_last,
+        )
+
+        figure = get_object_or_404(
+            AnalysisFigure.objects.select_related("experiment", "created_by"),
+            id=pk,
+            active=True,
+            experiment__in=experiments_visible_to(request.user),
+        )
+        if not can_edit_experiment(request.user, figure.experiment):
+            raise PermissionDenied("Recomputar figura exige permissão de escrita.")
+        if figure.published:
+            return Response(
+                {"detail": "Figura publicada — despublique para alterar."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        previous_cache = figure.result_cache
+        new_cache = compute_figure(figure)
+        diff = removed_since_last(previous_cache, new_cache)
+
+        figure.result_cache = new_cache
+        figure.result_revision = head_revision(figure)
+        figure.save(update_fields=["result_cache", "result_revision", "updated_at"])
+
+        return Response(
+            {
+                "figure": AnalysisFigureSerializer(figure).data,
+                "removed_since_last": diff,
+            }
         )
