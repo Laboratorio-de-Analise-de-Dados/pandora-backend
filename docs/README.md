@@ -55,3 +55,5 @@ valor à pasta.
 | [0025](adr/0025-identidade-multi-provider-socialaccount.md) | Conta central com N identidades de IdP (`SocialAccount`) + `AuthEvent` append-only; match por `sub`, email-match exige confirmação | Proposto |
 | [0026](adr/0026-organizacao-nao-deriva-de-dominio-de-email.md) | Login social não cria nem associa organização — org é boundary de confiança via convite | Aceito |
 | [0027](adr/0027-processamento-vivo-via-advisory-lock-postgres.md) | Vivacidade de processamento via `pg_try_advisory_lock` — sem heartbeat/sweep; claim atômico permite retomada de órfão com N réplicas | Proposto |
+| [0029](adr/0029-figuras-de-analise-persistidas.md) | Figura de análise = spec + cache regenerável + âncora `result_revision`; staleness por fingerprint; CRUD de figura não gera revisão | Proposto |
+| [0030](adr/0030-preview-adhoc-servidor-computa-cliente-renderiza.md) | Preview ad-hoc: servidor computa agregados, cliente só renderiza; cache por hash do payload; preview não persiste nada | Aceito |
