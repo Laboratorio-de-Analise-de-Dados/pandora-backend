@@ -105,17 +105,6 @@ def set_file_tags(file_data, tag_ids, user) -> list[SampleTagModel]:
     return tags
 
 
-def set_subsample_tags(subsample, tag_ids, user) -> list[SampleTagModel]:
-    """Define as tags de contexto de um subsample (substituição completa).
-
-    Tags de grupo são só contexto — a exclusividade de controle nem se
-    aplica porque ``resolve_tags`` recusa ``category="control"`` aqui.
-    """
-    tags = resolve_tags(tag_ids, user, allow_control=False)
-    subsample.tags.set(tags)
-    return tags
-
-
 # ``control_type`` do subsample → system_key da tag de controle herdada.
 # O grupo é homogêneo (BE-22): todos os membros dividem o mesmo papel.
 CONTROL_TYPE_TO_SYSTEM_KEY = {

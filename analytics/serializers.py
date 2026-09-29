@@ -566,6 +566,16 @@ class CompensationManualCreateSerializer(serializers.Serializer):
         return attrs
 
 
+class CompensationFromHeaderSerializer(serializers.Serializer):
+    """POST .../compensations/from-header — ``name`` opcional, ``apply``
+    materializa e já aplica a matriz embutida num passo só."""
+
+    name = serializers.CharField(
+        required=False, allow_blank=True, max_length=256, default=""
+    )
+    apply = serializers.BooleanField(required=False, default=False)
+
+
 class CompensationMatrixUpdateSerializer(serializers.Serializer):
     """PATCH /analytics/compensations/<id>/ — só ``name`` é editável;
     o valor é aparado e truncado no limite da coluna.
@@ -707,4 +717,32 @@ class CompensationPreviewSerializer(serializers.Serializer):
                 )
             attrs["gates"] = [resolved[gid] for gid in gate_ids]
 
+        return attrs
+
+
+class ApplyGateSerializer(serializers.Serializer):
+    """POST /analytics/gates/apply — copia gates entre amostras.
+
+    ``on_conflict`` sem escolha válida caía silenciosamente no rename —
+    agora é 400. A exigência das duas listas fica em ``validate`` para
+    manter o contrato ``{"detail": ...}`` de quando faltam juntas.
+    """
+
+    source_gate_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False
+    )
+    target_file_data_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False
+    )
+    recursive = serializers.BooleanField(required=False, default=True)
+    on_conflict = serializers.ChoiceField(
+        choices=["rename", "replace", "skip"], default="replace"
+    )
+    dry_run = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        if not attrs.get("source_gate_ids") or not attrs.get("target_file_data_ids"):
+            raise serializers.ValidationError(
+                {"detail": "source_gate_ids and target_file_data_ids are required."}
+            )
         return attrs

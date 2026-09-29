@@ -309,6 +309,22 @@ class SubsampleApiTestCase(TestCase):
             404,
         )
 
+    def test_move_file_requires_subsample_field(self):
+        response = self.client.patch(self.move_url(), {}, format="json")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_move_file_rejects_non_integer_subsample(self):
+        # Antes da migração para serializer, id não-inteiro caía em
+        # ValueError no filter (500); agora é 400 de campo (ADR-0009).
+        response = self.client.patch(
+            self.move_url(), {"subsample": "abc"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.subsample_id, self.subsample.id)
+
 
 class RepairSourcePathTestCase(TestCase):
     """Backfill pelo ZIP: o caminho perdido é redescoberto na fonte de verdade."""
@@ -627,6 +643,35 @@ class ExperimentCopyApiTestCase(TestCase):
         res = self._copy(user=nobody)
         self.assertEqual(res.status_code, 404)
 
+    @patch("analytics.tasks.load_fcs_data_from_file_data_model")
+    def test_copy_sobrescreve_resultado_criado_pelo_signal(self, mock_load):
+        # Com dados FCS carregáveis o post_save do GateModel recalcula e
+        # grava um AnalysisResult para o gate clonado — a cópia deve
+        # sobrescrevê-lo com o resultado da origem em vez de colidir na
+        # PK gate_id (regressão: IntegrityError no copy com dados reais).
+        mock_load.return_value = pd.DataFrame(
+            {"FSC-A": [1.0, 2.0, 3.0], "SSC-A": [4.0, 5.0, 6.0]}
+        )
+        res = self._copy()
+
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(mock_load.called)
+        clone = ExperimentModel.objects.get(id=res.data["id"])
+        clone_gate = GateModel.objects.get(
+            file_data=FileDataModel.objects.get(experiment=clone)
+        )
+        self.assertEqual(clone_gate.analysis_result.analysis_result, {"count": 10})
+
+    def test_copy_rejects_blank_title(self):
+        res = self._copy(title="   ")
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_copy_rejects_non_integer_org(self):
+        res = self._copy(organization_id="abc")
+
+        self.assertEqual(res.status_code, 400)
+
 
 class ExperimentMoveApiTestCase(TestCase):
     """BE-11: mover troca o contexto sem duplicar nada — dono/admin na origem."""
@@ -726,6 +771,13 @@ class ExperimentMoveApiTestCase(TestCase):
         self.experiment.refresh_from_db()
         self.assertEqual(self.experiment.organization_id, self.org.id)
 
+    def test_move_rejects_non_integer_org(self):
+        res = self._patch(self.owner, organization_id="abc")
+
+        self.assertEqual(res.status_code, 400)
+        self.experiment.refresh_from_db()
+        self.assertEqual(self.experiment.organization_id, self.org.id)
+
 
 class FileHashCheckApiTestCase(TestCase):
     """BE-12: check-hash informa duplicata; nunca bloqueia o upload."""
@@ -762,6 +814,23 @@ class FileHashCheckApiTestCase(TestCase):
         res = self.client.post(
             "/experiment/check-hash/", {"sha256": "nope"}, format="json"
         )
+        self.assertEqual(res.status_code, 400)
+
+    def test_accepts_uppercase_hash(self):
+        res = self.client.post(
+            "/experiment/check-hash/", {"sha256": "B" * 64}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["exists"])
+
+    def test_rejects_non_integer_experiment_id(self):
+        res = self.client.post(
+            "/experiment/check-hash/",
+            {"sha256": "b" * 64, "experiment_id": "abc"},
+            format="json",
+        )
+
         self.assertEqual(res.status_code, 400)
 
 
@@ -1433,6 +1502,15 @@ class CompensationDetectionTestCase(TestCase):
         self.assertEqual(parsed["channels"], ["FITC-A", "PE-A"])
         self.assertEqual(parsed["matrix"], [[1.0, 0.12], [0.03, 1.0]])
 
+    def test_parse_spillover_variante_sem_cifrao(self):
+        from fcs_parser.services.compensation import parse_spillover
+
+        # Exportações que gravam SPILL sem o "$" do padrão FCS (FACSDiva).
+        parsed = parse_spillover({"SPILL": "2,FITC-A,PE-A,1,0.12,0.03,1"})
+
+        self.assertEqual(parsed["channels"], ["FITC-A", "PE-A"])
+        self.assertEqual(parsed["matrix"], [[1.0, 0.12], [0.03, 1.0]])
+
     def test_parse_spillover_malformado_devolve_none(self):
         from fcs_parser.services.compensation import parse_spillover
 
@@ -1732,6 +1810,34 @@ class CompensationControlsTestCase(TestCase):
         matrix.refresh_from_db()
         self.assertFalse(matrix.active)
         self.assertFalse(matrix.is_applied)
+
+    def test_patch_rejeita_campos_imutaveis(self):
+        # BE-35: valores são imutáveis — matrix/channels/source no PATCH
+        # viram 400 explícito em vez de serem ignorados pelo serializer.
+        from analytics.models import CompensationMatrix
+
+        matrix = CompensationMatrix.objects.create(
+            experiment=self.experiment,
+            channels=["FITC-A"],
+            matrix=[[1.0]],
+            source="manual",
+        )
+        url = f"/analytics/compensations/{matrix.id}/"
+        for payload in (
+            {"matrix": [[0.9]]},
+            {"name": "x", "channels": ["PE-A"]},
+            {"source": "computed"},
+        ):
+            res = self.client.patch(url, payload, format="json")
+            self.assertEqual(res.status_code, 400)
+            self.assertIn("imutáveis", str(res.data["detail"]))
+        matrix.refresh_from_db()
+        self.assertEqual(matrix.matrix, [[1.0]])
+
+        res = self.client.patch(url, {"name": "  nova  "}, format="json")
+        self.assertEqual(res.status_code, 200)
+        matrix.refresh_from_db()
+        self.assertEqual(matrix.name, "nova")
 
     def test_density_reflete_compensacao_aplicada(self):
         from analytics.models import CompensationMatrix
@@ -2599,6 +2705,13 @@ class DeriveAnalysisApiTestCase(TestCase):
         res = self._derive(source_experiment_id=self.target.id)
         self.assertEqual(res.status_code, 400)
 
+    def test_derive_sem_source_da_400(self):
+        res = self.client.post(
+            f"/experiment/{self.target.id}/derive-analysis", {}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 400)
+
         # Estranho não enxerga o alvo → 404.
         client = APIClient()
         client.force_authenticate(self.other)
@@ -3415,3 +3528,49 @@ class FilePlotConfigApiTestCase(TestCase):
         self.assertFalse(
             AnalysisRevision.objects.filter(experiment=self.experiment).exists()
         )
+
+
+class FileStatsTestCase(TestCase):
+    """Auditoria de stats: /file/<id>/stats compartilha a implementação de
+    métricas dos gates — mesmas chaves, mesmas convenções (n, rcv)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="tipo", created_by=self.user
+        )
+        self.upload = FileModel.objects.create(
+            file_name="amostras.zip", experiment=self.experiment
+        )
+        self.file_data = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            source_path="a1.fcs",
+            file=self.upload,
+            data_set=[
+                {"FSC-A": 10.0, "FITC-A": 100.0},
+                {"FSC-A": 20.0, "FITC-A": 200.0},
+                {"FSC-A": 30.0, "FITC-A": None},
+            ],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_stats_expoe_metricas_conhecidas_com_n_e_rcv(self):
+        res = self.client.get(f"/experiment/file/{self.file_data.id}/stats")
+
+        self.assertEqual(res.status_code, 200)
+        summary = res.data["summary_metrics"]
+        self.assertEqual(summary["count"], 3)
+        self.assertEqual(summary["percent_of_total_population"], 1.0)
+        self.assertEqual(summary["percent_of_parent_population"], 1.0)
+
+        fitc = res.data["channel_statistics"]["fitc_a"]
+        self.assertEqual(fitc["n"], 2)  # NaN não entra na média/mediana
+        self.assertAlmostEqual(fitc["mean_mfi"], 150.0)
+        self.assertAlmostEqual(fitc["median_mfi"], 150.0)
+        self.assertIn("rcv", fitc)
+        self.assertIn("cv", fitc)

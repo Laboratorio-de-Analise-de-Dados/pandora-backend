@@ -21,7 +21,7 @@ import pandas as pd
 
 from utils.density import default_scale, normalize_column_name
 
-SPILLOVER_KEYS = ("$spillover", "$comp")
+SPILLOVER_KEYS = ("$spillover", "$comp", "spill")
 
 
 def parse_spillover(headers: dict | None) -> dict | None:
@@ -67,10 +67,6 @@ def parse_spillover(headers: dict | None) -> dict | None:
 
     matrix = [values[i * n : (i + 1) * n] for i in range(n)]
     return {"channels": channels, "matrix": matrix}
-
-
-def headers_have_spillover(headers: dict | None) -> bool:
-    return parse_spillover(headers) is not None
 
 
 SPILLOVER_KEY_PATTERN = re.compile(r"^\$?(spillover|comp)$", re.IGNORECASE)

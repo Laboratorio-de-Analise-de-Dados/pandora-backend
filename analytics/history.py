@@ -18,7 +18,6 @@ from datetime import timedelta
 from django.conf import settings
 from django.db import transaction
 
-from analytics.gate_author import author_display_name
 from analytics.models import (
     AnalysisRevision,
     DashboardModel,
@@ -138,28 +137,6 @@ def record_revision(
         file_data_id=file_data_id,
         branch_id=getattr(branch, "id", branch),
     )
-
-
-def author_name(user) -> str:
-    if not user:
-        return "—"
-    return author_display_name(user.first_name, user.last_name, user.username)
-
-
-def revision_dict(revision: AnalysisRevision) -> dict:
-    return {
-        "id": revision.id,
-        "action": revision.action,
-        "scope": revision.scope,
-        "branch": revision.branch_id,
-        "target": {"type": revision.target_type, "id": revision.target_id},
-        "summary": revision.summary,
-        "author": author_name(revision.user),
-        "affected_ids": revision.affected_ids,
-        "created_at": revision.created_at,
-        "reverts": revision.reverts_id,
-        "revertible": revision.action in REVERSIBLE_ACTIONS,
-    }
 
 
 # ---------------------------------------------------------------------------

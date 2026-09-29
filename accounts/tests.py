@@ -841,3 +841,40 @@ class AccountMergeTests(APITestCase):
             {"username": "abs", "password": "pass12345"},
         )
         self.assertEqual(response.status_code, 401)
+
+
+class PasswordUpdateTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="dono", email="dono@example.com", password="pass12345"
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def _update(self, payload):
+        return self.client.post("/accounts/users/me/password/", payload, format="json")
+
+    def test_requires_both_fields(self):
+        res = self._update({})
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_short_new_password_is_rejected(self):
+        res = self._update({"current_password": "pass12345", "new_password": "123"})
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_wrong_current_password(self):
+        res = self._update(
+            {"current_password": "errada", "new_password": "nova-senha-1"}
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_updates_password(self):
+        res = self._update(
+            {"current_password": "pass12345", "new_password": "nova-senha-1"}
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("nova-senha-1"))
