@@ -728,6 +728,41 @@ class GateMissingChannelTestCase(GateFixtureMixin, TestCase):
         copy = GateModel.objects.get(file_data=self.file_b, copied_from=source)
         self.assertFalse(copy.analysis_result.analysis_result["applicable"])
 
+    def test_apply_materializa_stats_no_gate_propagado(self):
+        # Regressão card #90: o apply propagava o gate mas a amostra alvo
+        # ficava sem analysis_result quando get_dataframe não resolvia o
+        # ZIP do upload — a figura (BE-33) reportava a população como
+        # unmatched. Aqui a amostra alvo tem eventos e o gate deve sair
+        # com stats calculadas.
+        self._set_events(
+            self.file_b,
+            [
+                {"FSC-A": 1.0, "SSC-A": 2.0},
+                {"FSC-A": 5.0, "SSC-A": 6.0},
+            ],
+        )
+        self._set_events(
+            self.file_c,
+            [{"FSC-A": 3.0, "SSC-A": 4.0}],
+        )
+        source = self._gate_on_axes(self.file_a, "P-stats", x="FSC-A", y="SSC-A")
+
+        res = self.client.post(
+            "/analytics/gate/apply",
+            {
+                "source_gate_ids": [source.id],
+                "target_file_data_ids": [self.file_b.id, self.file_c.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        for file_data, expected_count in ((self.file_b, 2), (self.file_c, 1)):
+            copy = GateModel.objects.get(file_data=file_data, copied_from=source)
+            result = copy.analysis_result.analysis_result
+            self.assertEqual(result["summary_metrics"]["count"], expected_count)
+            self.assertIn("fsc_a", result["channel_statistics"])
+
 
 class AnalysisHistoryTestCase(GateFixtureMixin, TestCase):
     """BE-08: log append-only de mutações + reversão com dry_run/conflitos."""

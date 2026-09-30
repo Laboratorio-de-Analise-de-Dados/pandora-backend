@@ -16,6 +16,7 @@ import zipfile
 import pandas as pd
 import readfcs
 from django.conf import settings
+from django.core.exceptions import SuspiciousFileOperation
 
 from fcs_parser.models import (
     ExperimentModel,
@@ -139,7 +140,7 @@ def extract_metadata_from_zip(
     Returns the list of channel names (``values``) found in the first file.
     """
     experiment = file_model.experiment
-    zip_path = file_model.file.path
+    zip_path = upload_file_fs_path(file_model)
     directory_path = _extract_dir(experiment.id)
 
     os.makedirs(directory_path, exist_ok=True)
@@ -221,7 +222,7 @@ def process_experiment_zip(file_model: FileModel) -> list[str]:
     Returns the list of channel names (``values``) found in the first file.
     """
     experiment = file_model.experiment
-    zip_path = file_model.file.path
+    zip_path = upload_file_fs_path(file_model)
     directory_path = _extract_dir(experiment.id)
 
     os.makedirs(directory_path, exist_ok=True)
@@ -276,6 +277,25 @@ def process_experiment_zip(file_model: FileModel) -> list[str]:
     return values
 
 
+def upload_file_fs_path(file_model: "FileModel") -> str | None:
+    """Resolve o caminho do ZIP do upload em disco.
+
+    Linhas antigas gravaram o path absoluto no FileField (`file.name`) —
+    o correto é o nome relativo ao MEDIA_ROOT. Tolera os dois formatos:
+    path absoluto é usado direto; caso contrário resolve via storage.
+    """
+    file_field = getattr(file_model, "file", None)
+    name = getattr(file_field, "name", None) if file_field else None
+    if not name:
+        return None
+    if os.path.isabs(name):
+        return name if os.path.exists(name) else None
+    try:
+        return file_field.path
+    except (ValueError, SuspiciousFileOperation):
+        return None
+
+
 def extract_fcs_from_zip(upload: "FileModel", file_name: str) -> str | None:
     """Extract a single .fcs from the upload's ZIP (on-demand).
 
@@ -291,13 +311,8 @@ def extract_fcs_from_zip(upload: "FileModel", file_name: str) -> str | None:
     or ``None`` if the ZIP or entry is not found.
     The caller is responsible for cleaning up the file after use.
     """
-    # `.path` de um FileField sem arquivo levanta ValueError — trata como
-    # "ZIP ausente" em vez de derrubar o rebuild.
-    try:
-        file_field = getattr(upload, "file", None)
-        zip_path = file_field.path if file_field else None
-    except ValueError:
-        zip_path = None
+    # ZIP ausente/irresolúvel vira "not found" em vez de derrubar o rebuild.
+    zip_path = upload_file_fs_path(upload)
     if not zip_path or not os.path.exists(zip_path):
         return None
 
