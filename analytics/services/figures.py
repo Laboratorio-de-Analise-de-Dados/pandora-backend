@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from itertools import combinations
 
 from django.utils import timezone
+from scipy import stats as scipy_stats
 
 from analytics.models import (
     AnalysisFigure,
@@ -46,7 +49,15 @@ EXPERIMENT_WIDE_ACTIONS = {
 }
 
 METRIC_SUMMARY = {"percent_parent", "percent_total"}
-METRIC_CHANNEL = {"mean_mfi", "median_mfi", "std_dev", "cv"}
+METRIC_CHANNEL = {"mean_mfi", "median_mfi", "std_dev", "cv", "rcv"}
+
+STATS_TEST_CHOICES = {"auto", "parametric", "nonparametric"}
+_STATS_CHART_TYPES = {
+    AnalysisFigure.CHART_STATS_BAR,
+    AnalysisFigure.CHART_STATS_STRIP,
+}
+# n mínimo para um grupo entrar nos testes entre grupos (§7.5).
+_STATS_MIN_N = 3
 VALID_METRICS = METRIC_SUMMARY | METRIC_CHANNEL
 
 _SUMMARY_FIELD = {
@@ -283,6 +294,8 @@ def compute_figure(figure: AnalysisFigure) -> dict:
             "ainda processando"
         ]
 
+    stats_tests = compute_stats_tests(figure, rows)
+
     return {
         "rows": rows,
         "resolved_pairs": sorted(
@@ -302,7 +315,166 @@ def compute_figure(figure: AnalysisFigure) -> dict:
             "files": unmatched_files,
         },
         "meta": meta,
+        **({"stats_tests": stats_tests} if stats_tests is not None else {}),
     }
+
+
+def _clean_number(value):
+    """float finito ou None — NaN/inf nunca vão para o contrato."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _bh_adjust(p_values):
+    """Benjamini-Hochberg: devolve p_adj na ordem original dos p-values."""
+    m = len(p_values)
+    order = sorted(range(m), key=lambda i: p_values[i])
+    adjusted = [0.0] * m
+    running_min = 1.0
+    for rank in range(m, 0, -1):
+        idx = order[rank - 1]
+        running_min = min(running_min, p_values[idx] * m / rank)
+        adjusted[idx] = min(running_min, 1.0)
+    return adjusted
+
+
+def _resolve_test_method(preference, eligible_counts):
+    """auto → paramétrico, caindo para não-paramétrico com n pequeno."""
+    if preference != "auto":
+        return preference, None
+    if min(eligible_counts, default=0) < 10:
+        return "nonparametric", "auto → não-paramétrico: grupo com n < 10"
+    return "parametric", None
+
+
+def _stats_tests_for_population(rows, population, groups, preference):
+    """Testes entre grupos de uma população (BE-33 §7.5).
+
+    Grupos com n < _STATS_MIN_N não entram no teste — reportados em
+    ``warnings``. Devolve None quando nada é testável (a população só
+    aparece na lista se houve ao menos um grupo elegível).
+    """
+    values_by_group = {g.get("name"): [] for g in groups}
+    for row in rows:
+        if row.get("population") != population:
+            continue
+        value = row.get("value")
+        if value is not None and row.get("group") in values_by_group:
+            values_by_group[row["group"]].append(value)
+
+    n_per_group = {name: len(vals) for name, vals in values_by_group.items()}
+    warnings = []
+    eligible = {
+        name: vals
+        for name, vals in values_by_group.items()
+        if len(vals) >= _STATS_MIN_N
+    }
+    for name, n in n_per_group.items():
+        if 0 < n < _STATS_MIN_N:
+            warnings.append(f'grupo "{name}" com n<3 — teste omitido')
+
+    result = {
+        "population": population,
+        "method": None,
+        "omnibus": None,
+        "pairwise": [],
+        "n_per_group": n_per_group,
+        "warnings": warnings,
+    }
+    if len(eligible) < 2:
+        warnings.append("menos de 2 grupos elegíveis — teste omitido")
+        return result
+
+    method, auto_warning = _resolve_test_method(
+        preference, [len(v) for v in eligible.values()]
+    )
+    if auto_warning:
+        warnings.append(auto_warning)
+    result["method"] = method
+
+    names = list(eligible)
+    samples = [eligible[name] for name in names]
+    pairwise_rows = []
+
+    # Amostras constantes/iguais derrubam scipy (ex.: "All numbers are
+    # identical" no kruskal) — vira warning, não 500.
+    try:
+        if method == "parametric":
+            f_stat, p_omni = scipy_stats.f_oneway(*samples)
+            total_n = sum(len(s) for s in samples)
+            result["omnibus"] = {
+                "test": "one_way_anova",
+                "F": _clean_number(f_stat),
+                "p": _clean_number(p_omni),
+                "df": [len(samples) - 1, total_n - len(samples)],
+            }
+            for i, j in combinations(range(len(names)), 2):
+                t_stat, p = scipy_stats.ttest_ind(
+                    samples[i], samples[j], equal_var=False
+                )
+                pairwise_rows.append(
+                    {
+                        "group_a": names[i],
+                        "group_b": names[j],
+                        "t": _clean_number(t_stat),
+                        "p": _clean_number(p),
+                        "method": "welch_t",
+                    }
+                )
+        else:
+            h_stat, p_omni = scipy_stats.kruskal(*samples)
+            result["omnibus"] = {
+                "test": "kruskal_wallis",
+                "H": _clean_number(h_stat),
+                "p": _clean_number(p_omni),
+                "df": [len(samples) - 1],
+            }
+            for i, j in combinations(range(len(names)), 2):
+                u_stat, p = scipy_stats.mannwhitneyu(
+                    samples[i], samples[j], alternative="two-sided"
+                )
+                pairwise_rows.append(
+                    {
+                        "group_a": names[i],
+                        "group_b": names[j],
+                        "U": _clean_number(u_stat),
+                        "p": _clean_number(p),
+                        "method": "mann_whitney_u",
+                    }
+                )
+    except ValueError as exc:
+        warnings.append(f"teste não computável: {exc}")
+        return result
+
+    raw_p = [r["p"] for r in pairwise_rows if r["p"] is not None]
+    if raw_p:
+        adjusted = iter(_bh_adjust(raw_p))
+        for row in pairwise_rows:
+            row["p_adj"] = next(adjusted) if row["p"] is not None else None
+    result["pairwise"] = pairwise_rows
+    return result
+
+
+def compute_stats_tests(figure: AnalysisFigure, rows: list) -> list | None:
+    """stats_tests do §7.5 — só em figuras de stats (nunca distribution).
+
+    Lista por população: cada entrada traz ``omnibus`` (ANOVA one-way ou
+    Kruskal-Wallis), ``pairwise`` (Welch ou Mann-Whitney com correção BH
+    em ``p_adj``), ``n_per_group`` e ``warnings``. Devolve None quando o
+    chart_type não comporta teste — a chave fica ausente do cache.
+    """
+    if figure.chart_type not in _STATS_CHART_TYPES:
+        return None
+    spec = figure.spec or {}
+    preference = spec.get("stats_test") or "auto"
+    groups = spec.get("groups") or []
+    return [
+        _stats_tests_for_population(rows, pop, groups, preference)
+        for pop in spec.get("populations") or []
+    ]
 
 
 def head_revision(figure: AnalysisFigure) -> AnalysisRevision | None:

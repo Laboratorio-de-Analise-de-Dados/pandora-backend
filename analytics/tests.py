@@ -1647,6 +1647,7 @@ class AnalysisFigureTestCase(GateFixtureMixin, TestCase):
                             "mean_mfi": 40.0,
                             "std_dev": 5.0,
                             "cv": 12.5,
+                            "rcv": 30.0,
                         }
                     },
                 }
@@ -2012,3 +2013,188 @@ class AnalysisFigureTestCase(GateFixtureMixin, TestCase):
         self.assertEqual(
             self.client.get(f"/analytics/figures/{figure_id}/").status_code, 404
         )
+
+    # -- stats_tests (§7.5) ---------------------------------------------------
+
+    def _group_with_values(self, name, values, channel_stats=None):
+        """Cria uma amostra por valor, cada uma com gate P1 e stats.
+
+        ``values`` viram percent_of_parent_population (métrica default
+        dos testes de stats) — retorna o dict de grupo do spec.
+        """
+        from analytics.models import AnalysisResult
+
+        ids = []
+        for i, value in enumerate(values):
+            fd = self._file(self.experiment, f"{name}{i}.fcs")
+            fd.data_set = [{"fsc_a": 1.0}]
+            fd.save(update_fields=["data_set"])
+            gate = self._gate(fd, "P1")
+            AnalysisResult.objects.update_or_create(
+                gate=gate,
+                defaults={
+                    "analysis_result": {
+                        "summary_metrics": {
+                            "count": 10,
+                            "percent_of_total_population": value,
+                            "percent_of_parent_population": value,
+                        },
+                        "channel_statistics": channel_stats or {},
+                    }
+                },
+            )
+            ids.append(fd.id)
+        return {"name": name, "file_data_ids": ids}
+
+    def _stats_spec(self, a_values, b_values, **overrides):
+        spec = self._spec(
+            groups=[
+                self._group_with_values("GA", a_values),
+                self._group_with_values("GB", b_values),
+            ]
+        )
+        spec.update(overrides)
+        return spec
+
+    def test_metrica_rcv_aceita_e_lida_do_channel_statistics(self):
+        res = self._create(spec=self._spec(metric="rcv", channel="fitc_a"))
+
+        self.assertEqual(res.status_code, 201)
+        rows = res.json()["result_cache"]["rows"]
+        self.assertEqual({r["value"] for r in rows}, {30.0})
+
+    def test_stats_test_valor_invalido_400(self):
+        res = self._create(spec=self._spec(stats_test="bayes"))
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_stats_tests_parametrico_anova_e_welch(self):
+        spec = self._stats_spec([10.0, 11.0, 12.0], [20.0, 21.0, 22.0])
+        spec["stats_test"] = "parametric"
+
+        res = self._create(spec=spec)
+
+        self.assertEqual(res.status_code, 201)
+        stats_tests = res.json()["result_cache"]["stats_tests"]
+        self.assertEqual(len(stats_tests), 1)
+        entry = stats_tests[0]
+        self.assertEqual(entry["population"], "P1")
+        self.assertEqual(entry["method"], "parametric")
+        self.assertEqual(entry["omnibus"]["test"], "one_way_anova")
+        self.assertEqual(entry["omnibus"]["df"], [1, 4])
+        self.assertIsNotNone(entry["omnibus"]["F"])
+        self.assertEqual(len(entry["pairwise"]), 1)
+        pair = entry["pairwise"][0]
+        self.assertEqual(pair["method"], "welch_t")
+        self.assertIsNotNone(pair["t"])
+        self.assertIsNotNone(pair["p"])
+        self.assertIsNotNone(pair["p_adj"])
+        self.assertEqual(entry["n_per_group"], {"GA": 3, "GB": 3})
+
+    def test_stats_tests_nao_parametrico_kruskal_e_mann_whitney(self):
+        spec = self._stats_spec([10.0, 11.0, 12.0], [20.0, 21.0, 22.0])
+        spec["stats_test"] = "nonparametric"
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["method"], "nonparametric")
+        self.assertEqual(entry["omnibus"]["test"], "kruskal_wallis")
+        self.assertIsNotNone(entry["omnibus"]["H"])
+        pair = entry["pairwise"][0]
+        self.assertEqual(pair["method"], "mann_whitney_u")
+        self.assertIn("U", pair)
+        self.assertIsNotNone(pair["p_adj"])
+
+    def test_stats_tests_auto_cai_para_nao_parametrico_com_n_pequeno(self):
+        spec = self._stats_spec([10.0, 11.0, 12.0], [20.0, 21.0, 22.0])
+        # stats_test omitido → auto; n=3 por grupo → não-paramétrico
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["method"], "nonparametric")
+        self.assertTrue(any("n < 10" in w for w in entry["warnings"]))
+
+    def test_stats_tests_auto_parametrico_com_n_grande(self):
+        spec = self._stats_spec(
+            [float(v) for v in range(10, 22)],
+            [float(v) for v in range(30, 42)],
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["method"], "parametric")
+        self.assertEqual(entry["omnibus"]["test"], "one_way_anova")
+
+    def test_stats_tests_bh_corrige_p_adj(self):
+        # 3 grupos → 3 pares; p_adj deve ser >= p cru e <= 1
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="parametric"
+        )
+        spec["groups"].append(self._group_with_values("GC", [30.0, 31.0, 32.0]))
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(len(entry["pairwise"]), 3)
+        for pair in entry["pairwise"]:
+            self.assertGreaterEqual(pair["p_adj"], pair["p"])
+            self.assertLessEqual(pair["p_adj"], 1.0)
+
+    def test_stats_tests_grupo_n_menor_3_vai_para_warnings(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0], stats_test="parametric"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["n_per_group"], {"GA": 3, "GB": 2})
+        self.assertTrue(any("n<3" in w for w in entry["warnings"]))
+        # GB excluído → menos de 2 elegíveis → sem teste
+        self.assertIsNone(entry["omnibus"])
+        self.assertEqual(entry["pairwise"], [])
+
+    def test_stats_tests_lista_por_populacao(self):
+        # Cada população do spec tem sua própria bateria de testes.
+        groups = [
+            self._group_with_values("GA", [10.0, 11.0, 12.0]),
+            self._group_with_values("GB", [20.0, 21.0, 22.0]),
+        ]
+        # gate filho P2 em cada amostra criada pelo helper
+        from analytics.models import AnalysisResult
+
+        for group in groups:
+            for fd_id in group["file_data_ids"]:
+                fd = FileDataModel.objects.get(id=fd_id)
+                p1 = GateModel.objects.get(file_data=fd, name="P1")
+                child = self._gate(fd, "P2", parent=p1)
+                AnalysisResult.objects.update_or_create(
+                    gate=child,
+                    defaults={
+                        "analysis_result": {
+                            "summary_metrics": {
+                                "count": 5,
+                                "percent_of_total_population": 5.0,
+                                "percent_of_parent_population": 5.0,
+                            },
+                            "channel_statistics": {},
+                        }
+                    },
+                )
+        spec = self._spec(groups=groups, populations=["P1", "P1 > P2"])
+
+        res = self._create(spec=spec)
+
+        stats_tests = res.json()["result_cache"]["stats_tests"]
+        self.assertEqual([e["population"] for e in stats_tests], ["P1", "P1 > P2"])
+
+    def test_distribution_nao_tem_stats_tests(self):
+        spec = self._spec(populations=["P1"], channel="fitc_a")
+
+        res = self._create(chart_type="distribution", spec=spec)
+
+        self.assertEqual(res.status_code, 201)
+        self.assertNotIn("stats_tests", res.json()["result_cache"])

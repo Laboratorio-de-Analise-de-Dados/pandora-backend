@@ -779,10 +779,18 @@ class FigureSpecSerializer(serializers.Serializer):
             "median_mfi",
             "std_dev",
             "cv",
+            "rcv",
         ]
     )
     channel = serializers.CharField(
         required=False, allow_blank=True, allow_null=True, max_length=256
+    )
+    # auto (default) | parametric | nonparametric — escolha efetiva volta
+    # em stats_tests[].method (BE-33 §7.5)
+    stats_test = serializers.ChoiceField(
+        choices=["auto", "parametric", "nonparametric"],
+        required=False,
+        default="auto",
     )
 
     def validate(self, attrs):
