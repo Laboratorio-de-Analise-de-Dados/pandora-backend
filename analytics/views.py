@@ -3,13 +3,14 @@ import logging
 from collections import deque
 
 import pandas as pd
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from fcs_parser.serializers import ParamListDataSerializer
 from rest_framework import generics, serializers
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import APIException, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView, Response, status
 from fcs_parser.permissions import (
@@ -1917,7 +1918,26 @@ class BranchMergeView(APIView):
         )
 
 
-class ExperimentFigureListCreateView(_ScopedExperimentMixin, APIView):
+class _FiguresDisabled(APIException):
+    status_code = 503
+    default_detail = "Figuras de análise não habilitadas nesta instância."
+    default_code = "feature_disabled"
+
+
+class _FiguresEnabledMixin:
+    """Guard do BE-33 — feature estacionada (PRD marcado como arquivado).
+    Endpoints respondem 503 até ANALYSIS_FIGURES_ENABLED=1, mesmo padrão
+    de flag do SSO Google."""
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        if not getattr(settings, "ANALYSIS_FIGURES_ENABLED", False):
+            raise _FiguresDisabled()
+
+
+class ExperimentFigureListCreateView(
+    _FiguresEnabledMixin, _ScopedExperimentMixin, APIView
+):
     """GET/POST /analytics/experiment/<id>/figures/ (BE-33).
 
     POST valida o spec (FigureWriteSerializer), recusa nome duplicado
@@ -1992,7 +2012,7 @@ class ExperimentFigureListCreateView(_ScopedExperimentMixin, APIView):
         )
 
 
-class FigureDetailView(APIView):
+class FigureDetailView(_FiguresEnabledMixin, APIView):
     """GET/PATCH/DELETE /analytics/figures/<id>/ (BE-33).
 
     PATCH aceita ``name``/``spec``/``published`` (spec em figura
@@ -2088,7 +2108,7 @@ class FigureDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class FigureRecomputeView(APIView):
+class FigureRecomputeView(_FiguresEnabledMixin, APIView):
     """POST /analytics/figures/<id>/recompute/ (BE-33 §5).
 
     Recalcula ``result_cache``, move ``result_revision`` para a head

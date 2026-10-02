@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from accounts.models import User
@@ -1610,6 +1610,7 @@ class StatsAuditTestCase(TestCase):
         self.assertAlmostEqual(abs(stat["rcv"]), 45.3333, places=3)
 
 
+@override_settings(ANALYSIS_FIGURES_ENABLED=True)
 class AnalysisFigureTestCase(GateFixtureMixin, TestCase):
     """BE-33 — figuras de análise persistidas: spec + cache + procedência.
 
@@ -2262,3 +2263,12 @@ class AnalysisFigureTestCase(GateFixtureMixin, TestCase):
 
         self.assertEqual(res.status_code, 201)
         self.assertNotIn("stats_tests", res.json()["result_cache"])
+
+    @override_settings(ANALYSIS_FIGURES_ENABLED=False)
+    def test_feature_flag_desligada_retorna_503(self):
+        url = f"/analytics/experiment/{self.experiment.id}/figures/"
+        self.assertEqual(self.client.get(url).status_code, 503)
+        self.assertEqual(
+            self.client.post(url, {}, format="json").status_code,
+            503,
+        )

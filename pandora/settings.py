@@ -154,8 +154,18 @@ else:
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = os.getenv("EMAIL_HOST") or "smtp.gmail.com"
 EMAIL_PORT = int(os.getenv("EMAIL_PORT") or "587")
-EMAIL_USE_TLS = (os.getenv("EMAIL_USE_TLS") or "True").lower() in ("true", "1", "t", "yes")
-EMAIL_USE_SSL = (os.getenv("EMAIL_USE_SSL") or "False").lower() in ("true", "1", "t", "yes")
+EMAIL_USE_TLS = (os.getenv("EMAIL_USE_TLS") or "True").lower() in (
+    "true",
+    "1",
+    "t",
+    "yes",
+)
+EMAIL_USE_SSL = (os.getenv("EMAIL_USE_SSL") or "False").lower() in (
+    "true",
+    "1",
+    "t",
+    "yes",
+)
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 ROOT_URLCONF = "pandora.urls"
@@ -261,4 +271,12 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "")
 GOOGLE_AUTH_ENABLED = bool(
     GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI
+)
+
+# Figuras de análise (BE-33) — feature estacionada; endpoints respondem 503
+# até ANALYSIS_FIGURES_ENABLED=1 (mesmo padrão de flag do SSO Google).
+ANALYSIS_FIGURES_ENABLED = os.getenv("ANALYSIS_FIGURES_ENABLED", "").lower() in (
+    "1",
+    "true",
+    "yes",
 )
