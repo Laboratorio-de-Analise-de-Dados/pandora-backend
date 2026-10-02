@@ -2191,6 +2191,70 @@ class AnalysisFigureTestCase(GateFixtureMixin, TestCase):
         stats_tests = res.json()["result_cache"]["stats_tests"]
         self.assertEqual([e["population"] for e in stats_tests], ["P1", "P1 > P2"])
 
+    # -- stats_test explícitos (card #92) ------------------------------------
+
+    def test_stats_test_t_student_pairwise_sem_omnibus(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="t_student"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["method"], "t_student")
+        self.assertIsNone(entry["omnibus"])
+        pair = entry["pairwise"][0]
+        self.assertEqual(pair["method"], "t_student")
+        self.assertIn("t", pair)
+        self.assertIsNotNone(pair["p_adj"])
+
+    def test_stats_test_t_welch_pairwise_sem_omnibus(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="t_welch"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertIsNone(entry["omnibus"])
+        self.assertEqual(entry["pairwise"][0]["method"], "welch_t")
+
+    def test_stats_test_anova_explicito_com_omnibus(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="anova"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["omnibus"]["test"], "one_way_anova")
+        self.assertEqual(entry["pairwise"][0]["method"], "welch_t")
+
+    def test_stats_test_kruskal_explicito_com_omnibus(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="kruskal_wallis"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["omnibus"]["test"], "kruskal_wallis")
+        self.assertEqual(entry["pairwise"][0]["method"], "mann_whitney_u")
+
+    def test_stats_test_mann_whitney_sem_omnibus(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="mann_whitney"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["method"], "mann_whitney")
+        self.assertIsNone(entry["omnibus"])
+        pair = entry["pairwise"][0]
+        self.assertEqual(pair["method"], "mann_whitney_u")
+        self.assertIn("U", pair)
+
     def test_distribution_nao_tem_stats_tests(self):
         spec = self._spec(populations=["P1"], channel="fitc_a")
 

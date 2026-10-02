@@ -785,10 +785,19 @@ class FigureSpecSerializer(serializers.Serializer):
     channel = serializers.CharField(
         required=False, allow_blank=True, allow_null=True, max_length=256
     )
-    # auto (default) | parametric | nonparametric — escolha efetiva volta
-    # em stats_tests[].method (BE-33 §7.5)
+    # auto (default) | famílias | testes explícitos — escolha efetiva
+    # volta em stats_tests[].method (BE-33 §7.5 + delta do #92)
     stats_test = serializers.ChoiceField(
-        choices=["auto", "parametric", "nonparametric"],
+        choices=[
+            "auto",
+            "parametric",
+            "nonparametric",
+            "t_student",
+            "t_welch",
+            "anova",
+            "kruskal_wallis",
+            "mann_whitney",
+        ],
         required=False,
         default="auto",
     )

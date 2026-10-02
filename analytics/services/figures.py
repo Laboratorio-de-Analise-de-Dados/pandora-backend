@@ -51,7 +51,16 @@ EXPERIMENT_WIDE_ACTIONS = {
 METRIC_SUMMARY = {"percent_parent", "percent_total"}
 METRIC_CHANNEL = {"mean_mfi", "median_mfi", "std_dev", "cv", "rcv"}
 
-STATS_TEST_CHOICES = {"auto", "parametric", "nonparametric"}
+STATS_TEST_CHOICES = {
+    "auto",
+    "parametric",
+    "nonparametric",
+    "t_student",
+    "t_welch",
+    "anova",
+    "kruskal_wallis",
+    "mann_whitney",
+}
 _STATS_CHART_TYPES = {
     AnalysisFigure.CHART_STATS_BAR,
     AnalysisFigure.CHART_STATS_STRIP,
@@ -341,8 +350,25 @@ def _bh_adjust(p_values):
     return adjusted
 
 
+# Planos de teste explícito (delta do card #92): pairwise-only não tem
+# omnibus — igual "multiple t-tests" do Prism.
+_TEST_PLANS = {
+    "t_student": {"omnibus": None, "pairwise": "t_student"},
+    "t_welch": {"omnibus": None, "pairwise": "welch_t"},
+    "anova": {"omnibus": "one_way_anova", "pairwise": "welch_t"},
+    "kruskal_wallis": {"omnibus": "kruskal_wallis", "pairwise": "mann_whitney_u"},
+    "mann_whitney": {"omnibus": None, "pairwise": "mann_whitney_u"},
+    "parametric": {"omnibus": "one_way_anova", "pairwise": "welch_t"},
+    "nonparametric": {"omnibus": "kruskal_wallis", "pairwise": "mann_whitney_u"},
+}
+
+
 def _resolve_test_method(preference, eligible_counts):
-    """auto → paramétrico, caindo para não-paramétrico com n pequeno."""
+    """auto → paramétrico, caindo para não-paramétrico com n pequeno.
+
+    Testes explícitos e famílias voltam como estão — o `method` do
+    resultado carrega exatamente o que foi pedido/escolhido.
+    """
     if preference != "auto":
         return preference, None
     if min(eligible_counts, default=0) < 10:
@@ -397,12 +423,13 @@ def _stats_tests_for_population(rows, population, groups, preference):
 
     names = list(eligible)
     samples = [eligible[name] for name in names]
+    plan = _TEST_PLANS[method]
     pairwise_rows = []
 
     # Amostras constantes/iguais derrubam scipy (ex.: "All numbers are
     # identical" no kruskal) — vira warning, não 500.
     try:
-        if method == "parametric":
+        if plan["omnibus"] == "one_way_anova":
             f_stat, p_omni = scipy_stats.f_oneway(*samples)
             total_n = sum(len(s) for s in samples)
             result["omnibus"] = {
@@ -411,20 +438,7 @@ def _stats_tests_for_population(rows, population, groups, preference):
                 "p": _clean_number(p_omni),
                 "df": [len(samples) - 1, total_n - len(samples)],
             }
-            for i, j in combinations(range(len(names)), 2):
-                t_stat, p = scipy_stats.ttest_ind(
-                    samples[i], samples[j], equal_var=False
-                )
-                pairwise_rows.append(
-                    {
-                        "group_a": names[i],
-                        "group_b": names[j],
-                        "t": _clean_number(t_stat),
-                        "p": _clean_number(p),
-                        "method": "welch_t",
-                    }
-                )
-        else:
+        elif plan["omnibus"] == "kruskal_wallis":
             h_stat, p_omni = scipy_stats.kruskal(*samples)
             result["omnibus"] = {
                 "test": "kruskal_wallis",
@@ -432,19 +446,30 @@ def _stats_tests_for_population(rows, population, groups, preference):
                 "p": _clean_number(p_omni),
                 "df": [len(samples) - 1],
             }
-            for i, j in combinations(range(len(names)), 2):
-                u_stat, p = scipy_stats.mannwhitneyu(
+
+        for i, j in combinations(range(len(names)), 2):
+            if plan["pairwise"] == "mann_whitney_u":
+                stat, p = scipy_stats.mannwhitneyu(
                     samples[i], samples[j], alternative="two-sided"
                 )
-                pairwise_rows.append(
-                    {
-                        "group_a": names[i],
-                        "group_b": names[j],
-                        "U": _clean_number(u_stat),
-                        "p": _clean_number(p),
-                        "method": "mann_whitney_u",
-                    }
+                stat_key = "U"
+            else:
+                # t_student → equal_var=True; welch_t → False
+                stat, p = scipy_stats.ttest_ind(
+                    samples[i],
+                    samples[j],
+                    equal_var=(plan["pairwise"] == "t_student"),
                 )
+                stat_key = "t"
+            pairwise_rows.append(
+                {
+                    "group_a": names[i],
+                    "group_b": names[j],
+                    stat_key: _clean_number(stat),
+                    "p": _clean_number(p),
+                    "method": plan["pairwise"],
+                }
+            )
     except ValueError as exc:
         warnings.append(f"teste não computável: {exc}")
         return result
