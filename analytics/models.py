@@ -422,6 +422,85 @@ class AnalysisCheckpoint(models.Model):
         return f"Checkpoint {self.id} – {tag}"
 
 
+class AnalysisFigure(models.Model):
+    """Figura de análise persistida (BE-33) — artefato de relatório.
+
+    Guarda a *receita* (``spec``: grupos de réplicas, populações por
+    caminho de nomes, métrica, canal) e um ``result_cache`` regenerável —
+    mesma filosofia do Parquet (L2, ADR-0004): o produto pronto é
+    derivado; a procedência é o ``result_revision`` (a revisão head do
+    experimento no momento do cômputo). ``is_stale`` é calculado na
+    leitura por fingerprint: só revisões que tocam os alvos resolvidos
+    (ou ações experiment-wide) marcam a figura.
+
+    ``published`` trava a figura para relatório: PATCH de spec e
+    ``recompute/`` retornam 409 até despublicar. ``active=False`` é o
+    descarte (soft delete, ADR-0005). CRUD de figura não gera
+    ``AnalysisRevision`` — a timeline é da estratégia de análise.
+
+    ``branch`` existe no modelo (custo zero — a tabela já existe), mas o
+    v1 ignora: a figura é do experimento e resolve populações na main.
+    """
+
+    CHART_STATS_BAR = "stats_bar"
+    CHART_STATS_STRIP = "stats_strip"
+    CHART_DISTRIBUTION = "distribution"
+    CHART_TYPE_CHOICES = [
+        (CHART_STATS_BAR, "Barras agrupadas"),
+        (CHART_STATS_STRIP, "Pontos individuais"),
+        (CHART_DISTRIBUTION, "Distribuição sobreposta"),
+    ]
+
+    class Meta:
+        db_table = "analysis_figure"
+        indexes = [models.Index(fields=["experiment", "-updated_at"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["experiment", "name"],
+                condition=models.Q(active=True),
+                name="unique_figure_name_per_experiment",
+            )
+        ]
+
+    experiment = models.ForeignKey(
+        ExperimentModel,
+        on_delete=models.CASCADE,
+        related_name="analysis_figures",
+    )
+    branch = models.ForeignKey(
+        AnalysisBranch,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_figures",
+    )
+    name = models.CharField(max_length=120)
+    chart_type = models.CharField(max_length=20, choices=CHART_TYPE_CHOICES)
+    spec = models.JSONField(default=dict)
+    result_cache = models.JSONField(null=True, blank=True)
+    result_revision = models.ForeignKey(
+        AnalysisRevision,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_figures",
+    )
+    published = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_figures_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    active = models.BooleanField(default=True, db_index=True)
+
+    def __str__(self) -> str:
+        return f"Figure {self.id} – {self.name} (exp {self.experiment_id})"
+
+
 class CompensationMatrix(models.Model):
     """Matriz de spillover de um experimento (BE-22, ADR-0018).
 

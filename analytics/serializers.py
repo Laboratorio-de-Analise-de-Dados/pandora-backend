@@ -6,6 +6,7 @@ from analytics.gate_scope import PROPAGATING_SCOPES, SCOPE_CHOICES, SCOPE_FILE
 from analytics.models import (
     AnalysisBranch,
     AnalysisCheckpoint,
+    AnalysisFigure,
     AnalysisResult,
     AnalysisRevision,
     CompensationMatrix,
@@ -746,3 +747,237 @@ class ApplyGateSerializer(serializers.Serializer):
                 {"detail": "source_gate_ids and target_file_data_ids are required."}
             )
         return attrs
+
+
+class FigureGroupSerializer(serializers.Serializer):
+    """Um grupo de réplicas dentro do spec da figura (BE-33 §3)."""
+
+    name = serializers.CharField(max_length=120)
+    file_data_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), allow_empty=False
+    )
+
+
+class FigureSpecSerializer(serializers.Serializer):
+    """Valida o ``spec`` de AnalysisFigure (ADR-0009 — validação no
+    serializer, não na view).
+
+    ``populations`` são caminhos de nomes (``"Lymphocytes/CD3/CD4"``) —
+    o literal ``"file"`` resolve para as stats da amostra raiz.
+    ``channel`` é obrigatório só para métricas de canal.
+    """
+
+    groups = serializers.ListField(child=FigureGroupSerializer(), allow_empty=True)
+    populations = serializers.ListField(
+        child=serializers.CharField(allow_blank=False), allow_empty=False
+    )
+    metric = serializers.ChoiceField(
+        choices=[
+            "percent_parent",
+            "percent_total",
+            "mean_mfi",
+            "median_mfi",
+            "std_dev",
+            "cv",
+            "rcv",
+        ]
+    )
+    channel = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True, max_length=256
+    )
+    # auto (default) | famílias | testes explícitos — escolha efetiva
+    # volta em stats_tests[].method (BE-33 §7.5 + delta do #92)
+    stats_test = serializers.ChoiceField(
+        choices=[
+            "auto",
+            "parametric",
+            "nonparametric",
+            "t_student",
+            "t_welch",
+            "anova",
+            "kruskal_wallis",
+            "mann_whitney",
+        ],
+        required=False,
+        default="auto",
+    )
+
+    def validate(self, attrs):
+        from analytics.services.figures import (
+            METRIC_CHANNEL,
+            split_population_path,
+        )
+
+        metric = attrs["metric"]
+        channel = attrs.get("channel")
+        if metric in METRIC_CHANNEL and not channel:
+            raise serializers.ValidationError(
+                {"channel": f'obrigatório para a métrica "{metric}".'}
+            )
+
+        populations = [p.strip() for p in attrs["populations"]]
+        populations = [p for p in populations if p]
+        if not populations:
+            raise serializers.ValidationError(
+                {"populations": "pelo menos uma população é obrigatória."}
+            )
+        for pop in populations:
+            if pop != "file" and not split_population_path(pop):
+                raise serializers.ValidationError(
+                    {"populations": f'caminho inválido: "{pop}".'}
+                )
+        attrs["populations"] = populations
+        return attrs
+
+
+class FigureWriteSerializer(serializers.Serializer):
+    """POST/PATCH de figura — valida campos + spec contra o experimento."""
+
+    name = serializers.CharField(max_length=120, required=False)
+    chart_type = serializers.ChoiceField(
+        choices=[c for c, _ in AnalysisFigure.CHART_TYPE_CHOICES],
+        required=False,
+    )
+    spec = serializers.DictField(required=False)
+    branch_id = serializers.IntegerField(required=False, allow_null=True)
+    published = serializers.BooleanField(required=False)
+    # Optimistic locking: o cliente devolve o updated_at que leu; PATCH
+    # divergente → 412 na view (aqui só parseia).
+    updated_at = serializers.DateTimeField(required=False)
+
+    def validate(self, attrs):
+        experiment = self.context.get("experiment")
+        if experiment is None:
+            return attrs
+
+        chart_type = attrs.get("chart_type") or self.context.get("chart_type")
+        spec = attrs.get("spec")
+        if spec is not None:
+            spec_serializer = FigureSpecSerializer(data=spec)
+            spec_serializer.is_valid(raise_exception=True)
+            spec = spec_serializer.validated_data
+            attrs["spec"] = spec
+
+        effective_spec = spec if spec is not None else self.context.get("spec")
+        if effective_spec is not None:
+            self._validate_spec_against_experiment(attrs, effective_spec, chart_type)
+
+        branch_id = attrs.get("branch_id")
+        if branch_id is not None:
+            if not AnalysisBranch.objects.filter(
+                id=branch_id, experiment=experiment, active=True
+            ).exists():
+                raise serializers.ValidationError(
+                    {"branch_id": "branch não pertence ao experimento."}
+                )
+        return attrs
+
+    def _validate_spec_against_experiment(self, attrs, spec, chart_type):
+        experiment = self.context["experiment"]
+
+        file_ids = {
+            fd_id
+            for group in spec.get("groups") or []
+            for fd_id in group.get("file_data_ids") or []
+        }
+        if file_ids:
+            valid = set(
+                FileDataModel.objects.filter(
+                    id__in=file_ids, experiment=experiment, active=True
+                ).values_list("id", flat=True)
+            )
+            missing = sorted(file_ids - valid)
+            if missing:
+                raise serializers.ValidationError(
+                    {
+                        "detail": (
+                            "file_data_ids fora do experimento ou "
+                            "inativas: " + ", ".join(str(i) for i in missing)
+                        )
+                    }
+                )
+
+        if chart_type == AnalysisFigure.CHART_DISTRIBUTION:
+            if len(spec.get("populations") or []) != 1:
+                raise serializers.ValidationError(
+                    {"populations": ("distribution aceita exatamente uma população.")}
+                )
+            if not spec.get("channel"):
+                raise serializers.ValidationError(
+                    {"channel": "obrigatório para chart_type distribution."}
+                )
+
+
+class AnalysisFigureSerializer(serializers.ModelSerializer):
+    """Shape frozen do detalhe/listagem (BE-33 §2 — front mocka daqui)."""
+
+    created_by_name = serializers.SerializerMethodField()
+    is_stale = serializers.SerializerMethodField()
+    result_revision = serializers.IntegerField(
+        source="result_revision_id", read_only=True
+    )
+
+    class Meta:
+        model = AnalysisFigure
+        fields = [
+            "id",
+            "name",
+            "chart_type",
+            "spec",
+            "result_cache",
+            "result_revision",
+            "is_stale",
+            "published",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_created_by_name(self, obj):
+        if not obj.created_by:
+            return None
+        return author_display_name(
+            obj.created_by.first_name,
+            obj.created_by.last_name,
+            obj.created_by.username,
+        )
+
+    def get_is_stale(self, obj) -> bool:
+        from analytics.services.figures import figure_is_stale
+
+        return figure_is_stale(obj)
+
+
+class AnalysisFigureListSerializer(serializers.ModelSerializer):
+    """Item da galeria — sem spec/cache (shape do PRD §2)."""
+
+    created_by_name = serializers.SerializerMethodField()
+    is_stale = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AnalysisFigure
+        fields = [
+            "id",
+            "name",
+            "chart_type",
+            "updated_at",
+            "is_stale",
+            "published",
+            "created_by_name",
+        ]
+        read_only_fields = fields
+
+    def get_created_by_name(self, obj):
+        if not obj.created_by:
+            return None
+        return author_display_name(
+            obj.created_by.first_name,
+            obj.created_by.last_name,
+            obj.created_by.username,
+        )
+
+    def get_is_stale(self, obj) -> bool:
+        from analytics.services.figures import figure_is_stale
+
+        return figure_is_stale(obj)

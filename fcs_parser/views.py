@@ -313,7 +313,7 @@ class ExperimentCompleteView(generics.CreateAPIView):
         except OSError:
             sha256 = None
         file_instance = FileModel.objects.create(
-            file=final_path,
+            file=os.path.relpath(final_path, settings.MEDIA_ROOT),
             file_name=raw_file_name or final_name,
             sha256=sha256,
             experiment=experiment,
@@ -2325,7 +2325,7 @@ class ExperimentFileCompleteView(APIView):
             upload.sha256 = file_sha256(final_path)
         except OSError:
             upload.sha256 = None
-        upload.file = final_path
+        upload.file.name = os.path.relpath(final_path, settings.MEDIA_ROOT)
         upload.file_name = raw_file_name
         upload.save(update_fields=["file", "file_name", "sha256"])
 
