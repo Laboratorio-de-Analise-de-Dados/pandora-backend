@@ -1,6 +1,6 @@
 # ADR-0029 — Figuras de análise persistidas: spec + cache regenerável + âncora de procedência
 
-- **Status:** Proposto
+- **Status:** Aceito
 - **Data:** 2026-09-29
 - **Contexto do código:** `analytics` (`AnalysisFigure`, `AnalysisRevision`,
   `AnalysisBranch`), endpoints `/analytics/*/figures/`

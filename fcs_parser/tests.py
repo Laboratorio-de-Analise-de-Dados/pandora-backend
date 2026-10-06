@@ -168,6 +168,25 @@ class SubsampleExtractionTestCase(TestCase):
         with open(extracted) as f:
             self.assertEqual(f.read(), "segundo")
 
+    def test_extract_tolerates_absolute_path_in_file_field(self):
+        # Legado: FileModel.file já gravou o path absoluto (em vez do nome
+        # relativo ao MEDIA_ROOT) — a leitura resolve os dois formatos,
+        # senão `file.path` explode fora do MEDIA_ROOT de outro checkout.
+        tmp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp_dir, True)
+        zip_path = os.path.join(tmp_dir, "amostras.zip")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("a1.fcs", "conteudo")
+        upload = FileModel.objects.create(
+            file_name="amostras.zip", file=zip_path, experiment=self.experiment
+        )
+
+        extracted = extract_fcs_from_zip(upload, "a1.fcs")
+
+        self.assertIsNotNone(extracted)
+        with open(extracted) as f:
+            self.assertEqual(f.read(), "conteudo")
+
 
 class SubsampleApiTestCase(TestCase):
     """O cliente pode criar, renomear e remanejar subsamples pela UI."""

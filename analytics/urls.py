@@ -12,7 +12,10 @@ from .views import (
     CreateGateView,
     DeleteGateBatchView,
     ExperimentBranchListCreateView,
+    ExperimentFigureListCreateView,
     ExperimentHistoryView,
+    FigureDetailView,
+    FigureRecomputeView,
     GateDensityView,
     GetGateDataView,
     HistoryDetailView,
@@ -95,5 +98,20 @@ urlpatterns = [
         "compensations/<int:pk>/",
         CompensationDetailView.as_view(),
         name="compensation-detail",
+    ),
+    path(
+        "experiment/<int:experiment_id>/figures/",
+        ExperimentFigureListCreateView.as_view(),
+        name="experiment-figures",
+    ),
+    path(
+        "figures/<int:pk>/",
+        FigureDetailView.as_view(),
+        name="figure-detail",
+    ),
+    path(
+        "figures/<int:pk>/recompute/",
+        FigureRecomputeView.as_view(),
+        name="figure-recompute",
     ),
 ]

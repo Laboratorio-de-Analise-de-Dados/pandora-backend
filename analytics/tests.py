@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from accounts.models import User
@@ -727,6 +727,41 @@ class GateMissingChannelTestCase(GateFixtureMixin, TestCase):
 
         copy = GateModel.objects.get(file_data=self.file_b, copied_from=source)
         self.assertFalse(copy.analysis_result.analysis_result["applicable"])
+
+    def test_apply_materializa_stats_no_gate_propagado(self):
+        # Regressão card #90: o apply propagava o gate mas a amostra alvo
+        # ficava sem analysis_result quando get_dataframe não resolvia o
+        # ZIP do upload — a figura (BE-33) reportava a população como
+        # unmatched. Aqui a amostra alvo tem eventos e o gate deve sair
+        # com stats calculadas.
+        self._set_events(
+            self.file_b,
+            [
+                {"FSC-A": 1.0, "SSC-A": 2.0},
+                {"FSC-A": 5.0, "SSC-A": 6.0},
+            ],
+        )
+        self._set_events(
+            self.file_c,
+            [{"FSC-A": 3.0, "SSC-A": 4.0}],
+        )
+        source = self._gate_on_axes(self.file_a, "P-stats", x="FSC-A", y="SSC-A")
+
+        res = self.client.post(
+            "/analytics/gate/apply",
+            {
+                "source_gate_ids": [source.id],
+                "target_file_data_ids": [self.file_b.id, self.file_c.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        for file_data, expected_count in ((self.file_b, 2), (self.file_c, 1)):
+            copy = GateModel.objects.get(file_data=file_data, copied_from=source)
+            result = copy.analysis_result.analysis_result
+            self.assertEqual(result["summary_metrics"]["count"], expected_count)
+            self.assertIn("fsc_a", result["channel_statistics"])
 
 
 class AnalysisHistoryTestCase(GateFixtureMixin, TestCase):
@@ -1573,3 +1608,667 @@ class StatsAuditTestCase(TestCase):
         self.assertLess(stat["cv"], 0)
         self.assertNotEqual(stat["rcv"], 0)
         self.assertAlmostEqual(abs(stat["rcv"]), 45.3333, places=3)
+
+
+@override_settings(ANALYSIS_FIGURES_ENABLED=True)
+class AnalysisFigureTestCase(GateFixtureMixin, TestCase):
+    """BE-33 — figuras de análise persistidas: spec + cache + procedência.
+
+    Fixture: file_a/b/c no experiment com gates P1 (raiz) e P1>P2 em a;
+    cópias P1 em b/c; file_other_exp em experimento alheio.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Amostras "prontas" têm data materializado (L2 ou legado).
+        for fd in (self.file_a, self.file_b, self.file_c):
+            fd.data_set = [{"fsc_a": 1.0}]
+            fd.save(update_fields=["data_set"])
+        self._set_stats(self.source, {"count": 10})
+        self._set_stats(self.child, {"count": 5})
+        self._set_stats(self.copy_b, {"count": 20})
+        self._set_stats(self.copy_c, {"count": 30})
+
+    def _set_stats(self, gate, summary=None, channels=None):
+        from analytics.models import AnalysisResult
+
+        AnalysisResult.objects.update_or_create(
+            gate=gate,
+            defaults={
+                "analysis_result": {
+                    "summary_metrics": {
+                        "count": (summary or {}).get("count", 0),
+                        "percent_of_total_population": 0.5,
+                        "percent_of_parent_population": 0.5,
+                    },
+                    "channel_statistics": channels
+                    or {
+                        "fitc_a": {
+                            "median_mfi": 42.0,
+                            "mean_mfi": 40.0,
+                            "std_dev": 5.0,
+                            "cv": 12.5,
+                            "rcv": 30.0,
+                        }
+                    },
+                }
+            },
+        )
+
+    def _spec(self, **overrides):
+        spec = {
+            "groups": [
+                {"name": "D0", "file_data_ids": [self.file_a.id]},
+                {"name": "D7", "file_data_ids": [self.file_b.id, self.file_c.id]},
+            ],
+            "populations": ["P1"],
+            "metric": "percent_parent",
+        }
+        spec.update(overrides)
+        return spec
+
+    def _create(self, name="fig", chart_type="stats_bar", spec=None, **extra):
+        payload = {"name": name, "chart_type": chart_type, "spec": spec or self._spec()}
+        payload.update(extra)
+        return self.client.post(
+            f"/analytics/experiment/{self.experiment.id}/figures/",
+            payload,
+            format="json",
+        )
+
+    # -- create / validação -------------------------------------------------
+
+    def test_create_computa_cache_e_ancora_revisao(self):
+        from analytics.history import record_revision
+        from analytics.models import AnalysisFigure
+
+        revision = record_revision(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_UPDATE_GEOMETRY,
+            target_type=AnalysisRevision.TARGET_GATE,
+            target_id=self.source.id,
+            user=self.user,
+            summary="criou gate",
+        )
+        res = self._create()
+
+        self.assertEqual(res.status_code, 201)
+        data = res.json()
+        cache = data["result_cache"]
+        self.assertEqual(len(cache["rows"]), 3)
+        self.assertEqual(
+            cache["resolved_inputs"]["file_data_ids"],
+            sorted([self.file_a.id, self.file_b.id, self.file_c.id]),
+        )
+        self.assertEqual(
+            sorted(cache["resolved_inputs"]["gate_ids"]),
+            sorted([self.source.id, self.copy_b.id, self.copy_c.id]),
+        )
+        self.assertFalse(data["is_stale"])
+        figure = AnalysisFigure.objects.get(id=data["id"])
+        self.assertEqual(figure.result_revision_id, revision.id)
+
+    def test_create_rejeita_file_data_de_outro_experimento(self):
+        spec = self._spec(
+            groups=[{"name": "x", "file_data_ids": [self.file_other_exp.id]}]
+        )
+        res = self._create(spec=spec)
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_create_rejeita_metrica_de_canal_sem_channel(self):
+        res = self._create(spec=self._spec(metric="median_mfi"))
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("channel", res.json())
+
+    def test_create_rejeita_nome_duplicado_409(self):
+        self.assertEqual(self._create(name="fig1").status_code, 201)
+
+        res = self._create(name="fig1")
+
+        self.assertEqual(res.status_code, 409)
+
+    # -- resolução de população ---------------------------------------------
+
+    def test_populacao_ausente_fora_do_cache_nao_zero(self):
+        # file_c só tem P1 — "P1 > P2" não resolve lá; resolve em a e b? b só tem P1 também.
+        spec = self._spec(populations=["P1 > P2"])
+
+        res = self._create(spec=spec)
+
+        self.assertEqual(res.status_code, 201)
+        rows = res.json()["result_cache"]["rows"]
+        # só file_a tem o gate filho
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["file_data_id"], self.file_a.id)
+        self.assertEqual(
+            res.json()["result_cache"]["unmatched"]["populations"],
+            ["P1 > P2"],
+        )
+
+    def test_metrica_de_canal_leria_do_channel_statistics(self):
+        spec = self._spec(metric="median_mfi", channel="fitc_a")
+
+        res = self._create(spec=spec)
+
+        self.assertEqual(res.status_code, 201)
+        rows = res.json()["result_cache"]["rows"]
+        self.assertEqual({r["value"] for r in rows}, {42.0})
+
+    # -- distribution --------------------------------------------------------
+
+    def test_distribution_cache_so_metadados_resolvidos(self):
+        spec = self._spec(populations=["P1 > P2"], channel="fitc_a")
+
+        res = self._create(chart_type="distribution", spec=spec)
+
+        self.assertEqual(res.status_code, 201)
+        cache = res.json()["result_cache"]
+        # Sem rows — as curvas vêm do densityService live; o cache é
+        # fingerprint: pares população×amostra resolvidos + unmatched.
+        self.assertEqual(cache["rows"], [])
+        self.assertEqual(
+            cache["resolved_pairs"],
+            [{"population": "P1 > P2", "file_data_id": self.file_a.id}],
+        )
+        self.assertEqual(cache["resolved_inputs"]["gate_ids"], [self.child.id])
+        self.assertEqual(cache["unmatched"]["populations"], ["P1 > P2"])
+
+    def test_distribution_exige_uma_populacao_e_channel(self):
+        res_sem_channel = self._create(
+            chart_type="distribution", spec=self._spec(populations=["P1"])
+        )
+        self.assertEqual(res_sem_channel.status_code, 400)
+
+        res_duas_pops = self._create(
+            chart_type="distribution",
+            spec=self._spec(populations=["P1", "P2"], channel="fitc_a"),
+        )
+        self.assertEqual(res_duas_pops.status_code, 400)
+
+    # -- fingerprint / staleness --------------------------------------------
+
+    def test_editar_gate_da_figura_marca_stale(self):
+        from analytics.history import record_revision
+        from analytics.services.figures import figure_is_stale
+        from analytics.models import AnalysisFigure
+
+        figure = AnalysisFigure.objects.get(id=self._create().json()["id"])
+        self.assertFalse(figure_is_stale(figure))
+
+        record_revision(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_UPDATE_GEOMETRY,
+            target_type=AnalysisRevision.TARGET_GATE,
+            target_id=self.copy_b.id,
+            user=self.user,
+            summary="editou",
+        )
+
+        figure.refresh_from_db()
+        self.assertTrue(figure_is_stale(figure))
+
+    def test_editar_gate_fora_da_figura_nao_marca_stale(self):
+        from analytics.history import record_revision
+        from analytics.services.figures import figure_is_stale
+        from analytics.models import AnalysisFigure
+
+        figure = AnalysisFigure.objects.get(id=self._create().json()["id"])
+        outro_gate = self._gate(self.file_b, "QZ")
+
+        record_revision(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_RENAME,
+            target_type=AnalysisRevision.TARGET_GATE,
+            target_id=outro_gate.id,
+            user=self.user,
+            summary="renomeou",
+        )
+
+        figure.refresh_from_db()
+        self.assertFalse(figure_is_stale(figure))
+
+    def test_acao_experiment_wide_marca_stale(self):
+        from analytics.history import record_revision
+        from analytics.models import AnalysisFigure
+
+        figure_id = self._create().json()["id"]
+
+        res = self.client.post(
+            f"/analytics/experiment/{self.experiment.id}/figures/",
+            {"name": "other", "chart_type": "stats_bar", "spec": self._spec()},
+            format="json",
+        )
+        figure = AnalysisFigure.objects.get(id=figure_id)
+
+        record_revision(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_COMPENSATION_APPLY,
+            target_type=AnalysisRevision.TARGET_COMPENSATION,
+            target_id=1,
+            user=self.user,
+            summary="aplicou comp",
+        )
+
+        detail = self.client.get(f"/analytics/figures/{figure.id}/").json()
+        self.assertTrue(detail["is_stale"])
+
+    def test_spec_editado_sem_recompute_marca_stale(self):
+        figure_id = self._create().json()["id"]
+
+        res = self.client.patch(
+            f"/analytics/figures/{figure_id}/",
+            {"spec": self._spec(populations=["P1 > P2"])},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        detail = self.client.get(f"/analytics/figures/{figure_id}/").json()
+        self.assertTrue(detail["is_stale"])
+
+    # -- recompute -----------------------------------------------------------
+
+    def test_recompute_move_ancora_e_reporta_removed_since_last(self):
+        from analytics.services.branches import ensure_main_branch
+        from analytics.models import AnalysisFigure
+
+        # Toda amostra do spec resolve "P1 > P2" no cômputo inicial.
+        for parent_fd in (self.copy_b, self.copy_c):
+            child = self._gate(parent_fd.file_data, "P2", parent=parent_fd)
+            self._set_stats(child, {"count": 5})
+        figure = AnalysisFigure.objects.get(
+            id=self._create(spec=self._spec(populations=["P1", "P1 > P2"])).json()["id"]
+        )
+        assert not figure.result_cache["unmatched"]["populations"]
+
+        # Renomear o filho em file_a quebra o caminho "P1 > P2" só nela.
+        self.child.name = "Renomeado"
+        self.child.save(update_fields=["name"])
+
+        res = self.client.post(f"/analytics/figures/{figure.id}/recompute/")
+
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["removed_since_last"]["populations"], ["P1 > P2"])
+        self.assertFalse(data["figure"]["is_stale"])
+        figure.refresh_from_db()
+        self.assertEqual(figure.result_revision_id, data["figure"]["result_revision"])
+
+    def test_amostra_processando_vai_para_meta_warnings(self):
+        self.file_c.data_set = None
+        self.file_c.parquet_path = None
+        self.file_c.save(update_fields=["data_set"])
+
+        res = self._create()
+
+        self.assertEqual(res.status_code, 201)
+        warnings = res.json()["result_cache"]["meta"].get("warnings") or []
+        self.assertTrue(any("processando" in w for w in warnings))
+
+    # -- published / locking -------------------------------------------------
+
+    def test_published_bloqueia_patch_de_spec_e_recompute(self):
+        figure_id = self._create().json()["id"]
+        self.client.patch(
+            f"/analytics/figures/{figure_id}/", {"published": True}, format="json"
+        )
+
+        res_spec = self.client.patch(
+            f"/analytics/figures/{figure_id}/",
+            {"spec": self._spec(populations=["P1"])},
+            format="json",
+        )
+        res_recompute = self.client.post(f"/analytics/figures/{figure_id}/recompute/")
+
+        self.assertEqual(res_spec.status_code, 409)
+        self.assertEqual(res_recompute.status_code, 409)
+
+    def test_patch_updated_at_divergente_412(self):
+        detail = self.client.get(
+            f"/analytics/figures/{self._create().json()['id']}/"
+        ).json()
+
+        res = self.client.patch(
+            f"/analytics/figures/{detail['id']}/",
+            {"name": "novo", "updated_at": "2000-01-01T00:00:00Z"},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 412)
+
+    def test_patch_updated_at_igual_passa(self):
+        detail = self.client.get(
+            f"/analytics/figures/{self._create().json()['id']}/"
+        ).json()
+
+        res = self.client.patch(
+            f"/analytics/figures/{detail['id']}/",
+            {"name": "novo nome", "updated_at": detail["updated_at"]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["name"], "novo nome")
+
+    # -- permissão / soft delete ----------------------------------------------
+
+    def test_leitor_le_mas_nao_edita_nem_recomputa(self):
+        """Toda mutação consulta can_edit_experiment; leitura não.
+
+        O RBAC atual não tem papel "leitor" — membro ativo edita. O mock
+        simula a situação "visível mas sem escrita" e garante que as
+        views mutáveis passam pela checagem (e a de leitura não).
+        """
+        from unittest.mock import patch
+
+        figure_id = self._create().json()["id"]
+
+        with patch("fcs_parser.permissions.can_edit_experiment", return_value=False):
+            self.assertEqual(
+                self.client.get(f"/analytics/figures/{figure_id}/").status_code, 200
+            )
+            self.assertEqual(
+                self.client.get(
+                    f"/analytics/experiment/{self.experiment.id}/figures/"
+                ).status_code,
+                200,
+            )
+            self.assertEqual(
+                self.client.patch(
+                    f"/analytics/figures/{figure_id}/", {"name": "x"}, format="json"
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                self.client.post(
+                    f"/analytics/figures/{figure_id}/recompute/"
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                self.client.delete(f"/analytics/figures/{figure_id}/").status_code,
+                403,
+            )
+            self.assertEqual(self._create(name="outra").status_code, 403)
+
+    def test_delete_soft_e_listagem_exclui(self):
+        figure_id = self._create().json()["id"]
+
+        res = self.client.delete(f"/analytics/figures/{figure_id}/")
+
+        self.assertEqual(res.status_code, 204)
+        self.assertEqual(
+            self.client.get(f"/analytics/figures/{figure_id}/").status_code, 404
+        )
+        listing = self.client.get(
+            f"/analytics/experiment/{self.experiment.id}/figures/"
+        ).json()
+        self.assertEqual(listing["results"], [])
+
+    def test_fora_do_escopo_404(self):
+        figure_id = self._create().json()["id"]
+
+        self.client.force_authenticate(self.outsider)
+
+        self.assertEqual(
+            self.client.get(f"/analytics/figures/{figure_id}/").status_code, 404
+        )
+
+    # -- stats_tests (§7.5) ---------------------------------------------------
+
+    def _group_with_values(self, name, values, channel_stats=None):
+        """Cria uma amostra por valor, cada uma com gate P1 e stats.
+
+        ``values`` viram percent_of_parent_population (métrica default
+        dos testes de stats) — retorna o dict de grupo do spec.
+        """
+        from analytics.models import AnalysisResult
+
+        ids = []
+        for i, value in enumerate(values):
+            fd = self._file(self.experiment, f"{name}{i}.fcs")
+            fd.data_set = [{"fsc_a": 1.0}]
+            fd.save(update_fields=["data_set"])
+            gate = self._gate(fd, "P1")
+            AnalysisResult.objects.update_or_create(
+                gate=gate,
+                defaults={
+                    "analysis_result": {
+                        "summary_metrics": {
+                            "count": 10,
+                            "percent_of_total_population": value,
+                            "percent_of_parent_population": value,
+                        },
+                        "channel_statistics": channel_stats or {},
+                    }
+                },
+            )
+            ids.append(fd.id)
+        return {"name": name, "file_data_ids": ids}
+
+    def _stats_spec(self, a_values, b_values, **overrides):
+        spec = self._spec(
+            groups=[
+                self._group_with_values("GA", a_values),
+                self._group_with_values("GB", b_values),
+            ]
+        )
+        spec.update(overrides)
+        return spec
+
+    def test_metrica_rcv_aceita_e_lida_do_channel_statistics(self):
+        res = self._create(spec=self._spec(metric="rcv", channel="fitc_a"))
+
+        self.assertEqual(res.status_code, 201)
+        rows = res.json()["result_cache"]["rows"]
+        self.assertEqual({r["value"] for r in rows}, {30.0})
+
+    def test_stats_test_valor_invalido_400(self):
+        res = self._create(spec=self._spec(stats_test="bayes"))
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_stats_tests_parametrico_anova_e_welch(self):
+        spec = self._stats_spec([10.0, 11.0, 12.0], [20.0, 21.0, 22.0])
+        spec["stats_test"] = "parametric"
+
+        res = self._create(spec=spec)
+
+        self.assertEqual(res.status_code, 201)
+        stats_tests = res.json()["result_cache"]["stats_tests"]
+        self.assertEqual(len(stats_tests), 1)
+        entry = stats_tests[0]
+        self.assertEqual(entry["population"], "P1")
+        self.assertEqual(entry["method"], "parametric")
+        self.assertEqual(entry["omnibus"]["test"], "one_way_anova")
+        self.assertEqual(entry["omnibus"]["df"], [1, 4])
+        self.assertIsNotNone(entry["omnibus"]["F"])
+        self.assertEqual(len(entry["pairwise"]), 1)
+        pair = entry["pairwise"][0]
+        self.assertEqual(pair["method"], "welch_t")
+        self.assertIsNotNone(pair["t"])
+        self.assertIsNotNone(pair["p"])
+        self.assertIsNotNone(pair["p_adj"])
+        self.assertEqual(entry["n_per_group"], {"GA": 3, "GB": 3})
+
+    def test_stats_tests_nao_parametrico_kruskal_e_mann_whitney(self):
+        spec = self._stats_spec([10.0, 11.0, 12.0], [20.0, 21.0, 22.0])
+        spec["stats_test"] = "nonparametric"
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["method"], "nonparametric")
+        self.assertEqual(entry["omnibus"]["test"], "kruskal_wallis")
+        self.assertIsNotNone(entry["omnibus"]["H"])
+        pair = entry["pairwise"][0]
+        self.assertEqual(pair["method"], "mann_whitney_u")
+        self.assertIn("U", pair)
+        self.assertIsNotNone(pair["p_adj"])
+
+    def test_stats_tests_auto_cai_para_nao_parametrico_com_n_pequeno(self):
+        spec = self._stats_spec([10.0, 11.0, 12.0], [20.0, 21.0, 22.0])
+        # stats_test omitido → auto; n=3 por grupo → não-paramétrico
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["method"], "nonparametric")
+        self.assertTrue(any("n < 10" in w for w in entry["warnings"]))
+
+    def test_stats_tests_auto_parametrico_com_n_grande(self):
+        spec = self._stats_spec(
+            [float(v) for v in range(10, 22)],
+            [float(v) for v in range(30, 42)],
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["method"], "parametric")
+        self.assertEqual(entry["omnibus"]["test"], "one_way_anova")
+
+    def test_stats_tests_bh_corrige_p_adj(self):
+        # 3 grupos → 3 pares; p_adj deve ser >= p cru e <= 1
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="parametric"
+        )
+        spec["groups"].append(self._group_with_values("GC", [30.0, 31.0, 32.0]))
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(len(entry["pairwise"]), 3)
+        for pair in entry["pairwise"]:
+            self.assertGreaterEqual(pair["p_adj"], pair["p"])
+            self.assertLessEqual(pair["p_adj"], 1.0)
+
+    def test_stats_tests_grupo_n_menor_3_vai_para_warnings(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0], stats_test="parametric"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["n_per_group"], {"GA": 3, "GB": 2})
+        self.assertTrue(any("n<3" in w for w in entry["warnings"]))
+        # GB excluído → menos de 2 elegíveis → sem teste
+        self.assertIsNone(entry["omnibus"])
+        self.assertEqual(entry["pairwise"], [])
+
+    def test_stats_tests_lista_por_populacao(self):
+        # Cada população do spec tem sua própria bateria de testes.
+        groups = [
+            self._group_with_values("GA", [10.0, 11.0, 12.0]),
+            self._group_with_values("GB", [20.0, 21.0, 22.0]),
+        ]
+        # gate filho P2 em cada amostra criada pelo helper
+        from analytics.models import AnalysisResult
+
+        for group in groups:
+            for fd_id in group["file_data_ids"]:
+                fd = FileDataModel.objects.get(id=fd_id)
+                p1 = GateModel.objects.get(file_data=fd, name="P1")
+                child = self._gate(fd, "P2", parent=p1)
+                AnalysisResult.objects.update_or_create(
+                    gate=child,
+                    defaults={
+                        "analysis_result": {
+                            "summary_metrics": {
+                                "count": 5,
+                                "percent_of_total_population": 5.0,
+                                "percent_of_parent_population": 5.0,
+                            },
+                            "channel_statistics": {},
+                        }
+                    },
+                )
+        spec = self._spec(groups=groups, populations=["P1", "P1 > P2"])
+
+        res = self._create(spec=spec)
+
+        stats_tests = res.json()["result_cache"]["stats_tests"]
+        self.assertEqual([e["population"] for e in stats_tests], ["P1", "P1 > P2"])
+
+    # -- stats_test explícitos (card #92) ------------------------------------
+
+    def test_stats_test_t_student_pairwise_sem_omnibus(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="t_student"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["method"], "t_student")
+        self.assertIsNone(entry["omnibus"])
+        pair = entry["pairwise"][0]
+        self.assertEqual(pair["method"], "t_student")
+        self.assertIn("t", pair)
+        self.assertIsNotNone(pair["p_adj"])
+
+    def test_stats_test_t_welch_pairwise_sem_omnibus(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="t_welch"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertIsNone(entry["omnibus"])
+        self.assertEqual(entry["pairwise"][0]["method"], "welch_t")
+
+    def test_stats_test_anova_explicito_com_omnibus(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="anova"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["omnibus"]["test"], "one_way_anova")
+        self.assertEqual(entry["pairwise"][0]["method"], "welch_t")
+
+    def test_stats_test_kruskal_explicito_com_omnibus(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="kruskal_wallis"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["omnibus"]["test"], "kruskal_wallis")
+        self.assertEqual(entry["pairwise"][0]["method"], "mann_whitney_u")
+
+    def test_stats_test_mann_whitney_sem_omnibus(self):
+        spec = self._stats_spec(
+            [10.0, 11.0, 12.0], [20.0, 21.0, 22.0], stats_test="mann_whitney"
+        )
+
+        res = self._create(spec=spec)
+
+        entry = res.json()["result_cache"]["stats_tests"][0]
+        self.assertEqual(entry["method"], "mann_whitney")
+        self.assertIsNone(entry["omnibus"])
+        pair = entry["pairwise"][0]
+        self.assertEqual(pair["method"], "mann_whitney_u")
+        self.assertIn("U", pair)
+
+    def test_distribution_nao_tem_stats_tests(self):
+        spec = self._spec(populations=["P1"], channel="fitc_a")
+
+        res = self._create(chart_type="distribution", spec=spec)
+
+        self.assertEqual(res.status_code, 201)
+        self.assertNotIn("stats_tests", res.json()["result_cache"])
+
+    @override_settings(ANALYSIS_FIGURES_ENABLED=False)
+    def test_feature_flag_desligada_retorna_503(self):
+        url = f"/analytics/experiment/{self.experiment.id}/figures/"
+        self.assertEqual(self.client.get(url).status_code, 503)
+        self.assertEqual(
+            self.client.post(url, {}, format="json").status_code,
+            503,
+        )
