@@ -21,7 +21,8 @@ ou alinhe com o responsável.
 | Feature | Área afetada | Branch | Sessão | Desde |
 |---|---|---|---|---|
 | BE-31 resiliência de processamento | `docs/prd/BE-31*`, `fcs_parser/services/*` | `docs/be-31-processing-resilience` | outra sessão | 2026-09 |
-| BE-33 figuras de análise persistidas (cards #88/#92) + fix gates propagados (card #90) | ✅ concluído — mergeado (PR #126); feature estacionada (decisão 2026-10-02): rotas atrás de `ANALYSIS_FIGURES_ENABLED` (503 quando off), mesmo padrão do SSO Google; card #90 aguardando release/deploy | — | — | — |
+| BE-39 bump segurança PyJWT/Django (cards #99/#100) | `requirements.txt` | `fix/security-be39` | devin | 2026-10 |
+| BE-33 figuras de análise persistidas (cards #88/#92) + fix gates propagados (card #90) | ✅ concluído — mergeado (PR #126); feature estacionada (decisão 2026-10-02): rotas atrás de `ANALYSIS_FIGURES_ENABLED` (503 quando off), mesmo padrão do SSO Google; card #90 em produção (deploy v0.5.2) | — | — | — |
 | BE-32/ADR-0028 dedup de storage (docs) | `docs/prd`, `docs/adr` | `docs/be-32-blob-dedup` | devin | 2026-09 |
 | BE-36 preview de compensação ad-hoc (card #82) | ✅ concluído — mergeado (PRs #119/#121), deploy v0.5.0 | — | — | — |
 | Dívida: serializers + auditoria de stats + domínio de gate + dead code (#84/#87/#12) | ✅ concluído — mergeado (PR #123), deploy v0.5.1 | — | — | — |
