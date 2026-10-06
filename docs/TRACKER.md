@@ -21,7 +21,7 @@ ou alinhe com o responsável.
 | Feature | Área afetada | Branch | Sessão | Desde |
 |---|---|---|---|---|
 | BE-31 resiliência de processamento | `docs/prd/BE-31*`, `fcs_parser/services/*` | `docs/be-31-processing-resilience` | outra sessão | 2026-09 |
-| BE-33 figuras de análise persistidas (cards #88/#92) | `analytics/models.py`, `analytics/services/figures.py`, `analytics/serializers.py`, `analytics/views.py`, `analytics/urls.py`, `analytics/tests.py` — feature estacionada (decisão 2026-10-02): rotas atrás de `ANALYSIS_FIGURES_ENABLED` (503 quando off), mesmo padrão do SSO Google | `feat/analysis-figures` | devin | 2026-09 |
+| BE-33 figuras de análise persistidas (cards #88/#92) + fix gates propagados (card #90) | ✅ concluído — mergeado (PR #126); feature estacionada (decisão 2026-10-02): rotas atrás de `ANALYSIS_FIGURES_ENABLED` (503 quando off), mesmo padrão do SSO Google; card #90 aguardando release/deploy | — | — | — |
 | BE-32/ADR-0028 dedup de storage (docs) | `docs/prd`, `docs/adr` | `docs/be-32-blob-dedup` | devin | 2026-09 |
 | BE-36 preview de compensação ad-hoc (card #82) | ✅ concluído — mergeado (PRs #119/#121), deploy v0.5.0 | — | — | — |
 | Dívida: serializers + auditoria de stats + domínio de gate + dead code (#84/#87/#12) | ✅ concluído — mergeado (PR #123), deploy v0.5.1 | — | — | — |
@@ -42,7 +42,7 @@ ou alinhe com o responsável.
 | BE-24 | `POST /experiment/` cria experimento sem arquivo, `description` livre, `values` read-only (derivado dos FCS) |
 | BE-29 | SocialAccount + AuthEvent + link/unlink + aviso de vínculo (ADR-0025/0026) — mergeado no PR #95 |
 | BE-30 | Merge de contas: `POST /accounts/merge/confirm/`, `merge_accounts()` migra memberships/FKs/SocialAccount, conta absorvida inativa com `merged_into` — mergeado no PR #97 |
-| BE-33 (PRD) | Figuras de análise persistidas (spec + `result_cache` + `result_revision` + `is_stale` + `recompute/`) — documentado em `docs/be-33-figures`; implementação livre para pegar (consumida pelo FE-36 do front) |
+| BE-33 (PRD) | Figuras de análise persistidas (spec + `result_cache` + `result_revision` + `is_stale` + `recompute/`) — implementado e mergeado (PR #126, ADR-0029); estacionado atrás de `ANALYSIS_FIGURES_ENABLED` |
 | Limpeza de branches (2026-09-17) | `fix/security-secret-image` rebaseada + PR #94 mergeada (ADR-0024 — imagem sem registry/segredos); branches obsoletas removidas: `feat/email-smtp-config` (SMTP já estava na main — `EMAIL_*` em settings + compose prod), `chore/dev-compose-juvia` e `chore/remove-juvia-service` (main já sem serviço juvia), `docs/prd-be-21-*` e `docs/adr-0022-*` (conteúdo já na main / cherry-pickado) |
 | Sync de status de PRDs | README de PRDs corrigido: BE-19 parcial (derivação ok, template é visão), BE-23 implementado (ADR-0020), BE-25 substituído por BE-28 |
 
