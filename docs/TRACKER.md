@@ -20,6 +20,7 @@ ou alinhe com o responsável.
 
 | Feature | Área afetada | Branch | Sessão | Desde |
 |---|---|---|---|---|
+| BE-27 fila de jobs pro Juvia (card #9) | `analytics/models.py` (AnalysisJob + origin), `analytics/services/jobs.py`, `analytics/views_internal.py`, `analytics/urls_internal.py`, `utils/internal_auth.py`, `pandora/urls.py`, `pandora/settings.py`, `analytics/tests.py` | `feat/juvia-job-queue` | devin | 2026-10 |
 | BE-31 resiliência de processamento | `docs/prd/BE-31*`, `fcs_parser/services/*` | `docs/be-31-processing-resilience` | outra sessão | 2026-09 |
 | BE-39 bump segurança PyJWT/Django (cards #99/#100) | ✅ concluído — mergeado (PR #128), deploy v0.5.3; Dependabot zerado | — | — | — |
 | BE-33 figuras de análise persistidas (cards #88/#92) + fix gates propagados (card #90) | ✅ concluído — mergeado (PR #126); feature estacionada (decisão 2026-10-02): rotas atrás de `ANALYSIS_FIGURES_ENABLED` (503 quando off), mesmo padrão do SSO Google; card #90 em produção (deploy v0.5.2) | — | — | — |

@@ -7,13 +7,14 @@ from analytics.models import (
     AnalysisBranch,
     AnalysisCheckpoint,
     AnalysisFigure,
+    AnalysisJob,
     AnalysisResult,
     AnalysisRevision,
     CompensationMatrix,
     DashboardModel,
     GateModel,
 )
-from fcs_parser.models import FileDataModel
+from fcs_parser.models import ExperimentModel, FileDataModel, SubsampleModel
 
 
 def gate_author_name(gate):
@@ -72,6 +73,7 @@ class GateSerializer(serializers.ModelSerializer):
             "copied_from",
             "branch",
             "color",
+            "automatic",
             "created_by",
             "created_by_name",
         ]
@@ -254,6 +256,7 @@ class AnalysisRevisionSerializer(serializers.ModelSerializer):
             "summary",
             "author",
             "affected_ids",
+            "origin",
             "created_at",
             "reverts",
             "revertible",
@@ -312,6 +315,7 @@ class AnalysisCheckpointSerializer(serializers.ModelSerializer):
             "id",
             "revision",
             "message",
+            "origin",
             "created_by_name",
             "created_at",
         ]
@@ -981,3 +985,202 @@ class AnalysisFigureListSerializer(serializers.ModelSerializer):
         from analytics.services.figures import figure_is_stale
 
         return figure_is_stale(obj)
+
+
+# ---------------------------------------------------------------------------
+# BE-27 — fila de jobs de análise pro Juvia
+# ---------------------------------------------------------------------------
+
+# Vocabulário do contrato com o worker — espelha o Literal do
+# ClusterRequest do Juvia (app/schemas.py). Um modelo novo no Juvia exige
+# alinhar aqui antes de enfileirar jobs com ele.
+JUVIA_MODEL_CHOICES = ["KMeans", "DBSCAN", "Hierárquico"]
+JUVIA_TRANSFORM_CHOICES = ["linear", "log"]
+
+
+class AnalysisJobSerializer(serializers.ModelSerializer):
+    """Leitura do job para o polling do front (GET /analysis-jobs/{id})."""
+
+    file_id = serializers.IntegerField(source="file_data_id", read_only=True)
+    gate_id = serializers.IntegerField(read_only=True)
+    subsample_id = serializers.IntegerField(read_only=True)
+    created_gate_ids = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AnalysisJob
+        fields = [
+            "id",
+            "experiment",
+            "file_id",
+            "subsample_id",
+            "gate_id",
+            "operation",
+            "model",
+            "params",
+            "transform",
+            "channels",
+            "status",
+            "attempts",
+            "max_attempts",
+            "last_error",
+            "result",
+            "created_gate_ids",
+            "created_at",
+            "claimed_at",
+            "finished_at",
+        ]
+        read_only_fields = fields
+
+    @extend_schema_field(serializers.ListField(child=serializers.IntegerField()))
+    def get_created_gate_ids(self, obj):
+        return (obj.result or {}).get("created_gate_ids") or []
+
+
+class AnalysisJobCreateSerializer(serializers.Serializer):
+    """Enqueue do front (POST /analytics/analysis-jobs/).
+
+    Valida a coerência das referências na borda — um job mal referenciado
+    falharia só no worker, depois de ocupar a fila.
+    """
+
+    experiment = serializers.PrimaryKeyRelatedField(
+        queryset=ExperimentModel.objects.filter(active=True)
+    )
+    file_data = serializers.PrimaryKeyRelatedField(
+        queryset=FileDataModel.objects.filter(active=True)
+    )
+    subsample = serializers.PrimaryKeyRelatedField(
+        queryset=SubsampleModel.objects.all(),
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    gate = serializers.PrimaryKeyRelatedField(
+        queryset=GateModel.objects.all(),
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    operation = serializers.ChoiceField(
+        choices=AnalysisJob.OPERATION_CHOICES,
+        default=AnalysisJob.OPERATION_CLUSTER,
+    )
+    model = serializers.ChoiceField(choices=JUVIA_MODEL_CHOICES)
+    params = serializers.DictField(required=False, default=dict)
+    transform = serializers.ChoiceField(
+        choices=JUVIA_TRANSFORM_CHOICES, default="linear"
+    )
+    channels = serializers.ListField(child=serializers.CharField(), min_length=1)
+    payload = serializers.DictField(required=False, default=dict)
+    max_attempts = serializers.IntegerField(required=False, min_value=1, max_value=10)
+
+    def validate(self, attrs):
+        from analytics.gate_filter import file_data_channels
+        from utils.density import normalize_column_name
+
+        experiment = attrs["experiment"]
+        file_data = attrs["file_data"]
+        if file_data.experiment_id != experiment.id:
+            raise serializers.ValidationError(
+                {"file_data": "A amostra não pertence ao experimento."}
+            )
+        subsample = attrs.get("subsample")
+        if subsample is not None and subsample.experiment_id != experiment.id:
+            raise serializers.ValidationError(
+                {"subsample": "O subsample não pertence ao experimento."}
+            )
+        gate = attrs.get("gate")
+        if gate is not None and gate.file_data_id != file_data.id:
+            raise serializers.ValidationError(
+                {"gate": "O gate não pertence à amostra do job."}
+            )
+        available = file_data_channels(file_data)
+        missing = [
+            channel
+            for channel in attrs["channels"]
+            if normalize_column_name(channel) not in available
+        ]
+        if missing:
+            raise serializers.ValidationError(
+                {"channels": ("Canais ausentes nesta amostra: " + ", ".join(missing))}
+            )
+        return attrs
+
+    def create(self, validated_data):
+        from django.conf import settings as django_settings
+
+        validated_data.setdefault(
+            "max_attempts", django_settings.JUVIA_JOB_MAX_ATTEMPTS
+        )
+        return AnalysisJob.objects.create(
+            created_by=self.context["request"].user,
+            **validated_data,
+        )
+
+
+class JobClaimRequestSerializer(serializers.Serializer):
+    """Body do claim — `worker` é só etiqueta de observabilidade."""
+
+    worker = serializers.CharField(
+        max_length=128, required=False, allow_blank=True, default=""
+    )
+
+
+class AnalysisJobClaimSerializer(serializers.ModelSerializer):
+    """Payload entregue ao worker no claim (BE-27).
+
+    `file_id`/`gate_id`/`subsample_id` resolvem o contexto via
+    `/internal/files/{id}/events`; `model`/`params`/`transform`/`channels`
+    espelham o ClusterRequest do Juvia (events vem do endpoint de dados).
+    """
+
+    job_id = serializers.IntegerField(source="id", read_only=True)
+    file_id = serializers.IntegerField(source="file_data_id", read_only=True)
+    gate_id = serializers.IntegerField(read_only=True)
+    subsample_id = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = AnalysisJob
+        fields = [
+            "job_id",
+            "operation",
+            "model",
+            "params",
+            "transform",
+            "channels",
+            "payload",
+            "file_id",
+            "gate_id",
+            "subsample_id",
+            "attempts",
+        ]
+        read_only_fields = fields
+
+
+class JobResultGateSerializer(serializers.Serializer):
+    """Gate proposto pelo worker dentro do payload do `complete`.
+
+    `gate_coordinates` é opaco pro back (mesmo contrato do front) —
+    `parent_id` aponta para um gate existente da amostra; omitido, herda
+    o gate de contexto do job.
+    """
+
+    name = serializers.CharField(max_length=50)
+    gate_coordinates = serializers.DictField(allow_empty=False)
+    parent_id = serializers.IntegerField(required=False, allow_null=True)
+    color = serializers.CharField(
+        max_length=7, required=False, allow_null=True, allow_blank=True
+    )
+
+
+class JobCompleteSerializer(serializers.Serializer):
+    """Body do complete: o resultado livre do worker; `gates` é validado
+    porque é a parte materializada — o resto é gravado opaco em `result`."""
+
+    gates = serializers.ListField(
+        child=JobResultGateSerializer(), required=False, default=list
+    )
+
+
+class JobFailSerializer(serializers.Serializer):
+    error = serializers.CharField(max_length=4000)

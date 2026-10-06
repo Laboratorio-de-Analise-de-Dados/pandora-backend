@@ -1,17 +1,25 @@
+import threading
+from datetime import timedelta
+from io import StringIO
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-from django.test import TestCase, override_settings
+from django.core.management import call_command
+from django.test import TestCase, TransactionTestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.models import User
 from analytics.models import (
     AnalysisBranch,
+    AnalysisCheckpoint,
+    AnalysisJob,
     AnalysisRevision,
     DashboardModel,
     GateModel,
 )
+from analytics.services.jobs import claim_next_job
 from analytics.tasks import calculate_cytometry_metrics, recalculate_gate_analysis
 from fcs_parser.models import (
     ExperimentModel,
@@ -2272,3 +2280,614 @@ class AnalysisFigureTestCase(GateFixtureMixin, TestCase):
             self.client.post(url, {}, format="json").status_code,
             503,
         )
+
+
+# ---------------------------------------------------------------------------
+# BE-27 — fila de jobs de análise pro Juvia
+# ---------------------------------------------------------------------------
+
+INTERNAL_TOKEN = "test-internal-token"
+
+
+class JobFixtureMixin:
+    """Experimento com uma amostra de eventos simples + gate retangular."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.outsider = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="tipo", created_by=self.user
+        )
+        self.file_model = FileModel.objects.create(
+            experiment=self.experiment, file_name="exp.zip"
+        )
+        self.file_data = FileDataModel.objects.create(
+            experiment=self.experiment,
+            file_name="a.fcs",
+            headers=[],
+            file=self.file_model,
+            data_set=[{"FSC-A": float(i), "SSC-A": float(i % 7)} for i in range(50)],
+        )
+        self.dashboard = DashboardModel.objects.create(
+            name="dash", file_data=self.file_data
+        )
+        self.gate = GateModel.objects.create(
+            file_data=self.file_data,
+            name="P1",
+            dashboard=self.dashboard,
+            gate_coordinates={
+                "type": "rectangle",
+                "x_axis": "FSC-A",
+                "y_axis": "SSC-A",
+                "startX": 0,
+                "endX": 10,
+                "startY": 0,
+                "endY": 10,
+            },
+        )
+        self.client = APIClient()
+
+    def _job(self, **kwargs):
+        defaults = {
+            "experiment": self.experiment,
+            "file_data": self.file_data,
+            "operation": AnalysisJob.OPERATION_CLUSTER,
+            "model": "KMeans",
+            "channels": ["FSC-A", "SSC-A"],
+        }
+        defaults.update(kwargs)
+        return AnalysisJob.objects.create(**defaults)
+
+    def _internal(self, client=None, token=INTERNAL_TOKEN):
+        client = client or APIClient()
+        if token is not None:
+            client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        return client
+
+
+@override_settings(JUVIA_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class InternalJobAuthTests(JobFixtureMixin, TestCase):
+    """Todo /internal/* exige o Bearer de serviço — fail-closed."""
+
+    def test_missing_token_returns_401(self):
+        response = APIClient().post("/internal/jobs/claim", {}, format="json")
+        self.assertEqual(response.status_code, 401)
+
+    def test_invalid_token_returns_401(self):
+        response = self._internal(token="wrong").post(
+            "/internal/jobs/claim", {}, format="json"
+        )
+        self.assertEqual(response.status_code, 401)
+
+    @override_settings(JUVIA_INTERNAL_TOKEN="")
+    def test_no_configured_token_returns_503(self):
+        # Sem credencial configurada o endpoint fecha — nunca aceita aberto.
+        response = self._internal(token=INTERNAL_TOKEN).post(
+            "/internal/jobs/claim", {}, format="json"
+        )
+        self.assertEqual(response.status_code, 503)
+
+    def test_valid_token_reaches_endpoint(self):
+        response = self._internal().post("/internal/jobs/claim", {}, format="json")
+        self.assertEqual(response.status_code, 204)  # fila vazia
+
+    def test_user_jwt_is_not_accepted(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        response = client.post("/internal/jobs/claim", {}, format="json")
+        self.assertEqual(response.status_code, 401)
+
+
+@override_settings(JUVIA_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class JobClaimTests(JobFixtureMixin, TestCase):
+    def _claim(self):
+        return self._internal().post(
+            "/internal/jobs/claim", {"worker": "juvia-1"}, format="json"
+        )
+
+    def test_claim_fifo_and_marks_processing(self):
+        first = self._job()
+        second = self._job()
+
+        response = self._claim()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["job_id"], first.id)
+        self.assertEqual(response.json()["file_id"], self.file_data.id)
+
+        first.refresh_from_db()
+        self.assertEqual(first.status, AnalysisJob.STATUS_PROCESSING)
+        self.assertEqual(first.claimed_by, "juvia-1")
+        self.assertIsNotNone(first.claimed_at)
+
+        response = self._claim()
+        self.assertEqual(response.json()["job_id"], second.id)
+
+        # Fila vazia → 204 sem corpo.
+        self.assertEqual(self._claim().status_code, 204)
+
+    def test_claim_payload_contract(self):
+        gate_job = self._job(gate=self.gate, params={"n_clusters": 4})
+        response = self._claim()
+        body = response.json()
+        self.assertEqual(body["job_id"], gate_job.id)
+        self.assertEqual(body["operation"], "cluster")
+        self.assertEqual(body["model"], "KMeans")
+        self.assertEqual(body["params"], {"n_clusters": 4})
+        self.assertEqual(body["transform"], "linear")
+        self.assertEqual(body["channels"], ["FSC-A", "SSC-A"])
+        self.assertEqual(body["gate_id"], self.gate.id)
+        self.assertEqual(body["file_id"], self.file_data.id)
+
+    @override_settings(JUVIA_JOB_CLAIM_TIMEOUT_MINUTES=30)
+    def test_stale_claim_becomes_eligible_again(self):
+        job = self._job()
+        self._claim()
+        AnalysisJob.objects.filter(pk=job.pk).update(
+            claimed_at=timezone.now() - timedelta(minutes=31)
+        )
+        response = self._claim()
+        self.assertEqual(response.json()["job_id"], job.id)
+
+    def test_fresh_claim_is_not_reclaimed(self):
+        job = self._job()
+        self._claim()
+        self.assertEqual(self._claim().status_code, 204)
+
+
+class JobClaimConcurrencyTests(JobFixtureMixin, TransactionTestCase):
+    """SKIP LOCKED real: dois workers concorrentes nunca pegam o mesmo job."""
+
+    @override_settings(JUVIA_INTERNAL_TOKEN=INTERNAL_TOKEN)
+    def test_concurrent_claims_get_distinct_jobs(self):
+        jobs = [self._job(), self._job()]
+        claimed = []
+        barrier = threading.Barrier(2)
+
+        def worker():
+            from django.db import connections
+
+            try:
+                client = APIClient()
+                client.credentials(HTTP_AUTHORIZATION=f"Bearer {INTERNAL_TOKEN}")
+                barrier.wait(timeout=10)
+                response = client.post("/internal/jobs/claim", {}, format="json")
+                if response.status_code == 200:
+                    claimed.append(response.json()["job_id"])
+            finally:
+                # Conexão por thread — sem fechar, o teardown não consegue
+                # dropar o banco de teste (sessões abertas).
+                connections.close_all()
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        self.assertEqual(len(claimed), 2)
+        self.assertEqual(set(claimed), {jobs[0].id, jobs[1].id})
+
+
+@override_settings(JUVIA_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class JobFailTests(JobFixtureMixin, TestCase):
+    def test_fail_retries_until_quarantine(self):
+        job = self._job(max_attempts=3)
+        client = self._internal()
+
+        client.post("/internal/jobs/claim", {}, format="json")
+        for attempt in (1, 2):
+            response = client.post(
+                f"/internal/jobs/{job.id}/fail",
+                {"error": f"crash {attempt}"},
+                format="json",
+            )
+            self.assertEqual(response.json()["status"], "error")
+            self.assertEqual(response.json()["attempts"], attempt)
+            # error ainda elegível → o próximo claim é a retentativa
+            claim = client.post("/internal/jobs/claim", {}, format="json")
+            self.assertEqual(claim.json()["job_id"], job.id)
+
+        response = client.post(
+            f"/internal/jobs/{job.id}/fail", {"error": "crash 3"}, format="json"
+        )
+        self.assertEqual(response.json()["status"], "quarantine")
+
+        job.refresh_from_db()
+        self.assertEqual(job.attempts, 3)
+        self.assertEqual(job.last_error, "crash 3")
+        self.assertIsNotNone(job.finished_at)
+
+        # Quarentena sai da fila e recusa novo fail.
+        self.assertEqual(
+            client.post("/internal/jobs/claim", {}, format="json").status_code,
+            204,
+        )
+        self.assertEqual(
+            client.post(
+                f"/internal/jobs/{job.id}/fail", {"error": "x"}, format="json"
+            ).status_code,
+            409,
+        )
+
+    def test_fail_requires_processing(self):
+        job = self._job()
+        response = self._internal().post(
+            f"/internal/jobs/{job.id}/fail", {"error": "x"}, format="json"
+        )
+        self.assertEqual(response.status_code, 409)
+
+
+@override_settings(JUVIA_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class JobCompleteTests(JobFixtureMixin, TestCase):
+    def _claim_job(self, **kwargs):
+        job = self._job(**kwargs)
+        self._internal().post("/internal/jobs/claim", {}, format="json")
+        return job
+
+    def test_complete_creates_gates_revision_and_checkpoint(self):
+        job = self._claim_job(gate=self.gate)
+        response = self._internal().post(
+            f"/internal/jobs/{job.id}/complete",
+            {
+                "gates": [
+                    {
+                        "name": "Cluster 1",
+                        "gate_coordinates": {
+                            "type": "rectangle",
+                            "x_axis": "FSC-A",
+                            "y_axis": "SSC-A",
+                            "startX": 0,
+                            "endX": 3,
+                            "startY": 0,
+                            "endY": 3,
+                        },
+                        "color": "#112233",
+                    },
+                    {
+                        "name": "Cluster 2",
+                        "gate_coordinates": {
+                            "type": "rectangle",
+                            "x_axis": "FSC-A",
+                            "y_axis": "SSC-A",
+                            "startX": 3,
+                            "endX": 9,
+                            "startY": 3,
+                            "endY": 9,
+                        },
+                    },
+                ],
+                "metrics": {"silhouette": 0.42},
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "done")
+        self.assertEqual(len(body["created_gate_ids"]), 2)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, AnalysisJob.STATUS_DONE)
+        self.assertIsNotNone(job.finished_at)
+        self.assertEqual(job.result["worker_result"]["metrics"], {"silhouette": 0.42})
+
+        created = GateModel.objects.filter(id__in=body["created_gate_ids"])
+        self.assertEqual(created.count(), 2)
+        for gate in created:
+            self.assertTrue(gate.automatic)
+            self.assertEqual(gate.file_data_id, self.file_data.id)
+            self.assertEqual(gate.parent_id, self.gate.id)
+            self.assertIsNone(gate.created_by)
+
+        revision = AnalysisRevision.objects.get(id=body["revision_id"])
+        self.assertEqual(revision.origin, "juvia")
+        self.assertIsNone(revision.user)
+        self.assertEqual(revision.action, "create")
+        self.assertEqual(
+            sorted(revision.affected_ids), sorted(body["created_gate_ids"])
+        )
+
+        checkpoint = AnalysisCheckpoint.objects.get(id=body["checkpoint_id"])
+        self.assertEqual(checkpoint.origin, "juvia")
+        self.assertEqual(checkpoint.revision_id, revision.id)
+
+        # Stats foram calculadas pras gates criadas.
+        for gate in created:
+            self.assertTrue(hasattr(gate, "analysis_result"))
+
+    def test_complete_idempotent_when_already_done(self):
+        job = self._claim_job()
+        payload = {
+            "gates": [
+                {
+                    "name": "Cluster A",
+                    "gate_coordinates": {
+                        "type": "rectangle",
+                        "startX": 0,
+                        "endX": 1,
+                        "startY": 0,
+                        "endY": 1,
+                    },
+                }
+            ]
+        }
+        client = self._internal()
+        first = client.post(f"/internal/jobs/{job.id}/complete", payload, format="json")
+        second = client.post(
+            f"/internal/jobs/{job.id}/complete", payload, format="json"
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(
+            first.json()["created_gate_ids"],
+            second.json()["created_gate_ids"],
+        )
+        self.assertEqual(GateModel.objects.filter(name="Cluster A").count(), 1)
+
+    def test_complete_without_gates_still_done(self):
+        job = self._claim_job()
+        response = self._internal().post(
+            f"/internal/jobs/{job.id}/complete",
+            {"metrics": {"silhouette": 0.1}},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        job.refresh_from_db()
+        self.assertEqual(job.status, AnalysisJob.STATUS_DONE)
+        self.assertEqual(job.result["created_gate_ids"], [])
+        self.assertFalse(
+            AnalysisRevision.objects.filter(experiment=self.experiment).exists()
+        )
+
+    def test_complete_requires_processing(self):
+        job = self._job()
+        response = self._internal().post(
+            f"/internal/jobs/{job.id}/complete", {}, format="json"
+        )
+        self.assertEqual(response.status_code, 409)
+
+    def test_complete_rejects_parent_from_another_file(self):
+        other_file_model = FileModel.objects.create(
+            experiment=self.experiment, file_name="other.zip"
+        )
+        other_file = FileDataModel.objects.create(
+            experiment=self.experiment,
+            file_name="b.fcs",
+            headers=[],
+            file=other_file_model,
+        )
+        other_dash = DashboardModel.objects.create(name="d2", file_data=other_file)
+        foreign_gate = GateModel.objects.create(
+            file_data=other_file, name="X", dashboard=other_dash
+        )
+        job = self._claim_job()
+        response = self._internal().post(
+            f"/internal/jobs/{job.id}/complete",
+            {
+                "gates": [
+                    {
+                        "name": "C",
+                        "gate_coordinates": {"type": "rectangle"},
+                        "parent_id": foreign_gate.id,
+                    }
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        job.refresh_from_db()
+        self.assertEqual(job.status, AnalysisJob.STATUS_PROCESSING)
+
+
+@override_settings(JUVIA_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class FileEventsTests(JobFixtureMixin, TestCase):
+    def test_events_default_sample_and_contract(self):
+        response = self._internal().get(f"/internal/files/{self.file_data.id}/events")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["file_id"], self.file_data.id)
+        self.assertEqual(body["n_total"], 50)
+        self.assertEqual(sorted(body["channels"]), ["fsc_a", "ssc_a"])
+        self.assertEqual(len(body["events"]), 50)
+
+    def test_events_fixed_seed_same_sample(self):
+        self.file_data.data_set = [
+            {"FSC-A": float(i), "SSC-A": float(i)} for i in range(100)
+        ]
+        self.file_data.save()
+        first = (
+            self._internal()
+            .get(f"/internal/files/{self.file_data.id}/events", {"n": 10})
+            .json()
+        )
+        second = (
+            self._internal()
+            .get(f"/internal/files/{self.file_data.id}/events", {"n": 10})
+            .json()
+        )
+        self.assertEqual(first["events"], second["events"])
+        self.assertEqual(len(first["events"]), 10)
+        self.assertEqual(first["n_total"], 100)
+
+    def test_events_respects_gate_filter(self):
+        # gate P1 cobre FSC-A 0..10 — só ~10 dos 50 eventos entram.
+        response = self._internal().get(
+            f"/internal/files/{self.file_data.id}/events",
+            {"gate": self.gate.id},
+        )
+        body = response.json()
+        self.assertEqual(body["gate_id"], self.gate.id)
+        self.assertEqual(body["n_total"], 11)
+        for event in body["events"]:
+            self.assertLessEqual(event[0], 10)
+
+    def test_events_gate_from_another_file_rejected(self):
+        other_file_model = FileModel.objects.create(
+            experiment=self.experiment, file_name="other.zip"
+        )
+        other_file = FileDataModel.objects.create(
+            experiment=self.experiment,
+            file_name="b.fcs",
+            headers=[],
+            file=other_file_model,
+        )
+        dash = DashboardModel.objects.create(name="d", file_data=other_file)
+        foreign = GateModel.objects.create(
+            file_data=other_file, name="X", dashboard=dash
+        )
+        response = self._internal().get(
+            f"/internal/files/{self.file_data.id}/events",
+            {"gate": foreign.id},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_events_missing_gate_404_and_missing_file_404(self):
+        self.assertEqual(
+            self._internal()
+            .get(f"/internal/files/{self.file_data.id}/events", {"gate": 9999})
+            .status_code,
+            404,
+        )
+        self.assertEqual(
+            self._internal().get("/internal/files/9999/events").status_code, 404
+        )
+
+    def test_events_channel_selection(self):
+        response = self._internal().get(
+            f"/internal/files/{self.file_data.id}/events",
+            {"channels": "FSC-A"},
+        )
+        body = response.json()
+        self.assertEqual(body["channels"], ["fsc_a"])
+        self.assertTrue(all(len(row) == 1 for row in body["events"]))
+
+    def test_events_inactive_file_rejected(self):
+        self.file_data.active = False
+        self.file_data.save()
+        self.assertEqual(
+            self._internal()
+            .get(f"/internal/files/{self.file_data.id}/events")
+            .status_code,
+            404,
+        )
+
+
+class AnalysisJobApiTests(JobFixtureMixin, TestCase):
+    """Endpoints do front: enqueue + polling, escopo por experimento."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(self.user)
+
+    def test_enqueue_and_poll_job(self):
+        response = self.client.post(
+            "/analytics/analysis-jobs/",
+            {
+                "experiment": self.experiment.id,
+                "file_data": self.file_data.id,
+                "gate": self.gate.id,
+                "model": "KMeans",
+                "params": {"n_clusters": 3},
+                "channels": ["FSC-A", "SSC-A"],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        job_id = response.json()["id"]
+
+        detail = self.client.get(f"/analytics/analysis-jobs/{job_id}/")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["status"], "pending")
+        self.assertEqual(detail.json()["model"], "KMeans")
+
+        listing = self.client.get(
+            "/analytics/analysis-jobs/", {"experiment": self.experiment.id}
+        )
+        self.assertEqual([j["id"] for j in listing.json()], [job_id])
+
+    def test_enqueue_rejects_cross_references(self):
+        other_exp = ExperimentModel.objects.create(
+            title="e2", type="t", created_by=self.user
+        )
+        response = self.client.post(
+            "/analytics/analysis-jobs/",
+            {
+                "experiment": other_exp.id,
+                "file_data": self.file_data.id,
+                "model": "KMeans",
+                "channels": ["FSC-A"],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_enqueue_rejects_unknown_channel(self):
+        response = self.client.post(
+            "/analytics/analysis-jobs/",
+            {
+                "experiment": self.experiment.id,
+                "file_data": self.file_data.id,
+                "model": "KMeans",
+                "channels": ["FSC-A", "NAO-EXISTE"],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_outsider_gets_404_and_cannot_enqueue(self):
+        job = self._job()
+        client = APIClient()
+        client.force_authenticate(self.outsider)
+        self.assertEqual(
+            client.get(f"/analytics/analysis-jobs/{job.id}/").status_code, 404
+        )
+        response = client.post(
+            "/analytics/analysis-jobs/",
+            {
+                "experiment": self.experiment.id,
+                "file_data": self.file_data.id,
+                "model": "KMeans",
+                "channels": ["FSC-A"],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_requires_authentication(self):
+        job = self._job()
+        self.assertEqual(
+            APIClient().get(f"/analytics/analysis-jobs/{job.id}/").status_code,
+            401,
+        )
+
+
+class CleanupAnalysisJobsTests(JobFixtureMixin, TestCase):
+    def _aged(self, job, status, days):
+        job.status = status
+        job.finished_at = timezone.now() - timedelta(days=days)
+        job.save(update_fields=["status", "finished_at"])
+
+    def test_cleanup_removes_only_old_done(self):
+        old_done = self._job()
+        recent_done = self._job()
+        quarantined = self._job()
+        pending = self._job()
+        self._aged(old_done, AnalysisJob.STATUS_DONE, 30)
+        self._aged(recent_done, AnalysisJob.STATUS_DONE, 2)
+        self._aged(quarantined, AnalysisJob.STATUS_QUARANTINE, 60)
+
+        call_command("cleanup_analysis_jobs", days=14)
+
+        remaining = set(AnalysisJob.objects.values_list("id", flat=True))
+        self.assertNotIn(old_done.id, remaining)
+        self.assertEqual(remaining, {recent_done.id, quarantined.id, pending.id})
+
+    def test_cleanup_dry_run(self):
+        old_done = self._job()
+        self._aged(old_done, AnalysisJob.STATUS_DONE, 30)
+        out = StringIO()
+        call_command("cleanup_analysis_jobs", days=14, dry_run=True, stdout=out)
+        self.assertIn("1 job", out.getvalue())
+        self.assertTrue(AnalysisJob.objects.filter(id=old_done.id).exists())
