@@ -6,7 +6,7 @@ black==26.3.1
 click==8.2.1
 colorama==0.4.6
 decorator==5.2.1
-Django==5.2.16
+Django==5.2.17
 django-cors-headers==4.7.0
 djangorestframework==3.17.2
 djangorestframework_simplejwt==5.5.1
@@ -33,7 +33,7 @@ prompt_toolkit==3.0.51
 psycopg2-binary==2.9.10
 pure_eval==0.2.3
 Pygments==2.20.0
-PyJWT==2.13.0
+PyJWT==2.15.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 pytz==2025.2
