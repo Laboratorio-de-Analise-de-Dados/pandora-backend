@@ -14,7 +14,9 @@ from rest_framework.exceptions import APIException, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView, Response, status
 from fcs_parser.permissions import (
+    experiments_visible_to,
     file_data_visible_to,
+    require_can_edit_experiment,
     require_can_edit_file_data,
 )
 from fcs_parser.services.compensation import (
@@ -43,6 +45,7 @@ from analytics.history import (
 )
 from analytics.models import (
     AnalysisCheckpoint,
+    AnalysisJob,
     AnalysisRevision,
     DashboardModel,
     GateModel,
@@ -51,6 +54,8 @@ from analytics.serializers import (
     AnalysisCheckpointSerializer,
     AnalysisFigureListSerializer,
     AnalysisFigureSerializer,
+    AnalysisJobCreateSerializer,
+    AnalysisJobSerializer,
     AnalysisRevisionDetailSerializer,
     AnalysisRevisionSerializer,
     CheckpointCreateSerializer,
@@ -2159,4 +2164,62 @@ class FigureRecomputeView(_FiguresEnabledMixin, APIView):
                 "figure": AnalysisFigureSerializer(figure).data,
                 "removed_since_last": diff,
             }
+        )
+
+
+class AnalysisJobListCreateView(APIView):
+    """GET/POST /analytics/analysis-jobs/ — fila de jobs do Juvia (BE-27).
+
+    O front enfileira (POST) e faz polling do status (GET) — WebSocket/SSE
+    ficam fora, `refetchInterval` cobre o volume. Escopo sempre por
+    experimento visível ao usuário.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("experiment", int, required=False),
+            OpenApiParameter("status", str, required=False),
+        ],
+        responses={200: AnalysisJobSerializer(many=True)},
+    )
+    def get(self, request):
+        qs = AnalysisJob.objects.filter(
+            experiment__in=experiments_visible_to(request.user)
+        ).order_by("-created_at")
+        experiment_id = request.query_params.get("experiment")
+        if experiment_id:
+            qs = qs.filter(experiment_id=experiment_id)
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status__in=status_filter.split(","))
+        return Response(AnalysisJobSerializer(qs[:100], many=True).data)
+
+    @extend_schema(
+        request=AnalysisJobCreateSerializer,
+        responses={201: AnalysisJobSerializer},
+    )
+    def post(self, request):
+        serializer = AnalysisJobCreateSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        require_can_edit_experiment(
+            request.user, serializer.validated_data["experiment"]
+        )
+        job = serializer.save()
+        return Response(AnalysisJobSerializer(job).data, status=status.HTTP_201_CREATED)
+
+
+class AnalysisJobDetailView(generics.RetrieveAPIView):
+    """GET /analytics/analysis-jobs/{id}/ — status de um job pro polling."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = AnalysisJobSerializer
+    lookup_url_kwarg = "job_id"
+
+    def get_queryset(self):
+        return AnalysisJob.objects.filter(
+            experiment__in=experiments_visible_to(self.request.user)
         )
