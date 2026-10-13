@@ -1658,6 +1658,14 @@ class ChannelMetaTestCase(TestCase):
 
         self.assertEqual(data["channel_meta"], [{"name": "FSC-A", "range": 262144}])
 
+    def test_serializer_expoe_cytometer_da_amostra(self):
+        from fcs_parser.serializers import ListFileDataSerializer
+
+        fd = self._file_data({"$CYT": "CytoFLEX", "$P1N": "FSC-A"})
+        data = ListFileDataSerializer(fd).data
+
+        self.assertEqual(data["cytometer"], "CytoFLEX")
+
     def test_default_scale_vem_do_pne_quando_ha_meta(self):
         from utils.density import default_scale
 

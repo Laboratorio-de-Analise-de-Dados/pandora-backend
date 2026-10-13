@@ -89,3 +89,9 @@ def parse_channel_meta(headers: dict | None) -> list[dict]:
                 pass
         meta.append(entry)
     return meta
+
+
+def parse_cytometer(headers: dict | None) -> str | None:
+    """Modelo do citômetro por arquivo (`$CYT`/`$CYTSN`) — metadado
+    informativo do instrumento que adquiriu a amostra (ADR-0031)."""
+    return _header_value(headers, "CYT", "CYTSN")

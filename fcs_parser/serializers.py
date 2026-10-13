@@ -520,6 +520,8 @@ class ListFileDataSerializer(serializers.ModelSerializer):
     # Metadados por canal lidos do header FCS ($PnR/$PnE...) — o front usa
     # `range` como teto do eixo, fiel ao detector que adquiriu a amostra.
     channel_meta = serializers.SerializerMethodField()
+    # $CYT/$CYTSN — modelo do citômetro que adquiriu a amostra.
+    cytometer = serializers.SerializerMethodField()
 
     class Meta:
         model = FileDataModel
@@ -537,6 +539,7 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "inherited_tags",
             "suggested_tags",
             "channel_meta",
+            "cytometer",
         ]
         read_only_fields = ["id", "source_path", "active", "deactivated_at"]
 
@@ -561,6 +564,11 @@ class ListFileDataSerializer(serializers.ModelSerializer):
         from fcs_parser.services.channel_meta import parse_channel_meta
 
         return parse_channel_meta(obj.headers)
+
+    def get_cytometer(self, obj):
+        from fcs_parser.services.channel_meta import parse_cytometer
+
+        return parse_cytometer(obj.headers)
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):
