@@ -194,11 +194,17 @@ class ExperimentFileInitSerializer(serializers.Serializer):
 
 
 class ChunkUploadSerializer(serializers.Serializer):
-    """Entrada dos endpoints de chunk (experimento e arquivo)."""
+    """Entrada dos endpoints de chunk (experimento e arquivo).
+
+    ``fileName`` é opcional (BE-42): quando enviado, o endpoint de
+    arquivo confere contra o ``file_name`` do upload — protege contra
+    chunk roteado pro FileModel errado num lote de nomes repetidos.
+    """
 
     fileId = serializers.IntegerField()
     chunkIndex = serializers.IntegerField(min_value=0)
     chunk = serializers.FileField()
+    fileName = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class ExperimentCompleteSerializer(serializers.Serializer):
@@ -612,6 +618,8 @@ class ListFileDataSerializer(serializers.ModelSerializer):
     # Metadados por canal lidos do header FCS ($PnR/$PnE...) — o front usa
     # `range` como teto do eixo, fiel ao detector que adquiriu a amostra.
     channel_meta = serializers.SerializerMethodField()
+    # $CYT/$CYTSN — modelo do citômetro que adquiriu a amostra.
+    cytometer = serializers.SerializerMethodField()
 
     class Meta:
         model = FileDataModel
@@ -634,6 +642,7 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "plate",
             "suggested_control",
             "channel_meta",
+            "cytometer",
         ]
         read_only_fields = ["id", "source_path", "active", "deactivated_at"]
 
@@ -674,6 +683,10 @@ class ListFileDataSerializer(serializers.ModelSerializer):
 
         return parse_channel_meta(obj.headers)
 
+    def get_cytometer(self, obj):
+        from fcs_parser.services.channel_meta import parse_cytometer
+
+        return parse_cytometer(obj.headers)
 
 class ParamListDataSerializer(serializers.ModelSerializer):
     gates = ListGateSerializer(many=True, read_only=True)

@@ -80,8 +80,22 @@ def normalize_column_name(name: str) -> str:
     return name.lower().replace(" ", "").replace("-", "_")
 
 
-def default_scale(param: str) -> str:
-    """Heuristica: FSC/SSC/Time sao lineares; demais canais usam biex (arcsinh)."""
+def default_scale(param: str, channel_meta: list | None = None) -> str:
+    """Escala default do eixo: metadado do canal ($PnE → log/linear) quando
+    existe; senão heurística FSC/SSC/Time linear, demais biex (arcsinh).
+
+    ADR-0031: `$PnE` declara a aquisição nativa — `log_decades > 0` indica
+    canal adquirido em log (fluorescência CytoFLEX), `0` linear.
+    """
+    if channel_meta:
+        wanted = normalize_column_name(param)
+        for entry in channel_meta:
+            if normalize_column_name(entry.get("name") or "") != wanted:
+                continue
+            decades = entry.get("log_decades")
+            if decades is not None:
+                return "log" if decades > 0 else "linear"
+            break
     p = normalize_column_name(param)
     if p.startswith("fsc") or p.startswith("ssc") or p == "time":
         return "linear"
@@ -90,9 +104,12 @@ def default_scale(param: str) -> str:
 
 def apply_scale(values, scale: str, cofactor: float = DEFAULT_COFACTOR):
     """Transforma valores para exibicao. 'biex' = arcsinh(x/cofator) (lida com
-    negativos e e quase-linear perto de zero); 'linear' = identidade."""
+    negativos e e quase-linear perto de zero); 'log' = log10 com clip em
+    >=1 (aquisição log do instrumento); 'linear' = identidade."""
     if scale == "biex":
         return np.arcsinh(np.asarray(values, dtype=float) / cofactor)
+    if scale == "log":
+        return np.log10(np.clip(np.asarray(values, dtype=float), 1, None))
     return values
 
 
@@ -316,8 +333,12 @@ def subsample_scatter(
     yv = apply_scale(subset[y_col].values, y_scale, cofactor)
 
     return {
-        "x": np.round(xv, 4).tolist() if x_scale == "biex" else subset[x_col].tolist(),
-        "y": np.round(yv, 4).tolist() if y_scale == "biex" else subset[y_col].tolist(),
+        "x": (
+            np.round(xv, 4).tolist() if x_scale != "linear" else subset[x_col].tolist()
+        ),
+        "y": (
+            np.round(yv, 4).tolist() if y_scale != "linear" else subset[y_col].tolist()
+        ),
         "sampled_events": len(subset),
         "x_scale": x_scale,
         "y_scale": y_scale,

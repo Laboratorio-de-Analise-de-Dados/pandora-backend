@@ -932,6 +932,20 @@ class ExperimentFilesApiTestCase(TestCase):
 
     @patch("fcs_parser.views.extract_metadata_from_zip")
     def test_complete_wraps_standalone_fcs_into_zip(self, mock_extract):
+        # O extract está mockado — simula a criação da amostra para o
+        # complete enxergar o upload como processado (BE-42: 0 amostras
+        # agora é erro por arquivo).
+        def fake_extract(upload, **_kwargs):
+            FileDataModel.objects.create(
+                headers={},
+                experiment=self.experiment,
+                file_name="amostra.fcs",
+                source_path="amostra.fcs",
+                file=upload,
+            )
+
+        mock_extract.side_effect = fake_extract
+
         file_id = self._upload("amostra.fcs", b"fcs-bytes")
         res = self.client.post(
             "/experiment/files/complete/",
@@ -975,6 +989,215 @@ class ExperimentFilesApiTestCase(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["added"], 0)
         self.assertEqual(res.data["skipped"], ["a1.fcs"])
+
+    def _complete(self, file_id: int, file_name: str):
+        return self.client.post(
+            "/experiment/files/complete/",
+            {"fileId": file_id, "fileName": file_name},
+            format="json",
+        )
+
+    def test_corrupt_file_marks_upload_error_and_batch_continues(self):
+        """BE-42: arquivo corrompido no meio do lote → erro por arquivo,
+        não por experimento; os demais attacham normalmente."""
+        file_id = self._upload("podre.zip", b"isso-nao-e-zip")
+        res = self._complete(file_id, "podre.zip")
+
+        self.assertEqual(res.status_code, 422)
+        self.assertEqual(res.data["status"], "error")
+        upload = FileModel.objects.get(id=file_id)
+        self.assertEqual(upload.status, "error")
+        self.assertIn("detail", upload.error_info)
+
+        # O próximo arquivo do lote processa normalmente.
+        file_id2 = self._upload("bom.zip", self._zip_bytes({"a1.fcs": b"dados"}))
+        with patch(
+            "fcs_parser.services.process_experiment_file.readfcs"
+        ) as mock_readfcs:
+            mock_readfcs.view.return_value = ({}, None)
+            mock_readfcs.ReadFCS.return_value.channels = pd.DataFrame({"PnN": ["FL1"]})
+            res2 = self._complete(file_id2, "bom.zip")
+
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(res2.data["added"], 1)
+        self.assertEqual(FileModel.objects.get(id=file_id2).status, "done")
+        self.assertEqual(FileDataModel.objects.filter(file_id=file_id2).count(), 1)
+
+    @patch("fcs_parser.services.process_experiment_file.readfcs")
+    def test_failed_upload_rolls_back_partial_samples(self, mock_readfcs):
+        """BE-42: ZIP que falha no meio não deixa amostras pela metade —
+        a extração é atômica por upload."""
+        channels = pd.DataFrame({"PnN": ["FL1"]})
+        mock_readfcs.ReadFCS.return_value.channels = channels
+
+        def fake_view(path):
+            if "z_podre" in path:
+                raise ValueError("header ilegível")
+            return ({}, None)
+
+        mock_readfcs.view.side_effect = fake_view
+
+        payload = self._zip_bytes({"a_bom.fcs": b"ok", "z_podre.fcs": b"corrompido"})
+        file_id = self._upload("misto.zip", payload)
+        res = self._complete(file_id, "misto.zip")
+
+        self.assertEqual(res.status_code, 422)
+        upload = FileModel.objects.get(id=file_id)
+        self.assertEqual(upload.status, "error")
+        # Nada ficou pela metade: a amostra boa do mesmo ZIP não attacha.
+        self.assertEqual(FileDataModel.objects.filter(file=upload).count(), 0)
+
+    @patch("fcs_parser.services.process_experiment_file.readfcs")
+    def test_duplicate_name_different_content_rejected_400(self, mock_readfcs):
+        """BE-42: mesmo nome de amostra, conteúdo diferente → 400 com o nome."""
+        mock_readfcs.view.return_value = ({}, None)
+        mock_readfcs.ReadFCS.return_value.channels = pd.DataFrame({"PnN": ["FL1"]})
+        FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="tubo-5.fcs",
+            source_path="tubo-5.fcs",
+            content_sha256="a" * 64,
+            file=FileModel.objects.create(
+                file_name="velho.zip", experiment=self.experiment
+            ),
+        )
+
+        file_id = self._upload("tubo-5.fcs", b"conteudo-diferente")
+        res = self._complete(file_id, "tubo-5.fcs")
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("tubo-5.fcs", res.data["detail"])
+        upload = FileModel.objects.get(id=file_id)
+        self.assertEqual(upload.status, "error")
+        self.assertEqual(FileDataModel.objects.filter(file=upload).count(), 0)
+
+    @patch("fcs_parser.services.process_experiment_file.readfcs")
+    def test_same_name_in_different_folder_allowed(self, mock_readfcs):
+        """O mesmo `file_name` em outra pasta do ZIP não colide — a
+        identidade da amostra é o caminho relativo, não só o nome."""
+        mock_readfcs.view.return_value = ({}, None)
+        mock_readfcs.ReadFCS.return_value.channels = pd.DataFrame({"PnN": ["FL1"]})
+        FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            source_path="pasta/a1.fcs",
+            content_sha256="b" * 64,
+            file=FileModel.objects.create(
+                file_name="velho.zip", experiment=self.experiment
+            ),
+        )
+
+        file_id = self._upload("a1.fcs", b"conteudo-raiz")
+        res = self._complete(file_id, "a1.fcs")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["added"], 1)
+        self.assertEqual(res.data["name_conflicts"], [])
+
+    def test_sample_ceiling_rejected_at_init(self):
+        """BE-42: teto de amostras por experimento é validado no init."""
+        from fcs_parser.services.process_experiment_file import (
+            MAX_EXPERIMENT_SAMPLES,
+        )
+
+        upload = FileModel.objects.create(
+            file_name="lote.zip", experiment=self.experiment
+        )
+        FileDataModel.objects.bulk_create(
+            [
+                FileDataModel(
+                    headers={},
+                    experiment=self.experiment,
+                    file_name=f"amostra-{i}.fcs",
+                    source_path=f"amostra-{i}.fcs",
+                    file=upload,
+                )
+                for i in range(MAX_EXPERIMENT_SAMPLES)
+            ]
+        )
+
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/files/init",
+            {"fileName": "mais-um.fcs", "totalChunks": 1},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 422)
+        self.assertIn("amostras", res.data["detail"])
+
+    def test_chunk_filename_mismatch_rejected(self):
+        """BE-42: chunk com fileName divergente do upload → 400."""
+        init = self.client.post(
+            f"/experiment/{self.experiment.id}/files/init",
+            {"fileName": "certo.fcs", "totalChunks": 1},
+            format="json",
+        )
+        file_id = init.data["fileId"]
+
+        res = self.client.post(
+            "/experiment/files/upload-chunk/",
+            {
+                "fileId": file_id,
+                "chunkIndex": 0,
+                "chunk": SimpleUploadedFile("c0", b"dados"),
+                "fileName": "errado.fcs",
+            },
+        )
+        self.assertEqual(res.status_code, 400)
+
+        res_ok = self.client.post(
+            "/experiment/files/upload-chunk/",
+            {
+                "fileId": file_id,
+                "chunkIndex": 0,
+                "chunk": SimpleUploadedFile("c0", b"dados"),
+                "fileName": "certo.fcs",
+            },
+        )
+        self.assertEqual(res_ok.status_code, 200)
+
+    def test_parallel_same_name_uploads_dont_collide(self):
+        """BE-42: dois uploads com o mesmo nome não colidem nos .part nem
+        no `received_chunks` — o namespace é o id do FileModel."""
+        ids = []
+        for _ in range(2):
+            init = self.client.post(
+                f"/experiment/{self.experiment.id}/files/init",
+                {"fileName": "mesmo.fcs", "totalChunks": 1},
+                format="json",
+            )
+            ids.append(init.data["fileId"])
+
+        for i, file_id in enumerate(ids):
+            res = self.client.post(
+                "/experiment/files/upload-chunk/",
+                {
+                    "fileId": file_id,
+                    "chunkIndex": 0,
+                    "chunk": SimpleUploadedFile("c0", f"payload-{i}".encode()),
+                    "fileName": "mesmo.fcs",
+                },
+            )
+            self.assertEqual(res.status_code, 200)
+
+        # Os dois .part coexistem — namespaces distintos por upload.
+        for file_id in ids:
+            part = os.path.join(self.media, "chunks", f"f{file_id}_0.part")
+            self.assertTrue(os.path.exists(part), part)
+        self.assertNotEqual(
+            FileModel.objects.get(id=ids[0]).id, FileModel.objects.get(id=ids[1]).id
+        )
+
+    def test_zip_without_fcs_is_upload_error_not_batch_error(self):
+        """Arquivo que não contém amostra .fcs → erro por arquivo (422)."""
+        file_id = self._upload("so-txt.zip", self._zip_bytes({"nota.txt": b"x"}))
+        res = self._complete(file_id, "so-txt.zip")
+
+        self.assertEqual(res.status_code, 422)
+        self.assertEqual(res.data["status"], "error")
+        self.assertEqual(FileModel.objects.get(id=file_id).status, "error")
 
     @patch("fcs_parser.services.process_experiment_file.readfcs")
     def test_same_sample_allowed_in_another_experiment(self, mock_readfcs):
@@ -1657,6 +1880,43 @@ class ChannelMetaTestCase(TestCase):
         data = ListFileDataSerializer(fd).data
 
         self.assertEqual(data["channel_meta"], [{"name": "FSC-A", "range": 262144}])
+
+    def test_serializer_expoe_cytometer_da_amostra(self):
+        from fcs_parser.serializers import ListFileDataSerializer
+
+        fd = self._file_data({"$CYT": "CytoFLEX", "$P1N": "FSC-A"})
+        data = ListFileDataSerializer(fd).data
+
+        self.assertEqual(data["cytometer"], "CytoFLEX")
+
+    def test_default_scale_vem_do_pne_quando_ha_meta(self):
+        from utils.density import default_scale
+
+        meta = [
+            {"name": "FSC-A", "range": 4194304, "log_decades": 0.0},
+            {"name": "FITC-A", "range": 10000000, "log_decades": 4.5},
+        ]
+        self.assertEqual(default_scale("FSC-A", meta), "linear")
+        self.assertEqual(default_scale("FITC-A", meta), "log")
+        # Nome normalizado casa (param chega como coluna do dataframe).
+        self.assertEqual(default_scale("fitc_a", meta), "log")
+
+    def test_default_scale_sem_meta_cai_na_heuristica(self):
+        from utils.density import default_scale
+
+        self.assertEqual(default_scale("FSC-A"), "linear")
+        self.assertEqual(default_scale("FITC-A"), "biex")
+        # Meta sem log_decades no canal → heurística também.
+        self.assertEqual(default_scale("FITC-A", [{"name": "FITC-A"}]), "biex")
+
+    def test_apply_scale_log_com_clip(self):
+        import numpy as np
+
+        from utils.density import apply_scale
+
+        out = apply_scale(np.array([0, 1, 100, 10_000_000]), "log")
+        # log10 com clip >=1: 0→0, 1→0, 100→2, 10^7→7
+        np.testing.assert_allclose(out, [0.0, 0.0, 2.0, 7.0])
 
 
 class CompensationControlsTestCase(TestCase):

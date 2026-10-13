@@ -28,6 +28,9 @@ from fcs_parser.services.process_fcs import FCSResult, process_fcs_file
 
 logger = logging.getLogger(__name__)
 
+# Teto de amostras por experimento (BE-42) — validado na borda do init.
+MAX_EXPERIMENT_SAMPLES = 200
+
 
 def _extract_dir(experiment_id: int) -> str:
     """Temporary directory for extracted .fcs files (ephemeral)."""
@@ -122,8 +125,46 @@ def _already_in_experiment(experiment, guid, sha256) -> bool:
     return False
 
 
+def _existing_sample_names(experiment) -> tuple[set, set]:
+    """Identidades de nome já ocupadas por amostras ativas do experimento.
+
+    Retorna ``(paths, root_names)``: paths são os ``source_path`` exatos
+    (a identidade real da amostra dentro do ZIP); root_names são os
+    ``file_name`` de amostras que vivem na raiz (sem pasta) — inclui
+    linhas legadas com ``source_path`` vazio.
+    """
+    paths: set = set()
+    root_names: set = set()
+    for file_name, source_path in FileDataModel.objects.filter(
+        experiment=experiment, active=True
+    ).values_list("file_name", "source_path"):
+        if source_path:
+            paths.add(source_path)
+        if not source_path or "/" not in source_path:
+            if file_name:
+                root_names.add(file_name)
+    return paths, root_names
+
+
+def _sample_name_taken(
+    paths: set, root_names: set, relative_path: str, file_name: str
+) -> bool:
+    """Nome/colisão de amostra: mesmo caminho, ou mesmo nome na raiz.
+
+    Dois arquivos com o mesmo ``file_name`` em pastas diferentes dentro
+    do ZIP são amostras legítimas e distintas — não colidem. Colidem o
+    mesmo ``source_path`` ou dois nomes iguais na raiz do experimento
+    (o caso comum do lote de tubos soltos).
+    """
+    if relative_path in paths:
+        return True
+    return "/" not in relative_path and file_name in root_names
+
+
 def extract_metadata_from_zip(
-    file_model: FileModel, skipped: list | None = None
+    file_model: FileModel,
+    skipped: list | None = None,
+    name_conflicts: list | None = None,
 ) -> list[str]:
     """Extract only metadata (headers + channel names) from each .fcs in the ZIP.
 
@@ -137,6 +178,11 @@ def extract_metadata_from_zip(
     ``content_sha256``) são puladas e reportadas em ``skipped`` — dedup é
     por experimento, nunca bloqueia o upload.
 
+    Nome de amostra já ocupado (mesmo ``source_path`` ou mesmo nome na
+    raiz do experimento) com conteúdo diferente vai para
+    ``name_conflicts`` (BE-42): a amostra não é criada e o chamador
+    decide como reportar — colisão silenciosa nunca acontece.
+
     Returns the list of channel names (``values``) found in the first file.
     """
     experiment = file_model.experiment
@@ -148,6 +194,7 @@ def extract_metadata_from_zip(
         zip_ref.extractall(directory_path)
 
     values: list[str] = []
+    taken_paths, taken_root_names = _existing_sample_names(experiment)
 
     try:
         for root, _dirs, files in os.walk(directory_path):
@@ -156,16 +203,31 @@ def extract_metadata_from_zip(
                     continue
 
                 complete_path = os.path.join(root, file_name)
-                relative_path = os.path.relpath(complete_path, directory_path)
+                relative_path = os.path.relpath(complete_path, directory_path).replace(
+                    os.sep, "/"
+                )
                 headers, _ = readfcs.view(complete_path)
                 content_sha = file_sha256(complete_path)
                 guid = _content_guid(headers)
 
                 if _already_in_experiment(experiment, guid, content_sha):
                     if skipped is not None:
-                        skipped.append(relative_path.replace(os.sep, "/"))
+                        skipped.append(relative_path)
                     logger.info(
                         "Amostra '%s' já existe no experimento %s — pulada.",
+                        relative_path,
+                        experiment.id,
+                    )
+                    continue
+
+                if _sample_name_taken(
+                    taken_paths, taken_root_names, relative_path, file_name
+                ):
+                    if name_conflicts is not None:
+                        name_conflicts.append(relative_path)
+                    logger.warning(
+                        "Nome de amostra '%s' já existe no experimento %s — "
+                        "colisão de nome (conteúdo diferente), não criada.",
                         relative_path,
                         experiment.id,
                     )
@@ -182,13 +244,16 @@ def extract_metadata_from_zip(
                     data_set=None,
                     experiment=experiment,
                     file_name=file_name,
-                    source_path=relative_path.replace(os.sep, "/"),
+                    source_path=relative_path,
                     content_guid=guid,
                     content_sha256=content_sha,
                     subsample=subsample_for_path(experiment, relative_path),
                     file=file_model,
                     parquet_path=None,
                 )
+                taken_paths.add(relative_path)
+                if "/" not in relative_path:
+                    taken_root_names.add(file_name)
 
         if experiment.status != "done" or not experiment.zip_path:
             experiment.zip_path = experiment.zip_path or zip_path

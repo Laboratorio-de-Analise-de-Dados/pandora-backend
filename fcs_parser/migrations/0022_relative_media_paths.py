@@ -36,9 +36,7 @@ def relativize_media_paths(apps, schema_editor):
 
     # file_data.fcs_path é <…>/fcs_files/<experiment_id>/<nome>.fcs —
     # precisa preservar a subpasta do experimento
-    for fd in FileDataModel.objects.exclude(fcs_path__isnull=True).exclude(
-        fcs_path=""
-    ):
+    for fd in FileDataModel.objects.exclude(fcs_path__isnull=True).exclude(fcs_path=""):
         p = fd.fcs_path
         if p.startswith("/"):
             fd.fcs_path = _tail_after(p, "fcs_files/")
@@ -62,7 +60,7 @@ def noop_reverse(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("fcs_parser", "0022_filedatamodel_control_channel_and_more"),
+        ("fcs_parser", "0021_filedatamodel_plot_config"),
     ]
 
     operations = [

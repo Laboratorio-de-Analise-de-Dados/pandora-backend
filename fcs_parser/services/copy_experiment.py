@@ -81,6 +81,9 @@ def copy_experiment(
             file=fm.file.name,
             file_name=fm.file_name,
             sha256=fm.sha256,
+            # A cópia herda um blob já materializado — não é um upload em
+            # andamento.
+            status="done",
         )
 
     subsample_map: dict[int, SubsampleModel] = {}
