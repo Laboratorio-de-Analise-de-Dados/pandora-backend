@@ -517,6 +517,9 @@ class ListFileDataSerializer(serializers.ModelSerializer):
     tags = SampleTagSerializer(many=True, read_only=True)
     inherited_tags = serializers.SerializerMethodField()
     suggested_tags = serializers.SerializerMethodField()
+    # Metadados por canal lidos do header FCS ($PnR/$PnE...) — o front usa
+    # `range` como teto do eixo, fiel ao detector que adquiriu a amostra.
+    channel_meta = serializers.SerializerMethodField()
 
     class Meta:
         model = FileDataModel
@@ -533,6 +536,7 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "tags",
             "inherited_tags",
             "suggested_tags",
+            "channel_meta",
         ]
         read_only_fields = ["id", "source_path", "active", "deactivated_at"]
 
@@ -552,6 +556,11 @@ class ListFileDataSerializer(serializers.ModelSerializer):
         from fcs_parser.services.tags import suggest_tags
 
         return suggest_tags(obj.file_name)
+
+    def get_channel_meta(self, obj) -> list:
+        from fcs_parser.services.channel_meta import parse_channel_meta
+
+        return parse_channel_meta(obj.headers)
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):
