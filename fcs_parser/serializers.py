@@ -194,11 +194,17 @@ class ExperimentFileInitSerializer(serializers.Serializer):
 
 
 class ChunkUploadSerializer(serializers.Serializer):
-    """Entrada dos endpoints de chunk (experimento e arquivo)."""
+    """Entrada dos endpoints de chunk (experimento e arquivo).
+
+    ``fileName`` é opcional (BE-42): quando enviado, o endpoint de
+    arquivo confere contra o ``file_name`` do upload — protege contra
+    chunk roteado pro FileModel errado num lote de nomes repetidos.
+    """
 
     fileId = serializers.IntegerField()
     chunkIndex = serializers.IntegerField(min_value=0)
     chunk = serializers.FileField()
+    fileName = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class ExperimentCompleteSerializer(serializers.Serializer):
