@@ -109,6 +109,7 @@ class AuthEvent(models.Model):
         ("link", "Vínculo de identidade"),
         ("unlink", "Desvínculo de identidade"),
         ("merge", "Merge de contas"),
+        ("invite_accept", "Aceite de convite"),
     ]
 
     user = models.ForeignKey(
