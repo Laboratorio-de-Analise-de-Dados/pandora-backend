@@ -2033,10 +2033,11 @@ class RecomputeFileDataView(APIView):
             )
 
         # Force rebuild by clearing parquet_path; next get_dataframe() rebuilds.
-        if file_data.parquet_path:
+        parquet = file_data.parquet_abspath
+        if parquet:
             try:
-                if os.path.exists(file_data.parquet_path):
-                    os.remove(file_data.parquet_path)
+                if os.path.exists(parquet):
+                    os.remove(parquet)
             except OSError:
                 pass
             FileDataModel.objects.filter(pk=file_data.pk).update(parquet_path=None)
@@ -2469,8 +2470,8 @@ class ExperimentDownloadView(APIView):
                         return zf.read(match[0])
             except (zipfile.BadZipFile, KeyError, OSError):
                 pass
-        if fd.fcs_path and os.path.exists(fd.fcs_path):
-            with open(fd.fcs_path, "rb") as f:
+        if fd.fcs_abspath and os.path.exists(fd.fcs_abspath):
+            with open(fd.fcs_abspath, "rb") as f:
                 return f.read()
         return None
 

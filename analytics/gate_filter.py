@@ -84,11 +84,12 @@ def file_data_channels(file_data) -> set[str]:
     Ordem: schema do Parquet (só o footer) → keywords $PnN do header FCS →
     `get_dataframe()` como último recurso (rebuild custoso a partir do ZIP).
     """
-    if file_data.parquet_path and os.path.exists(file_data.parquet_path):
+    parquet = file_data.parquet_abspath
+    if parquet and os.path.exists(parquet):
         try:
             import pyarrow.parquet as pq
 
-            names = pq.read_schema(file_data.parquet_path).names
+            names = pq.read_schema(parquet).names
             return {normalize_column_name(c) for c in names}
         except Exception:
             pass
