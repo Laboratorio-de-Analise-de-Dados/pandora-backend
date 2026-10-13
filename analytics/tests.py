@@ -2754,6 +2754,19 @@ class FileEventsTests(JobFixtureMixin, TestCase):
             self._internal().get("/internal/files/9999/events").status_code, 404
         )
 
+    def test_events_no_data_returns_400_not_500(self):
+        # Amostra sem parquet/ZIP/data_set → DataFrame vazio → 400 honesto,
+        # nunca 500 de .str em colunas int64 (dívida #105).
+        empty_file = FileDataModel.objects.create(
+            experiment=self.experiment,
+            file_name="sem-eventos.fcs",
+            headers=[],
+            file=self.file_model,
+        )
+        response = self._internal().get(f"/internal/files/{empty_file.id}/events")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("eventos", response.json()["detail"])
+
     def test_events_channel_selection(self):
         response = self._internal().get(
             f"/internal/files/{self.file_data.id}/events",

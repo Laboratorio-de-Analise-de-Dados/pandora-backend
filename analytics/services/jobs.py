@@ -91,11 +91,12 @@ def sample_file_events(file_data, *, gate=None, n: int = 10000, channels=None) -
     compensação aplicada quando houver (BE-22) e a cadeia inteira de gates
     do root até o alvo — nunca o parquet cru nem caminho de storage.
     """
-    dataset = normalize_columns(file_data.get_dataframe())
+    dataset = file_data.get_dataframe()
     if dataset.empty:
         raise serializers.ValidationError(
             {"detail": "A amostra não tem eventos disponíveis."}
         )
+    dataset = normalize_columns(dataset)
 
     applied = applied_compensation(file_data.experiment)
     if applied:
