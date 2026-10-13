@@ -57,3 +57,4 @@ valor à pasta.
 | [0027](adr/0027-processamento-vivo-via-advisory-lock-postgres.md) | Vivacidade de processamento via `pg_try_advisory_lock` — sem heartbeat/sweep; claim atômico permite retomada de órfão com N réplicas | Proposto |
 | [0029](adr/0029-figuras-de-analise-persistidas.md) | Figura de análise = spec + cache regenerável + âncora `result_revision`; staleness por fingerprint; CRUD de figura não gera revisão | Proposto |
 | [0030](adr/0030-preview-adhoc-servidor-computa-cliente-renderiza.md) | Preview ad-hoc: servidor computa agregados, cliente só renderiza; cache por hash do payload; preview não persiste nada | Aceito |
+| [0031](adr/0031-faixa-de-eixo-vem-do-instrumento.md) | Faixa de exibição por canal vem dos metadados do instrumento (`$PnR`/`$PnE`/`$CYT`), não de constante global — fallback 262144 + heurística atual para amostras legadas | Proposto |
