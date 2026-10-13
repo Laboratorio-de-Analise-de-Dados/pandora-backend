@@ -29,9 +29,7 @@ def resolve_media_path(stored: str | None) -> str | None:
     if not stored:
         return None
     return (
-        stored
-        if os.path.isabs(stored)
-        else os.path.join(settings.MEDIA_ROOT, stored)
+        stored if os.path.isabs(stored) else os.path.join(settings.MEDIA_ROOT, stored)
     )
 
 
