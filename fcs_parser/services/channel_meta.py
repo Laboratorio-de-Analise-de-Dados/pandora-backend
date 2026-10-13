@@ -14,26 +14,13 @@ from __future__ import annotations
 
 import re
 
+from fcs_parser.services.controls import _header_value
+
 _PNE_DECADES = re.compile(r"^\s*([-\d.]+)")
 
 # Varredura máxima quando $PAR vem ausente/ilegível — para na primeira
 # lacuna de $PnN, então é só um teto de segurança.
 _MAX_CHANNELS_SCAN = 128
-
-
-def _norm_header_key(key: str) -> str:
-    """'$P1R' / 'P1R' / 'p1_r' → 'P1R' — casa variações de keyword."""
-    return re.sub(r"[\s_$]+", "", str(key)).upper()
-
-
-def _header_value(headers: dict | None, *candidates: str) -> str | None:
-    if not headers:
-        return None
-    wanted = {_norm_header_key(c) for c in candidates}
-    for key, value in headers.items():
-        if _norm_header_key(key) in wanted and value:
-            return str(value).strip()
-    return None
 
 
 def _as_number(raw: str):

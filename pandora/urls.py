@@ -38,8 +38,9 @@ def health(_request):
 urlpatterns = [
     path("health/", health, name="health"),
     path("admin/", admin.site.urls),
-    path('experiment/', include('fcs_parser.urls')),
-    path('analytics/', include('analytics.urls')),
+    path("experiment/", include("fcs_parser.urls")),
+    path("analytics/", include("analytics.urls")),
+    path("internal/", include("analytics.urls_internal")),
     path("accounts/", include("accounts.urls")),
     # API schema and interactive documentation
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),

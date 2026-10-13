@@ -116,6 +116,7 @@ def record_revision(
     reverts=None,
     file_data=None,
     branch=None,
+    origin=None,
 ) -> AnalysisRevision:
     file_data_id = (
         getattr(file_data, "id", file_data)
@@ -123,6 +124,7 @@ def record_revision(
         else _infer_file_data_id(target_type, target_id, payload_before, payload_after)
     )
     return AnalysisRevision.objects.create(
+        origin=origin or AnalysisRevision.ORIGIN_USER,
         experiment=experiment,
         action=action,
         target_type=target_type,

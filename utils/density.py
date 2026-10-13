@@ -115,6 +115,9 @@ def apply_scale(values, scale: str, cofactor: float = DEFAULT_COFACTOR):
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    # DataFrame vazio/de fallback pode vir com colunas int64 — o acesso
+    # .str assume string. map(str) torna o normalize seguro pra qualquer df.
+    df.columns = df.columns.map(str)
     df.columns = df.columns.str.replace(" ", "")
     df.columns = df.columns.str.replace("-", "_")
     df.columns = df.columns.str.lower()

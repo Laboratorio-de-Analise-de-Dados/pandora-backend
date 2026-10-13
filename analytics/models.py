@@ -2,7 +2,7 @@ from django.conf import settings
 from django.db import models
 
 from analytics.gate_author import author_display_name
-from fcs_parser.models import ExperimentModel, FileDataModel
+from fcs_parser.models import ExperimentModel, FileDataModel, SubsampleModel
 
 
 class AnalysisBranch(models.Model):
@@ -123,6 +123,9 @@ class GateModel(models.Model):
         on_delete=models.SET_NULL,
         related_name="gates_created",
     )
+    # BE-27/FE-42: True quando o gate foi gerado por automação (Juvia) em
+    # vez do analista — a UI diferencia sugestão de população humana.
+    automatic = models.BooleanField(default=False)
 
     def __str__(self) -> str:
         return f"Gate {self.id} – {self.name}"
@@ -375,6 +378,20 @@ class AnalysisRevision(models.Model):
         on_delete=models.SET_NULL,
         related_name="revisions",
     )
+    # BE-27: procedência da mutação. NULL/"user" = ação do analista;
+    # "juvia" = materializada por serviço — o front renderiza a origem na
+    # timeline (FE-42, sinal de supervisão do juvia ADR-0003).
+    ORIGIN_USER = "user"
+    ORIGIN_JUVIA = "juvia"
+    ORIGIN_CHOICES = [
+        (ORIGIN_USER, "Usuário"),
+        (ORIGIN_JUVIA, "Juvia"),
+    ]
+    origin = models.CharField(
+        max_length=20,
+        choices=ORIGIN_CHOICES,
+        default=ORIGIN_USER,
+    )
 
     def __str__(self) -> str:
         return f"Revision {self.id} – {self.action} {self.target_type}:{self.target_id}"
@@ -408,6 +425,13 @@ class AnalysisCheckpoint(models.Model):
     )
     message = models.CharField(max_length=200, blank=True)
     active = models.BooleanField(default=True)
+    # BE-27: procedência do marco — "juvia" identifica checkpoints criados
+    # pela materialização de um job, para a timeline diferenciar.
+    origin = models.CharField(
+        max_length=20,
+        choices=AnalysisRevision.ORIGIN_CHOICES,
+        default=AnalysisRevision.ORIGIN_USER,
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -567,3 +591,122 @@ class CompensationMatrix(models.Model):
     def __str__(self) -> str:
         tag = self.name or self.get_source_display()
         return f"Compensation {self.id} – {tag}"
+
+
+class AnalysisJob(models.Model):
+    """Job assíncrono de análise consumido por worker interno (BE-27).
+
+    A fila mora no Postgres do Pandora (juvia ADR-0002): o front enfileira
+    (`pending`), o Juvia faz claim atômico (`processing`, FOR UPDATE SKIP
+    LOCKED em `/internal/jobs/claim`), executa e responde `complete` ou
+    `fail`. `error` = falha ainda elegível a retentativa (o próximo claim
+    a reenfileira enquanto `attempts < max_attempts`); `quarantine` é
+    estado terminal para revisão manual — job nunca é descartado nem
+    reexecutado sozinho depois disso.
+
+    Um claim em `processing` sem `finished_at` expira depois de
+    `JUVIA_JOB_CLAIM_TIMEOUT_MINUTES` e volta a ser elegível — worker que
+    morreu depois do claim não trava a fila. `result` guarda o payload
+    que o worker postou + os artefatos materializados (gates, revisão,
+    checkpoint) para polling e re-complete idempotente.
+    """
+
+    class Meta:
+        db_table = "analysis_job"
+        indexes = [
+            models.Index(fields=["status", "created_at"]),
+            models.Index(fields=["experiment", "-created_at"]),
+        ]
+
+    STATUS_PENDING = "pending"
+    STATUS_PROCESSING = "processing"
+    STATUS_DONE = "done"
+    STATUS_ERROR = "error"
+    STATUS_QUARANTINE = "quarantine"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Na fila"),
+        (STATUS_PROCESSING, "Processando"),
+        (STATUS_DONE, "Concluído"),
+        (STATUS_ERROR, "Erro (retentando)"),
+        (STATUS_QUARANTINE, "Quarentena"),
+    ]
+
+    # O que o worker executa. v1 = clusterização (Juvia `POST /cluster`
+    # alimentado pelos eventos de `/internal/files/{id}/events`).
+    OPERATION_CLUSTER = "cluster"
+    OPERATION_CHOICES = [
+        (OPERATION_CLUSTER, "Clusterização"),
+    ]
+
+    experiment = models.ForeignKey(
+        ExperimentModel,
+        on_delete=models.CASCADE,
+        related_name="analysis_jobs",
+    )
+    file_data = models.ForeignKey(
+        FileDataModel,
+        on_delete=models.CASCADE,
+        related_name="analysis_jobs",
+    )
+    # Contexto opcional do job: subsample e gate pai (população de origem
+    # que o worker clusteriza). SET_NULL preserva o job se o contexto for
+    # removido — o complete/fail ainda consegue registrar o desfecho.
+    subsample = models.ForeignKey(
+        SubsampleModel,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_jobs",
+    )
+    gate = models.ForeignKey(
+        GateModel,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_jobs",
+    )
+    operation = models.CharField(
+        max_length=50,
+        choices=OPERATION_CHOICES,
+        default=OPERATION_CLUSTER,
+    )
+    # Contrato com o worker (espelha o ClusterRequest do Juvia):
+    # `model` + `params` (hiperparâmetros), `transform` e `channels` (nomes
+    # crus dos canais — o endpoint de eventos devolve colunas
+    # normalizadas). `payload` carrega contexto extra de produto
+    # (intenção da sugestão, população rara, refs de controle) sem exigir
+    # migration a cada ideia nova.
+    model = models.CharField(max_length=50)
+    params = models.JSONField(default=dict, blank=True)
+    transform = models.CharField(max_length=20, default="linear")
+    channels = models.JSONField(default=list)
+    payload = models.JSONField(default=dict, blank=True)
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    attempts = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=3)
+    last_error = models.TextField(blank=True)
+    # Resultado postado pelo worker + artefatos materializados
+    # (`created_gate_ids`, `revision_id`, `checkpoint_id`).
+    result = models.JSONField(null=True, blank=True)
+    # Identidade do worker que fez o claim (observabilidade/debug —
+    # não é token de posse; o contrato de estado já impede double-finish).
+    claimed_by = models.CharField(max_length=128, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_jobs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self) -> str:
+        return f"AnalysisJob {self.id} – {self.operation}/{self.model} [{self.status}]"

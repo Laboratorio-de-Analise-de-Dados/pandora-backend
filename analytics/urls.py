@@ -1,6 +1,8 @@
 from django.urls import path
 
 from .views import (
+    AnalysisJobDetailView,
+    AnalysisJobListCreateView,
     ApplyGateView,
     BranchDetailView,
     BranchDiffView,
@@ -113,5 +115,15 @@ urlpatterns = [
         "figures/<int:pk>/recompute/",
         FigureRecomputeView.as_view(),
         name="figure-recompute",
+    ),
+    path(
+        "analysis-jobs/",
+        AnalysisJobListCreateView.as_view(),
+        name="analysis-jobs",
+    ),
+    path(
+        "analysis-jobs/<int:job_id>/",
+        AnalysisJobDetailView.as_view(),
+        name="analysis-job-detail",
     ),
 ]

@@ -20,6 +20,9 @@ ou alinhe com o responsável.
 
 | Feature | Área afetada | Branch | Sessão | Desde |
 |---|---|---|---|---|
+| BE-27 fila de jobs pro Juvia (card #9) | `analytics/models.py` (AnalysisJob + origin), `analytics/services/jobs.py`, `analytics/views_internal.py`, `analytics/urls_internal.py`, `utils/internal_auth.py`, `pandora/urls.py`, `pandora/settings.py`, `analytics/tests.py` | `feat/juvia-job-queue` | devin | 2026-10 |
+| BE-26 marcação de controles por amostra (card #65) | `fcs_parser/models.py` (FileData.control_type/channel), `fcs_parser/services/controls.py`, `serializers.py`, `views.py` (FileControlsView), `urls.py`, `tests.py` | `feat/juvia-job-queue` (entra junto do PR #130) | devin | 2026-10 |
+| Dívida #112 paths relativos ao MEDIA_ROOT | `fcs_parser/models.py` (resolve_media_path + abspaths), `fcs_parser/tasks.py`, `fcs_parser/views.py`, `analytics/gate_filter.py`, `migrations/0023` | `feat/juvia-job-queue` (entra junto do PR #130) | devin | 2026-10 |
 | BE-31 resiliência de processamento | `docs/prd/BE-31*`, `fcs_parser/services/*` | `docs/be-31-processing-resilience` | outra sessão | 2026-09 |
 | BE-39 bump segurança PyJWT/Django (cards #99/#100) | ✅ concluído — mergeado (PR #128), deploy v0.5.3; Dependabot zerado | — | — | — |
 | BE-33 figuras de análise persistidas (cards #88/#92) + fix gates propagados (card #90) | ✅ concluído — mergeado (PR #126); feature estacionada (decisão 2026-10-02): rotas atrás de `ANALYSIS_FIGURES_ENABLED` (503 quando off), mesmo padrão do SSO Google; card #90 em produção (deploy v0.5.2) | — | — | — |
@@ -31,10 +34,10 @@ ou alinhe com o responsável.
 | Docs: revisão do PRD BE-26 (marcação por arquivo + placa) | `pandora-docs/prd/BE-26*` | `docs/be-26-controles-arquivo` | devin | 2026-09 |
 | plot_config da amostra raiz (card #71) | ✅ concluído — mergeado (PR #118) | — | — | — |
 | BE-35 compensação manual (card #73) | ✅ concluído — mergeado (PR #119) | — | — | — |
-| Backport dívida #112 (paths relativos MEDIA_ROOT) — release pré-feature | ✅ concluído — mergeado (PR #132) | — | — | — |
-| BE-43 escalas/eixos por canal (Cytoflex) | `fcs_parser/services/channel_meta.py`, `serializers.py`, `utils/density.py`, `fcs_parser/views.py`, `analytics/views.py` | `feat/channel-ranges` | devin | 2026-10-13 |
-| BE-42 upload multi-arquivo sequencial | `fcs_parser/views.py` (files/init, upload-chunk, complete), `models.py` (FileModel.status/error_info), `serializers.py`, `services/process_experiment_file.py`, migration 0023 | `feat/multifile-upload` | devin | 2026-10-13 |
-| BE-41 aceite de convite com e-mail divergente | `accounts/` (invite/merge/AuthEvent) | `fix/invite-divergent-email` | devin | 2026-10-13 |
+| Backport dívida #112 (paths relativos MEDIA_ROOT) — release pré-feature | ✅ concluído — mergeado (PR #132), deploy v0.6.0 | — | — | — |
+| BE-43 escalas/eixos por canal (Cytoflex) | ✅ concluído — mergeado (PR #133), deploy v0.6.0 | — | — | — |
+| BE-42 upload multi-arquivo sequencial | ✅ concluído — mergeado (PR #134), deploy v0.6.0 | — | — | — |
+| BE-41 aceite de convite com e-mail divergente | ✅ concluído — mergeado (PR #135), deploy v0.6.0 | — | — | — |
 
 ## Concluído nesta branch
 

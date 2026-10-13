@@ -51,6 +51,21 @@ DENSITY_CACHE_TTL = int(os.getenv("DENSITY_CACHE_TTL", 3600))
 # (auto-checkpoints derivados na leitura — ADR-0017/BE-20).
 ANALYSIS_SESSION_GAP_MINUTES = int(os.getenv("ANALYSIS_SESSION_GAP_MINUTES", 15))
 
+# Juvia — serviço interno de ML (BE-27, juvia ADR-0001/0002). O Juvia faz
+# poll nas rotas /internal/* com Bearer token compartilhado; ele só existe
+# na pandora_net e nunca é exposto pelo nginx.
+JUVIA_URL = os.getenv("JUVIA_URL", "")
+JUVIA_INTERNAL_TOKEN = os.getenv("JUVIA_INTERNAL_TOKEN", "")
+JUVIA_SERVICE_JWT_SECRET = os.getenv("JUVIA_SERVICE_JWT_SECRET", "")
+JUVIA_JOB_MAX_ATTEMPTS = int(os.getenv("JUVIA_JOB_MAX_ATTEMPTS", 3))
+JUVIA_JOB_RETENTION_DAYS = int(os.getenv("JUVIA_JOB_RETENTION_DAYS", 14))
+# Claim sem conclusão depois deste prazo volta a ser elegível — worker
+# que morreu no meio do job não trava a fila.
+JUVIA_JOB_CLAIM_TIMEOUT_MINUTES = int(os.getenv("JUVIA_JOB_CLAIM_TIMEOUT_MINUTES", 30))
+# Teto de eventos por resposta de /internal/files/{id}/events — casa com
+# o JUVIA_MAX_EVENTS do lado do Juvia.
+JUVIA_EVENTS_MAX_SAMPLE = int(os.getenv("JUVIA_EVENTS_MAX_SAMPLE", 50000))
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

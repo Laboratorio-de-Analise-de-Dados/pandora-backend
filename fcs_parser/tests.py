@@ -3936,3 +3936,156 @@ class FileStatsTestCase(TestCase):
         self.assertAlmostEqual(fitc["median_mfi"], 150.0)
         self.assertIn("rcv", fitc)
         self.assertIn("cv", fitc)
+
+
+class FileControlsApiTestCase(TestCase):
+    """BE-26: marcação de controles por amostra + pistas na listagem."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.other = User.objects.create_user(
+            username="outro",
+            email="outro@pandora.test",
+            password="senha-forte-123",
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp",
+            type="t",
+            created_by=self.user,
+            status="done",
+            values=["FSC-A", "SSC-A", "FITC", "PE"],
+        )
+        self.file_model = FileModel.objects.create(
+            experiment=self.experiment, file_name="exp.zip"
+        )
+        self.sample_a = FileDataModel.objects.create(
+            experiment=self.experiment,
+            file_name="Specimen_001_A1_A01.fcs",
+            headers={"WELL ID": "A01", "PLATE NAME": "Plate-1"},
+            file=self.file_model,
+        )
+        self.sample_b = FileDataModel.objects.create(
+            experiment=self.experiment,
+            file_name="fmo_cd3_fitc.fcs",
+            headers={},
+            file=self.file_model,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def _patch(self, marks):
+        return self.client.patch(
+            f"/experiment/{self.experiment.id}/controls/",
+            {"marks": marks},
+            format="json",
+        )
+
+    def test_batch_marks_and_unmarks_controls(self):
+        res = self._patch(
+            [
+                {
+                    "file_id": self.sample_a.id,
+                    "control_type": "fmo",
+                    "control_channel": "FITC",
+                },
+                {"file_id": self.sample_b.id, "control_type": "unstained"},
+            ]
+        )
+        self.assertEqual(res.status_code, 200)
+        self.sample_a.refresh_from_db()
+        self.sample_b.refresh_from_db()
+        self.assertEqual(self.sample_a.control_type, "fmo")
+        self.assertEqual(self.sample_a.control_channel, "FITC")
+        self.assertEqual(self.sample_b.control_type, "unstained")
+        self.assertEqual(self.sample_b.control_channel, "")
+
+        # Desmarcar com null limpa tipo e canal.
+        res = self._patch([{"file_id": self.sample_a.id, "control_type": None}])
+        self.assertEqual(res.status_code, 200)
+        self.sample_a.refresh_from_db()
+        self.assertIsNone(self.sample_a.control_type)
+        self.assertEqual(self.sample_a.control_channel, "")
+
+    def test_batch_is_atomic_on_error(self):
+        res = self._patch(
+            [
+                {
+                    "file_id": self.sample_a.id,
+                    "control_type": "fmo",
+                    "control_channel": "FITC",
+                },
+                # fmo sem canal → erro; nada pode ser aplicado.
+                {"file_id": self.sample_b.id, "control_type": "fmo"},
+            ]
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn(str(self.sample_b.id), res.json()["marks"])
+        self.sample_a.refresh_from_db()
+        self.assertIsNone(self.sample_a.control_type)
+
+    def test_channel_must_be_fluorescent(self):
+        res = self._patch(
+            [
+                {
+                    "file_id": self.sample_a.id,
+                    "control_type": "single_stain",
+                    "control_channel": "FSC-A",
+                }
+            ]
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("canal fluorescente", str(res.json()))
+
+    def test_unknown_file_in_batch_rejected(self):
+        res = self._patch([{"file_id": 99999, "control_type": "unstained"}])
+        self.assertEqual(res.status_code, 400)
+
+    def test_outsider_cannot_mark(self):
+        client = APIClient()
+        client.force_authenticate(self.other)
+        res = client.patch(
+            f"/experiment/{self.experiment.id}/controls/",
+            {"marks": [{"file_id": self.sample_a.id, "control_type": "unstained"}]},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_listing_brings_control_context(self):
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+        self.assertEqual(res.status_code, 200)
+        by_name = {f["file_name"]: f for f in res.json()}
+
+        well = by_name["Specimen_001_A1_A01.fcs"]
+        self.assertEqual(well["well_id"], "A1")
+        self.assertEqual(well["plate"], "Plate-1")
+
+        fmo = by_name["fmo_cd3_fitc.fcs"]
+        self.assertEqual(fmo["suggested_control"]["control_type"], "fmo")
+        self.assertEqual(fmo["suggested_control"]["control_channel"], "FITC")
+
+
+class ControlContextUtilsTestCase(TestCase):
+    """Funções puras do BE-26 (fcs_parser/services/controls.py)."""
+
+    def test_well_from_filename_regex(self):
+        from fcs_parser.services.controls import parse_well_id
+
+        self.assertEqual(parse_well_id({}, "Specimen_001_A1_A01.fcs"), "A1")
+        self.assertEqual(parse_well_id({}, "amostra.fcs"), None)
+        # Header vence filename.
+        self.assertEqual(parse_well_id({"WELL ID": "B7"}, "Specimen_001_A1.fcs"), "B7")
+
+    def test_suggest_control_rules(self):
+        from fcs_parser.services.controls import suggest_control
+
+        self.assertEqual(
+            suggest_control("unstained_ctrl.fcs", {})["control_type"], "unstained"
+        )
+        self.assertEqual(
+            suggest_control("fitc single_stain A3.fcs", {})["control_channel"],
+            "FITC",
+        )
+        self.assertEqual(suggest_control("comp_beads.fcs", {})["control_type"], "beads")
+        self.assertIsNone(suggest_control("amostra_01.fcs", {}))
