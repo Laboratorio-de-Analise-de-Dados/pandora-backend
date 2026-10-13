@@ -17,7 +17,9 @@ docker compose up --build           # API em http://localhost:8085 (WEB_PORT)
 # Juvia (opcional, repo irmão — compose próprio, mesma pandora_net):
 cd ../juvia-project && docker compose up --build   # http://localhost:8001
 
-# local sem Docker (precisa só de Postgres rodando)
+# local sem Docker (só se o compose NÃO estiver no ar — nunca junto dele):
+# dois backends dividem o mesmo banco mas filesystems diferentes, e os
+# paths de arquivo gravados no banco viram inconsistentes entre eles
 python manage.py migrate
 python manage.py runserver
 

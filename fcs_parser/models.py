@@ -18,6 +18,21 @@ def parquet_storage_dir() -> str:
     return os.path.join(settings.MEDIA_ROOT, "parquet")
 
 
+def resolve_media_path(stored: str | None) -> str | None:
+    """Resolve path gravado no banco para o filesystem deste processo.
+
+    O banco guarda paths **relativos ao MEDIA_ROOT** — assim a mesma linha
+    resolve em qualquer backend (host, container, outra máquina). Paths
+    absolutos são legado: passam direto e só funcionam onde o filesystem
+    de origem existe — a migration 0023 normaliza as linhas antigas.
+    """
+    if not stored:
+        return None
+    return (
+        stored if os.path.isabs(stored) else os.path.join(settings.MEDIA_ROOT, stored)
+    )
+
+
 class ExperimentTypeModel(models.Model):
     """Vocabulário controlado de tipos de experimento (ADR-0023, BE-28).
 
@@ -342,12 +357,22 @@ class FileDataModel(models.Model):
         if self.pk:
             FileDataModel.objects.filter(pk=self.pk).update(last_accessed=now)
 
+    @property
+    def parquet_abspath(self) -> str | None:
+        """Path do Parquet no filesystem local (resolve o relativo do banco)."""
+        return resolve_media_path(self.parquet_path)
+
+    @property
+    def fcs_abspath(self) -> str | None:
+        """Path do .fcs legado no filesystem local."""
+        return resolve_media_path(self.fcs_path)
+
     def save_dataframe(self, df: pd.DataFrame):
         """Grava o dataset em Parquet (disco), guarda o caminho e descarta o JSON."""
         os.makedirs(parquet_storage_dir(), exist_ok=True)
         path = os.path.join(parquet_storage_dir(), f"{self.pk}.parquet")
         df.to_parquet(path, index=False)
-        self.parquet_path = path
+        self.parquet_path = os.path.relpath(path, settings.MEDIA_ROOT)
         self.data_set = None
         self.save(update_fields=["parquet_path", "data_set"])
 
@@ -357,9 +382,10 @@ class FileDataModel(models.Model):
         Cascade: Parquet (L2 cache) -> re-extract from ZIP (L0 source) -> data_set (legacy).
         """
         # 1) Warm cache: Parquet on disk.
-        if self.parquet_path and os.path.exists(self.parquet_path):
+        parquet = self.parquet_abspath
+        if parquet and os.path.exists(parquet):
             try:
-                df = pd.read_parquet(self.parquet_path)
+                df = pd.read_parquet(parquet)
                 self._touch()
                 return df
             except Exception:
@@ -371,7 +397,7 @@ class FileDataModel(models.Model):
             return df
 
         # 3) Legacy: old fcs_path on disk (pre-ZIP migration data).
-        if self.fcs_path and os.path.exists(self.fcs_path):
+        if self.fcs_abspath and os.path.exists(self.fcs_abspath):
             df = self._rebuild_from_fcs_path()
             if df is not None:
                 return df
@@ -416,7 +442,7 @@ class FileDataModel(models.Model):
         from fcs_parser.services.process_fcs import process_fcs_file
 
         try:
-            result = process_fcs_file(self.fcs_path)
+            result = process_fcs_file(self.fcs_abspath)
             df = pd.DataFrame(result.data)
             try:
                 self.save_dataframe(df)
