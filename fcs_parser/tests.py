@@ -1658,6 +1658,35 @@ class ChannelMetaTestCase(TestCase):
 
         self.assertEqual(data["channel_meta"], [{"name": "FSC-A", "range": 262144}])
 
+    def test_default_scale_vem_do_pne_quando_ha_meta(self):
+        from utils.density import default_scale
+
+        meta = [
+            {"name": "FSC-A", "range": 4194304, "log_decades": 0.0},
+            {"name": "FITC-A", "range": 10000000, "log_decades": 4.5},
+        ]
+        self.assertEqual(default_scale("FSC-A", meta), "linear")
+        self.assertEqual(default_scale("FITC-A", meta), "log")
+        # Nome normalizado casa (param chega como coluna do dataframe).
+        self.assertEqual(default_scale("fitc_a", meta), "log")
+
+    def test_default_scale_sem_meta_cai_na_heuristica(self):
+        from utils.density import default_scale
+
+        self.assertEqual(default_scale("FSC-A"), "linear")
+        self.assertEqual(default_scale("FITC-A"), "biex")
+        # Meta sem log_decades no canal → heurística também.
+        self.assertEqual(default_scale("FITC-A", [{"name": "FITC-A"}]), "biex")
+
+    def test_apply_scale_log_com_clip(self):
+        import numpy as np
+
+        from utils.density import apply_scale
+
+        out = apply_scale(np.array([0, 1, 100, 10_000_000]), "log")
+        # log10 com clip >=1: 0→0, 1→0, 100→2, 10^7→7
+        np.testing.assert_allclose(out, [0.0, 0.0, 2.0, 7.0])
+
 
 class CompensationControlsTestCase(TestCase):
     """BE-22: subsamples como controles + endpoints de matriz (ADR-0019)."""
