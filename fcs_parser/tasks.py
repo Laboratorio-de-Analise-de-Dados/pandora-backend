@@ -16,7 +16,13 @@ from django.conf import settings
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
-from .models import ExperimentModel, FileDataModel, FileModel, parquet_storage_dir
+from .models import (
+    ExperimentModel,
+    FileDataModel,
+    FileModel,
+    parquet_storage_dir,
+    resolve_media_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +43,7 @@ def cleanup_cold_parquet(max_idle_days: int = 7) -> int:
             .exclude(parquet_path="")
             .values_list("parquet_path", flat=True)
         )
+        referenced = {resolve_media_path(p) for p in referenced}
         for name in os.listdir(parquet_dir):
             full = os.path.join(parquet_dir, name)
             if os.path.isfile(full) and full not in referenced:
@@ -61,7 +68,7 @@ def cleanup_cold_parquet(max_idle_days: int = 7) -> int:
         upload_file = getattr(getattr(file_data.file, "file", None), "name", None)
         if not upload_file and not file_data.fcs_path:
             continue
-        path = file_data.parquet_path
+        path = file_data.parquet_abspath
         if path and os.path.exists(path):
             try:
                 os.remove(path)
