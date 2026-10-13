@@ -85,6 +85,7 @@ from fcs_parser.serializers import (
     ExperimentInitSerializer,
     ExperimentMoveSerializer,
     ExperimentTypeSerializer,
+    FileControlsBatchSerializer,
     FileHashCheckSerializer,
     FilePlotConfigSerializer,
     FileSubsampleSerializer,
@@ -1555,6 +1556,60 @@ class FilePlotConfigView(APIView):
         file_data.save(update_fields=["plot_config"])
         return Response(
             ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
+        )
+
+
+class FileControlsView(APIView):
+    """PATCH /experiment/<id>/controls — marcação de controles em lote (BE-26).
+
+    `{marks: [{file_id, control_type, control_channel}]}` aplicado numa
+    única transação: erro em qualquer item → 400 com erros por file_id
+    e nada é gravado. `control_type: null` desmarca a amostra. Canal é
+    obrigatório e fluorescente para single_stain/fmo/isotype/beads;
+    ignorado (limpo) para unstained/biological.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=FileControlsBatchSerializer,
+        responses={200: ListFileDataSerializer(many=True)},
+    )
+    def patch(self, request, experiment_id):
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+
+        payload = FileControlsBatchSerializer(
+            data=request.data, context={"experiment": experiment}
+        )
+        payload.is_valid(raise_exception=True)
+
+        marks = payload.validated_data["marks"]
+        by_id = {
+            f.id: f
+            for f in FileDataModel.objects.filter(
+                experiment=experiment, id__in=[m["file_id"] for m in marks]
+            )
+        }
+        with transaction.atomic():
+            for mark in marks:
+                file_data = by_id[mark["file_id"]]
+                file_data.control_type = mark.get("control_type")
+                file_data.control_channel = mark.get("control_channel", "")
+                file_data.save(update_fields=["control_type", "control_channel"])
+
+        return Response(
+            ListFileDataSerializer(
+                FileDataModel.objects.filter(
+                    experiment=experiment, id__in=[m["file_id"] for m in marks]
+                )
+                .select_related("subsample")
+                .prefetch_related("tags", "subsample__tags"),
+                many=True,
+            ).data,
+            status=status.HTTP_200_OK,
         )
 
 

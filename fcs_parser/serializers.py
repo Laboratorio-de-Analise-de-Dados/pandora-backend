@@ -497,6 +497,89 @@ class FileTagsUpdateSerializer(serializers.Serializer):
     )
 
 
+class FileControlMarkSerializer(serializers.Serializer):
+    """Um item do PATCH em lote de controles (BE-26)."""
+
+    file_id = serializers.IntegerField()
+    control_type = serializers.ChoiceField(
+        choices=[c[0] for c in FileDataModel._meta.get_field("control_type").choices],
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    control_channel = serializers.CharField(
+        required=False, allow_blank=True, default=""
+    )
+
+
+class FileControlsBatchSerializer(serializers.Serializer):
+    """PATCH /experiment/<id>/controls — marcação atômica em lote (BE-26).
+
+    A UI de placa tagueia dezenas de poços de uma vez; erro em qualquer
+    item aborta tudo (repaint parcial deixa a placa inconsistente).
+    """
+
+    marks = FileControlMarkSerializer(many=True)
+
+    def validate_marks(self, marks):
+        if not marks:
+            raise serializers.ValidationError("Informe ao menos uma marcação.")
+        file_ids = [m["file_id"] for m in marks]
+        if len(file_ids) != len(set(file_ids)):
+            raise serializers.ValidationError("file_id duplicado no lote.")
+        return marks
+
+    def validate(self, attrs):
+        """Valida canal por tipo e resolução dos file_ids no experimento."""
+        from fcs_parser.services.compensation import fluorescent_channels
+        from fcs_parser.services.controls import CONTROL_TYPES_WITH_CHANNEL
+        from utils.density import normalize_column_name
+
+        experiment = self.context["experiment"]
+        marks = attrs["marks"]
+
+        valid_channels = {
+            normalize_column_name(c) for c in fluorescent_channels(experiment)
+        }
+        errors = {}
+        for mark in marks:
+            item_errors = {}
+            ctype = mark.get("control_type")
+            channel = (mark.get("control_channel") or "").strip()
+            if not ctype:
+                # Desmarcar: canal é ignorado/limpo.
+                mark["control_channel"] = ""
+                continue
+            if ctype in CONTROL_TYPES_WITH_CHANNEL:
+                if not channel:
+                    item_errors["control_channel"] = (
+                        f"'{ctype}' exige o canal de referência."
+                    )
+                elif valid_channels and normalize_column_name(channel) not in valid_channels:
+                    item_errors["control_channel"] = (
+                        f"'{channel}' não é um canal fluorescente do experimento."
+                    )
+            else:
+                mark["control_channel"] = ""
+            if item_errors:
+                errors[str(mark["file_id"])] = item_errors
+
+        file_ids = [m["file_id"] for m in marks]
+        found = set(
+            FileDataModel.objects.filter(
+                experiment=experiment, id__in=file_ids
+            ).values_list("id", flat=True)
+        )
+        for mark in marks:
+            if mark["file_id"] not in found:
+                errors.setdefault(str(mark["file_id"]), {})["file_id"] = (
+                    "Amostra não existe neste experimento."
+                )
+        if errors:
+            raise serializers.ValidationError({"marks": errors})
+        return attrs
+
+
 class FilePlotConfigSerializer(serializers.Serializer):
     """PATCH /experiment/file/<id>/plot-config — config de visualização da
     amostra raiz (eixos, escalas, limites, modo), mesmo contrato do
@@ -517,6 +600,12 @@ class ListFileDataSerializer(serializers.ModelSerializer):
     tags = SampleTagSerializer(many=True, read_only=True)
     inherited_tags = serializers.SerializerMethodField()
     suggested_tags = serializers.SerializerMethodField()
+    # BE-26: pistas de contexto de controle — `control_type`/`control_channel`
+    # são a marcação do usuário; `well_id`/`plate`/`suggested_control` são
+    # heurística informativa (nunca aplicada sozinha).
+    well_id = serializers.SerializerMethodField()
+    plate = serializers.SerializerMethodField()
+    suggested_control = serializers.SerializerMethodField()
 
     class Meta:
         model = FileDataModel
@@ -533,6 +622,11 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "tags",
             "inherited_tags",
             "suggested_tags",
+            "control_type",
+            "control_channel",
+            "well_id",
+            "plate",
+            "suggested_control",
         ]
         read_only_fields = ["id", "source_path", "active", "deactivated_at"]
 
@@ -552,6 +646,21 @@ class ListFileDataSerializer(serializers.ModelSerializer):
         from fcs_parser.services.tags import suggest_tags
 
         return suggest_tags(obj.file_name)
+
+    def get_well_id(self, obj):
+        from fcs_parser.services.controls import parse_well_id
+
+        return parse_well_id(obj.headers, obj.file_name)
+
+    def get_plate(self, obj):
+        from fcs_parser.services.controls import parse_plate
+
+        return parse_plate(obj.headers)
+
+    def get_suggested_control(self, obj):
+        from fcs_parser.services.controls import suggest_control
+
+        return suggest_control(obj.file_name, obj.headers)
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):

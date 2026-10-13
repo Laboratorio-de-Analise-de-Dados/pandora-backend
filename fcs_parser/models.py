@@ -303,6 +303,25 @@ class FileDataModel(models.Model):
         on_delete=models.SET_NULL,
         related_name="deactivated_files",
     )
+    # BE-26: papel de controle da amostra (alimenta derivação de gates,
+    # juvia ADR-0003). Vocabulário mais rico que o do subsample
+    # (BE-22): fmo/isotype/beads/biological distinguem o que serve de
+    # referência para gate de positividade. Marcável a qualquer momento
+    # via PATCH em lote — nunca no fluxo de upload.
+    control_type = models.CharField(
+        max_length=20,
+        choices=[
+            ("unstained", "Negativo (unstained)"),
+            ("single_stain", "Single stain"),
+            ("fmo", "FMO"),
+            ("isotype", "Isotípico"),
+            ("beads", "Beads"),
+            ("biological", "Controle biológico"),
+        ],
+        null=True,
+        blank=True,
+    )
+    control_channel = models.CharField(max_length=256, blank=True, default="")
     # BE-34: tags semânticas por amostra (chips). Tipos de controle são
     # tags de sistema; tags de usuário são vocabulário por escopo.
     tags = models.ManyToManyField(
