@@ -555,7 +555,10 @@ class FileControlsBatchSerializer(serializers.Serializer):
                     item_errors["control_channel"] = (
                         f"'{ctype}' exige o canal de referência."
                     )
-                elif valid_channels and normalize_column_name(channel) not in valid_channels:
+                elif (
+                    valid_channels
+                    and normalize_column_name(channel) not in valid_channels
+                ):
                     item_errors["control_channel"] = (
                         f"'{channel}' não é um canal fluorescente do experimento."
                     )
@@ -572,9 +575,9 @@ class FileControlsBatchSerializer(serializers.Serializer):
         )
         for mark in marks:
             if mark["file_id"] not in found:
-                errors.setdefault(str(mark["file_id"]), {})["file_id"] = (
-                    "Amostra não existe neste experimento."
-                )
+                errors.setdefault(str(mark["file_id"]), {})[
+                    "file_id"
+                ] = "Amostra não existe neste experimento."
         if errors:
             raise serializers.ValidationError({"marks": errors})
         return attrs
@@ -606,6 +609,9 @@ class ListFileDataSerializer(serializers.ModelSerializer):
     well_id = serializers.SerializerMethodField()
     plate = serializers.SerializerMethodField()
     suggested_control = serializers.SerializerMethodField()
+    # Metadados por canal lidos do header FCS ($PnR/$PnE...) — o front usa
+    # `range` como teto do eixo, fiel ao detector que adquiriu a amostra.
+    channel_meta = serializers.SerializerMethodField()
 
     class Meta:
         model = FileDataModel
@@ -627,6 +633,7 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "well_id",
             "plate",
             "suggested_control",
+            "channel_meta",
         ]
         read_only_fields = ["id", "source_path", "active", "deactivated_at"]
 
@@ -661,6 +668,11 @@ class ListFileDataSerializer(serializers.ModelSerializer):
         from fcs_parser.services.controls import suggest_control
 
         return suggest_control(obj.file_name, obj.headers)
+
+    def get_channel_meta(self, obj) -> list:
+        from fcs_parser.services.channel_meta import parse_channel_meta
+
+        return parse_channel_meta(obj.headers)
 
 
 class ParamListDataSerializer(serializers.ModelSerializer):
