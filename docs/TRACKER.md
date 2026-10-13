@@ -31,6 +31,7 @@ ou alinhe com o responsável.
 | Docs: revisão do PRD BE-26 (marcação por arquivo + placa) | `pandora-docs/prd/BE-26*` | `docs/be-26-controles-arquivo` | devin | 2026-09 |
 | plot_config da amostra raiz (card #71) | ✅ concluído — mergeado (PR #118) | — | — | — |
 | BE-35 compensação manual (card #73) | ✅ concluído — mergeado (PR #119) | — | — | — |
+| Backport dívida #112 (paths relativos MEDIA_ROOT) — release pré-feature | `fcs_parser/models.py`, `tasks.py`, `views.py`, `analytics/gate_filter.py`, migration 0022 | `fix/relative-media-paths` | devin | 2026-10-13 |
 
 ## Concluído nesta branch
 

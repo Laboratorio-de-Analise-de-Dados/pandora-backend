@@ -62,7 +62,7 @@ def noop_reverse(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("fcs_parser", "0022_filedatamodel_control_channel_and_more"),
+        ("fcs_parser", "0021_filedatamodel_plot_config"),
     ]
 
     operations = [
