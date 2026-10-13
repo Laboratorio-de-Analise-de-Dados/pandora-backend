@@ -993,8 +993,11 @@ class AnalysisFigureListSerializer(serializers.ModelSerializer):
 
 # Vocabulário do contrato com o worker — espelha o Literal do
 # ClusterRequest do Juvia (app/schemas.py). Um modelo novo no Juvia exige
-# alinhar aqui antes de enfileirar jobs com ele.
+# alinhar aqui antes de enfileirar jobs com ele. "auto" = o Juvia escolhe
+# o melhor por Calinski-Harabasz (fluxo suggest); params ficam escopados
+# ao modelo explícito — com "auto" todos rodam com defaults.
 JUVIA_MODEL_CHOICES = ["KMeans", "DBSCAN", "Hierárquico"]
+JUVIA_MODEL_AUTO = "auto"
 JUVIA_TRANSFORM_CHOICES = ["linear", "log"]
 
 
@@ -1065,7 +1068,11 @@ class AnalysisJobCreateSerializer(serializers.Serializer):
         choices=AnalysisJob.OPERATION_CHOICES,
         default=AnalysisJob.OPERATION_CLUSTER,
     )
-    model = serializers.ChoiceField(choices=JUVIA_MODEL_CHOICES)
+    model = serializers.ChoiceField(
+        choices=[*JUVIA_MODEL_CHOICES, JUVIA_MODEL_AUTO],
+        required=False,
+        default=JUVIA_MODEL_AUTO,
+    )
     params = serializers.DictField(required=False, default=dict)
     transform = serializers.ChoiceField(
         choices=JUVIA_TRANSFORM_CHOICES, default="linear"

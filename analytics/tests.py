@@ -2820,6 +2820,23 @@ class AnalysisJobApiTests(JobFixtureMixin, TestCase):
         )
         self.assertEqual([j["id"] for j in listing.json()], [job_id])
 
+    def test_enqueue_model_optional_defaults_to_auto(self):
+        # Fluxo suggest: o Juvia escolhe o modelo por Calinski-Harabasz —
+        # o front não deveria precisar mandar um valor dummy.
+        response = self.client.post(
+            "/analytics/analysis-jobs/",
+            {
+                "experiment": self.experiment.id,
+                "file_data": self.file_data.id,
+                "channels": ["FSC-A", "SSC-A"],
+                "payload": {"gate_type": "polygon"},
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        job = AnalysisJob.objects.get(id=response.json()["id"])
+        self.assertEqual(job.model, "auto")
+
     def test_enqueue_rejects_cross_references(self):
         other_exp = ExperimentModel.objects.create(
             title="e2", type="t", created_by=self.user
