@@ -73,6 +73,7 @@ from fcs_parser.services.compensation import (
     applied_compensation,
     apply_compensation,
 )
+from fcs_parser.services.channel_meta import parse_channel_meta
 from fcs_parser.services.copy_experiment import copy_experiment
 from fcs_parser.services.derive_analysis import derive_analysis
 from fcs_parser.serializers import (
@@ -676,8 +677,9 @@ class ExperimentPreviewView(APIView):
         else:
             x_param, y_param = "FSC-A", "SSC-A"
 
-        x_scale = default_scale(x_param)
-        y_scale = default_scale(y_param)
+        channel_meta = parse_channel_meta(file_data.headers)
+        x_scale = default_scale(x_param, channel_meta)
+        y_scale = default_scale(y_param, channel_meta)
         # Preview reflete a análise real: com compensação aplicada, a
         # thumbnail mostra o dado compensado (BE-22) — e a matriz entra na
         # chave para não servir thumbnail crua como compensada.
@@ -1042,8 +1044,9 @@ class ExperimentCompensationPreviewView(APIView):
             mode = str(params.get("mode", "heatmap"))
             bins = int(params.get("bins", 200))
             sample = int(params.get("sample", 5000))
-            x_scale = params.get("xscale") or default_scale(x_param)
-            y_scale = params.get("yscale") or default_scale(y_param)
+            channel_meta = parse_channel_meta(file_data.headers)
+            x_scale = params.get("xscale") or default_scale(x_param, channel_meta)
+            y_scale = params.get("yscale") or default_scale(y_param, channel_meta)
             cofactor = float(params.get("cofactor", DEFAULT_COFACTOR))
             cutoff = max(int(params.get("cutoff", 0)), 0)
             x_range = parse_range(params, "xmin", "xmax")
@@ -1697,13 +1700,13 @@ class FileDensityView(APIView):
                 name="xscale",
                 type=str,
                 required=False,
-                description="'linear' or 'biex' (default: heuristic by channel)",
+                description="'linear', 'biex' or 'log' (default: channel metadata or heuristic)",
             ),
             OpenApiParameter(
                 name="yscale",
                 type=str,
                 required=False,
-                description="'linear' or 'biex' (default: heuristic by channel)",
+                description="'linear', 'biex' or 'log' (default: channel metadata or heuristic)",
             ),
             OpenApiParameter(
                 name="cofactor",
@@ -1758,8 +1761,6 @@ class FileDensityView(APIView):
         mode = request.query_params.get("mode", "heatmap")
         bins = int(request.query_params.get("bins", 200))
         sample = int(request.query_params.get("sample", 5000))
-        x_scale = request.query_params.get("xscale") or default_scale(x_param)
-        y_scale = request.query_params.get("yscale") or default_scale(y_param)
         cofactor = float(request.query_params.get("cofactor", DEFAULT_COFACTOR))
         try:
             cutoff = max(int(request.query_params.get("cutoff", 0)), 0)
@@ -1768,6 +1769,17 @@ class FileDensityView(APIView):
         x_range = parse_range(request.query_params, "xmin", "xmax")
         y_range = parse_range(request.query_params, "ymin", "ymax")
 
+        file_data, error = get_active_file_data_or_error(request.user, file_id)
+        if error:
+            return error
+
+        channel_meta = parse_channel_meta(file_data.headers)
+        x_scale = request.query_params.get("xscale") or default_scale(
+            x_param, channel_meta
+        )
+        y_scale = request.query_params.get("yscale") or default_scale(
+            y_param, channel_meta
+        )
         cache_key = density_cache_key(
             "file",
             file_id,
@@ -1786,9 +1798,6 @@ class FileDensityView(APIView):
             cache_key += f":xr{x_range[0]}:{x_range[1]}"
         if y_range:
             cache_key += f":yr{y_range[0]}:{y_range[1]}"
-        file_data, error = get_active_file_data_or_error(request.user, file_id)
-        if error:
-            return error
 
         # BE-22: a matriz aplicada entra na chave de cache — densidade
         # compensada nunca é servida como se fosse crua.

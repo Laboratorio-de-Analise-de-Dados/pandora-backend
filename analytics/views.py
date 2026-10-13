@@ -17,6 +17,7 @@ from fcs_parser.permissions import (
     file_data_visible_to,
     require_can_edit_file_data,
 )
+from fcs_parser.services.channel_meta import parse_channel_meta
 from fcs_parser.services.compensation import (
     applied_compensation,
     apply_compensation,
@@ -538,13 +539,13 @@ class GateDensityView(APIView):
                 name="xscale",
                 type=str,
                 required=False,
-                description="'linear' or 'biex' (default: heuristic by channel)",
+                description="'linear', 'biex' or 'log' (default: channel metadata or heuristic)",
             ),
             OpenApiParameter(
                 name="yscale",
                 type=str,
                 required=False,
-                description="'linear' or 'biex' (default: heuristic by channel)",
+                description="'linear', 'biex' or 'log' (default: channel metadata or heuristic)",
             ),
             OpenApiParameter(
                 name="cofactor",
@@ -599,8 +600,6 @@ class GateDensityView(APIView):
         mode = request.query_params.get("mode", "heatmap")
         bins = int(request.query_params.get("bins", 200))
         sample = int(request.query_params.get("sample", 5000))
-        x_scale = request.query_params.get("xscale") or default_scale(x_param)
-        y_scale = request.query_params.get("yscale") or default_scale(y_param)
         cofactor = float(request.query_params.get("cofactor", DEFAULT_COFACTOR))
         try:
             cutoff = max(int(request.query_params.get("cutoff", 0)), 0)
@@ -610,6 +609,14 @@ class GateDensityView(APIView):
         y_range = parse_range(request.query_params, "ymin", "ymax")
 
         gate = get_object_or_404(gates_visible_to(request.user), pk=gate_id)
+
+        channel_meta = parse_channel_meta(gate.file_data.headers)
+        x_scale = request.query_params.get("xscale") or default_scale(
+            x_param, channel_meta
+        )
+        y_scale = request.query_params.get("yscale") or default_scale(
+            y_param, channel_meta
+        )
 
         # BE-22: a matriz aplicada entra na chave de cache.
         applied = applied_compensation(gate.file_data.experiment)

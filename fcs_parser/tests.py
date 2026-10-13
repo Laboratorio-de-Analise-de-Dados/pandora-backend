@@ -1576,6 +1576,126 @@ class CompensationDetectionTestCase(TestCase):
         self.assertEqual(res.status_code, 204)
 
 
+class ChannelMetaTestCase(TestCase):
+    """$Pn* do header FCS → `channel_meta` exposto pro front (teto do
+    eixo por detector — CytoFLEX grava ranges maiores que FACS antigo)."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, status="done"
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip",
+            file="upload.zip",
+            sha256="c" * 64,
+            experiment=self.experiment,
+        )
+
+    def _file_data(self, headers):
+        return FileDataModel.objects.create(
+            headers=headers,
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+        )
+
+    def test_parse_ranges_decadas_stain_gain(self):
+        from fcs_parser.services.channel_meta import parse_channel_meta
+
+        headers = {
+            "$PAR": "3",
+            "$P1N": "FSC-A",
+            "$P1R": "262144",
+            "$P1E": "0,0",
+            "$P2N": "SSC-A",
+            "$P2R": "4194304",
+            "$P2E": "0,0",
+            "$P3N": "FITC-A",
+            "$P3R": "10000000",
+            "$P3E": "4.5,0.1",
+            "$P3S": "CD3",
+            "$P3G": "1.5",
+        }
+        meta = parse_channel_meta(headers)
+
+        self.assertEqual([m["name"] for m in meta], ["FSC-A", "SSC-A", "FITC-A"])
+        self.assertEqual(meta[0]["range"], 262144)
+        self.assertEqual(meta[1]["range"], 4194304)
+        self.assertEqual(meta[2]["range"], 10000000)
+        self.assertEqual(meta[2]["log_decades"], 4.5)
+        self.assertEqual(meta[2]["stain"], "CD3")
+        self.assertEqual(meta[2]["gain"], 1.5)
+        # Canais lineares não ganham log_decadas > 0.
+        self.assertEqual(meta[0]["log_decades"], 0.0)
+
+    def test_parse_sem_headers_devolve_vazio(self):
+        from fcs_parser.services.channel_meta import parse_channel_meta
+
+        self.assertEqual(parse_channel_meta(None), [])
+        self.assertEqual(parse_channel_meta({}), [])
+        self.assertEqual(parse_channel_meta({"$TOT": "10"}), [])
+
+    def test_parse_sem_par_varre_ate_primeira_lacuna(self):
+        from fcs_parser.services.channel_meta import parse_channel_meta
+
+        meta = parse_channel_meta({"$P1N": "FSC-A", "$P2N": "SSC-A"})
+        self.assertEqual([m["name"] for m in meta], ["FSC-A", "SSC-A"])
+
+    def test_parse_com_par_tolera_lacuna_no_meio(self):
+        from fcs_parser.services.channel_meta import parse_channel_meta
+
+        meta = parse_channel_meta({"$PAR": "3", "$P1N": "FSC-A", "$P3N": "PE-A"})
+        self.assertEqual([m["name"] for m in meta], ["FSC-A", "PE-A"])
+
+    def test_serializer_expoe_channel_meta_da_amostra(self):
+        from fcs_parser.serializers import ListFileDataSerializer
+
+        fd = self._file_data({"$PAR": "1", "$P1N": "FSC-A", "$P1R": "262144"})
+        data = ListFileDataSerializer(fd).data
+
+        self.assertEqual(data["channel_meta"], [{"name": "FSC-A", "range": 262144}])
+
+    def test_serializer_expoe_cytometer_da_amostra(self):
+        from fcs_parser.serializers import ListFileDataSerializer
+
+        fd = self._file_data({"$CYT": "CytoFLEX", "$P1N": "FSC-A"})
+        data = ListFileDataSerializer(fd).data
+
+        self.assertEqual(data["cytometer"], "CytoFLEX")
+
+    def test_default_scale_vem_do_pne_quando_ha_meta(self):
+        from utils.density import default_scale
+
+        meta = [
+            {"name": "FSC-A", "range": 4194304, "log_decades": 0.0},
+            {"name": "FITC-A", "range": 10000000, "log_decades": 4.5},
+        ]
+        self.assertEqual(default_scale("FSC-A", meta), "linear")
+        self.assertEqual(default_scale("FITC-A", meta), "log")
+        # Nome normalizado casa (param chega como coluna do dataframe).
+        self.assertEqual(default_scale("fitc_a", meta), "log")
+
+    def test_default_scale_sem_meta_cai_na_heuristica(self):
+        from utils.density import default_scale
+
+        self.assertEqual(default_scale("FSC-A"), "linear")
+        self.assertEqual(default_scale("FITC-A"), "biex")
+        # Meta sem log_decades no canal → heurística também.
+        self.assertEqual(default_scale("FITC-A", [{"name": "FITC-A"}]), "biex")
+
+    def test_apply_scale_log_com_clip(self):
+        import numpy as np
+
+        from utils.density import apply_scale
+
+        out = apply_scale(np.array([0, 1, 100, 10_000_000]), "log")
+        # log10 com clip >=1: 0→0, 1→0, 100→2, 10^7→7
+        np.testing.assert_allclose(out, [0.0, 0.0, 2.0, 7.0])
+
+
 class CompensationControlsTestCase(TestCase):
     """BE-22: subsamples como controles + endpoints de matriz (ADR-0019)."""
 

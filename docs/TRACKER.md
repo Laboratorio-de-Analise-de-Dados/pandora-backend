@@ -31,7 +31,10 @@ ou alinhe com o responsável.
 | Docs: revisão do PRD BE-26 (marcação por arquivo + placa) | `pandora-docs/prd/BE-26*` | `docs/be-26-controles-arquivo` | devin | 2026-09 |
 | plot_config da amostra raiz (card #71) | ✅ concluído — mergeado (PR #118) | — | — | — |
 | BE-35 compensação manual (card #73) | ✅ concluído — mergeado (PR #119) | — | — | — |
-| Backport dívida #112 (paths relativos MEDIA_ROOT) — release pré-feature | `fcs_parser/models.py`, `tasks.py`, `views.py`, `analytics/gate_filter.py`, migration 0022 | `fix/relative-media-paths` | devin | 2026-10-13 |
+| Backport dívida #112 (paths relativos MEDIA_ROOT) — release pré-feature | ✅ concluído — mergeado (PR #132) | — | — | — |
+| BE-43 escalas/eixos por canal (Cytoflex) | `fcs_parser/services/channel_meta.py`, `serializers.py`, `utils/density.py`, `fcs_parser/views.py`, `analytics/views.py` | `feat/channel-ranges` | devin | 2026-10-13 |
+| BE-42 upload multi-arquivo sequencial | `fcs_parser/views.py`, `services/process_experiment_file.py`, serializers, tests | `feat/multifile-upload` | devin | 2026-10-13 |
+| BE-41 convite com email divergente | `accounts/serializers.py`, `accounts/views.py`, `accounts/tests.py` | `fix/invite-divergent-email` | devin | 2026-10-13 |
 
 ## Concluído nesta branch
 
