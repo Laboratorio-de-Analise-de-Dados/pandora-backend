@@ -229,6 +229,59 @@ class GateScopeTestCase(GateFixtureMixin, TestCase):
         self.copy_b.refresh_from_db()
         self.assertEqual(self.copy_b.copied_from_id, self.source.id)
 
+    def test_patch_coordinates_clears_automatic_flag(self):
+        # Gate materializado pelo Juvia (automatic=True) tocado por humano
+        # vira edição comum — a flag só vale enquanto a geometria é
+        # exatamente a proposta da máquina.
+        self.source.automatic = True
+        self.source.save(update_fields=["automatic"])
+
+        res = self._patch_gate(self.source, name="renomeado")
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertTrue(self.source.automatic)
+
+        res = self._patch_gate(
+            self.source,
+            gate_coordinates={
+                "type": "rectangle",
+                "x_axis": "FSC-A",
+                "y_axis": "SSC-A",
+                "startX": 0,
+                "endX": 1,
+                "startY": 0,
+                "endY": 1,
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.assertFalse(self.source.automatic)
+
+    def test_patch_coordinates_experiment_scope_clears_automatic_on_copies(self):
+        self.source.automatic = True
+        self.source.save(update_fields=["automatic"])
+        self.copy_b.automatic = True
+        self.copy_b.save(update_fields=["automatic"])
+
+        res = self._patch_gate(
+            self.source,
+            scope="experiment",
+            gate_coordinates={
+                "type": "rectangle",
+                "x_axis": "FSC-A",
+                "y_axis": "SSC-A",
+                "startX": 0,
+                "endX": 1,
+                "startY": 0,
+                "endY": 1,
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+        self.source.refresh_from_db()
+        self.copy_b.refresh_from_db()
+        self.assertFalse(self.source.automatic)
+        self.assertFalse(self.copy_b.automatic)
+
     def test_patch_coordinates_experiment_scope_propagates_and_keeps_family(self):
         coords = {
             "type": "rectangle",

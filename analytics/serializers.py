@@ -77,7 +77,9 @@ class GateSerializer(serializers.ModelSerializer):
             "created_by",
             "created_by_name",
         ]
-        read_only_fields = ["id", "created_at", "created_by"]
+        # `automatic` é proveniência — só o complete do worker (jobs.py)
+        # marca True; gate criado/editado pela UI nunca é automático.
+        read_only_fields = ["id", "created_at", "created_by", "automatic"]
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_created_by_name(self, obj):

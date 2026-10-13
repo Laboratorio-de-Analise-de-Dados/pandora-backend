@@ -154,6 +154,10 @@ def _propagate_gate_changes(
             before_fields["gate_coordinates"] = copy.gate_coordinates
             copy.gate_coordinates = new_coords
             fields.append("gate_coordinates")
+            if copy.automatic:
+                before_fields["automatic"] = copy.automatic
+                copy.automatic = False
+                fields.append("automatic")
 
         if fields:
             if not dry_run:
@@ -293,6 +297,13 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
                 gate_after["copied_from_id"] = None
                 gate.copied_from = None
                 update_fields.append("copied_from")
+            # Geometria tocada por humano deixa de ser a proposta da
+            # máquina — `automatic` vira False e fica como edição comum.
+            if gate.automatic and gate_before.get("gate_coordinates") is not None:
+                gate_before["automatic"] = True
+                gate_after["automatic"] = False
+                gate.automatic = False
+                update_fields.append("automatic")
         new_color = data.get("color")
         if new_color is not None:
             normalized_color = new_color if new_color else None
@@ -367,6 +378,7 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
                     "name": new_name,
                     "color": (new_color or None) if "color" in data else None,
                     "gate_coordinates": new_coords,
+                    "automatic": False,
                 }
                 payload_before = {"gates": {}}
                 payload_after = {"gates": {}}
