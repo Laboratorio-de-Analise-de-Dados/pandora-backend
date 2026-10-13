@@ -98,6 +98,7 @@ from fcs_parser.serializers import (
     UpdateExperimentSerializer,
 )
 from fcs_parser.services.process_experiment_file import (
+    MAX_EXPERIMENT_SAMPLES,
     assemble_chunks,
     extract_metadata_from_zip,
     file_sha256,
@@ -324,8 +325,25 @@ class ExperimentCompleteView(generics.CreateAPIView):
         experiment.status = "processing"
         experiment.save(update_fields=["file_status", "status"])
 
+        def _fail(detail: str, http_status: int):
+            experiment.status = "error"
+            experiment.error_info = {
+                "error_message": detail,
+                "details": traceback.format_exc(),
+            }
+            experiment.save(update_fields=["status", "error_info"])
+            file_instance.status = "error"
+            file_instance.error_info = {"detail": detail}
+            file_instance.save(update_fields=["status", "error_info"])
+            return Response({"status": "error", "detail": detail}, status=http_status)
+
+        skipped: list = []
+        name_conflicts: list = []
         try:
-            extract_metadata_from_zip(file_instance)
+            with transaction.atomic():
+                extract_metadata_from_zip(
+                    file_instance, skipped=skipped, name_conflicts=name_conflicts
+                )
         except Exception as e:
             logger.error(
                 "Erro ao extrair metadados do experimento %s: %s",
@@ -333,18 +351,19 @@ class ExperimentCompleteView(generics.CreateAPIView):
                 e,
                 exc_info=True,
             )
-            experiment.status = "error"
-            experiment.error_info = {
-                "error_message": str(e),
-                "details": traceback.format_exc(),
-            }
-            experiment.save(update_fields=["status", "error_info"])
-            return Response(
-                {"status": "error", "detail": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            return _fail(str(e), status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        added = FileDataModel.objects.filter(file=file_instance).count()
+        if added == 0 and name_conflicts:
+            names = "', '".join(name_conflicts)
+            return _fail(
+                f"Amostra(s) '{names}' já existe(m) neste experimento.",
+                status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response({"status": "done"})
+        file_instance.status = "done"
+        file_instance.save(update_fields=["status"])
+        return Response({"status": "done", "added": added, "skipped": skipped})
 
 
 def _annotate_list_meta(qs, user):
@@ -2225,6 +2244,22 @@ class ExperimentFileInitView(APIView):
         if not serializer.is_valid():
             return _invalid(serializer)
 
+        # Teto de amostras por experimento (BE-42) — validado na borda,
+        # antes de qualquer byte subir.
+        if (
+            FileDataModel.objects.filter(experiment=experiment, active=True).count()
+            >= MAX_EXPERIMENT_SAMPLES
+        ):
+            return Response(
+                {
+                    "detail": (
+                        f"Limite de {MAX_EXPERIMENT_SAMPLES} amostras por "
+                        "experimento atingido."
+                    )
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
         data = serializer.validated_data
         extension = experiment_file_extension(data["fileName"])
         upload = FileModel.objects.create(
@@ -2262,6 +2297,16 @@ class ExperimentFileChunkView(APIView):
         )
         require_can_edit_experiment(request.user, upload.experiment)
 
+        # Sanity check do lote (BE-42): se o cliente informou fileName,
+        # ele precisa bater com o do upload — evita chunk roteado pro
+        # FileModel errado quando vários arquivos têm o mesmo nome.
+        sent_name = serializer.validated_data.get("fileName")
+        if sent_name not in (None, "") and sent_name != upload.file_name:
+            return Response(
+                {"detail": "fileName não corresponde a este upload."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         chunk_index = serializer.validated_data["chunkIndex"]
         chunk = serializer.validated_data["chunk"]
 
@@ -2284,6 +2329,9 @@ class ExperimentFileCompleteView(APIView):
 
     `.fcs` solto é aglutinado num ZIP; amostras já presentes no experimento
     (mesmo ``content_guid``/``content_sha256``) são puladas e reportadas.
+    Erro por arquivo (BE-42): falha marca o ``FileModel`` como ``error``
+    com motivo legível sem derrubar os demais uploads do lote; nome de
+    amostra já ocupado com conteúdo diferente → 400 com o nome.
     """
 
     permission_classes = [IsAuthenticated]
@@ -2296,6 +2344,7 @@ class ExperimentFileCompleteView(APIView):
                 "status": serializers.CharField(),
                 "added": serializers.IntegerField(),
                 "skipped": serializers.ListField(child=serializers.CharField()),
+                "name_conflicts": serializers.ListField(child=serializers.CharField()),
             },
         ),
     )
@@ -2339,9 +2388,21 @@ class ExperimentFileCompleteView(APIView):
         upload.file_name = raw_file_name
         upload.save(update_fields=["file", "file_name", "sha256"])
 
+        def _fail(detail: str, http_status: int):
+            """Marca o upload como erro sem derrubar o lote (BE-42)."""
+            upload.status = "error"
+            upload.error_info = {"detail": detail}
+            upload.save(update_fields=["status", "error_info"])
+            return Response({"status": "error", "detail": detail}, status=http_status)
+
         skipped: list = []
+        name_conflicts: list = []
         try:
-            extract_metadata_from_zip(upload, skipped=skipped)
+            with transaction.atomic():
+                # Atômico: um arquivo ruim não deixa amostras pela metade.
+                extract_metadata_from_zip(
+                    upload, skipped=skipped, name_conflicts=name_conflicts
+                )
         except Exception as e:
             logger.error(
                 "Erro ao extrair metadados do upload %s: %s",
@@ -2349,14 +2410,37 @@ class ExperimentFileCompleteView(APIView):
                 e,
                 exc_info=True,
             )
-            return Response(
-                {"status": "error", "detail": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            return _fail(str(e), status.HTTP_422_UNPROCESSABLE_ENTITY)
 
         added = FileDataModel.objects.filter(file=upload).count()
+
+        # Nome duplicado com conteúdo diferente → 400 legível com o nome
+        # quando o arquivo inteiro foi rejeitado por colisão (BE-42).
+        if added == 0 and name_conflicts:
+            names = "', '".join(name_conflicts)
+            return _fail(
+                f"Amostra(s) '{names}' já existe(m) neste experimento.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Arquivo sem nenhuma amostra criada nem reconhecida: conteúdo
+        # que não é .fcs/ZIP de tubos — erro do arquivo, não do lote.
+        if added == 0 and not skipped:
+            return _fail(
+                "Nenhuma amostra .fcs encontrada no arquivo.",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        upload.status = "done"
+        upload.error_info = {"name_conflicts": name_conflicts} if name_conflicts else {}
+        upload.save(update_fields=["status", "error_info"])
         return Response(
-            {"status": "done", "added": added, "skipped": skipped},
+            {
+                "status": "done",
+                "added": added,
+                "skipped": skipped,
+                "name_conflicts": name_conflicts,
+            },
             status=status.HTTP_200_OK,
         )
 

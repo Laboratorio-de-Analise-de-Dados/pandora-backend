@@ -197,6 +197,17 @@ class FileModel(models.Model):
     # Controle do upload em chunks deste arquivo (fluxo "adicionar arquivos").
     total_chunks = models.IntegerField(null=True, blank=True)
     received_chunks = ArrayField(models.IntegerField(), default=list, blank=True)
+    # Estado por arquivo (BE-42): num lote, um upload falho não derruba os
+    # demais — o erro mora aqui, não no experimento.
+    UPLOAD_STATUS_CHOICES = [
+        ("uploading", "Uploading"),
+        ("done", "Done"),
+        ("error", "Error"),
+    ]
+    status = models.CharField(
+        max_length=20, choices=UPLOAD_STATUS_CHOICES, default="uploading"
+    )
+    error_info = models.JSONField(blank=True, default=dict)
 
     def get_file_url(self):
         return settings.MEDIA_URL + str(self.file)
