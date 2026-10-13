@@ -379,11 +379,10 @@ class InviteAcceptSerializer(serializers.Serializer):
                 {"auth": "Usuário não autenticado. Faça login para aceitar."}
             )
 
-        if user.email.lower() != self.invite.email.lower():
-            raise serializers.ValidationError(
-                {"email": "Este convite pertence a outro email."}
-            )
-
+        # BE-41: a prova de posse é o próprio token do convite, não o
+        # email de login — quem recebe no email institucional pode ter
+        # conta de login com outro endereço. A divergência não bloqueia;
+        # ela é auditada no `create` (AuthEvent).
         attrs["invite"] = self.invite
         attrs["user"] = user
         return attrs
@@ -402,6 +401,24 @@ class InviteAcceptSerializer(serializers.Serializer):
         if invite.status == "pending":
             invite.status = "accepted"
             invite.save(update_fields=["status"])
+
+        divergent = user.email.lower() != invite.email.lower()
+        summary = (
+            f"Convite enviado a {invite.email} aceito pela conta {user.email}."
+            if divergent
+            else f"Convite para {invite.organization.name} aceito."
+        )
+        AuthEvent.objects.create(
+            user=user,
+            action="invite_accept",
+            summary=summary,
+            metadata={
+                "invite_email": invite.email,
+                "user_email": user.email,
+                "organization_id": invite.organization_id,
+                "divergent": divergent,
+            },
+        )
 
         return {"invite": invite, "membership": membership}
 

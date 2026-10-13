@@ -206,7 +206,9 @@ class InviteAcceptTests(APITestCase):
         self.assertEqual(response.status_code, 404)
         self.assertTrue(Membership.objects.filter(id=foreign.id).exists())
 
-    def test_accept_rejects_invite_of_another_email(self):
+    def test_accept_with_divergent_email_creates_membership_and_audit(self):
+        """BE-41: conta logada com email divergente do convite aceita —
+        o token é a prova de posse; a divergência vira AuthEvent."""
         other = User.objects.create_user(
             username="other", email="other@example.com", password="pass12345"
         )
@@ -216,12 +218,38 @@ class InviteAcceptTests(APITestCase):
             reverse("invite_accept", kwargs={"token": self.invite.token})
         )
 
+        self.assertEqual(response.status_code, 200)
+        membership = Membership.objects.get(user=other, organization=self.organization)
+        self.assertEqual(membership.status, "active")
+        self.invite.refresh_from_db()
+        self.assertEqual(self.invite.status, "accepted")
+
+        event = AuthEvent.objects.get(user=other, action="invite_accept")
+        self.assertEqual(event.metadata["invite_email"], "guest@example.com")
+        self.assertEqual(event.metadata["user_email"], "other@example.com")
+        self.assertTrue(event.metadata["divergent"])
+
+    def test_accept_with_matching_email_audits_non_divergent(self):
+        self.accept()
+
+        event = AuthEvent.objects.get(user=self.guest, action="invite_accept")
+        self.assertFalse(event.metadata["divergent"])
+
+    def test_expired_invite_still_rejected(self):
+        self.invite.expires_at = timezone.now() - timedelta(hours=1)
+        self.invite.save(update_fields=["expires_at"])
+
+        response = self.accept()
+
         self.assertEqual(response.status_code, 400)
-        self.assertFalse(
-            Membership.objects.filter(
-                user=other, organization=self.organization
-            ).exists()
-        )
+
+    def test_processed_invite_still_rejected(self):
+        self.invite.status = "accepted"
+        self.invite.save(update_fields=["status"])
+
+        response = self.accept()
+
+        self.assertEqual(response.status_code, 400)
 
 
 @override_settings(
