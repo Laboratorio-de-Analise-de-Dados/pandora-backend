@@ -39,7 +39,9 @@ services:
       DEBUG: "${DEBUG}"
       SECRET_KEY: "${SECRET_KEY}"
       JWT_SIGNING_KEY: "${JWT_SIGNING_KEY:-}"
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-api.project-pandora.com.br,localhost,127.0.0.1}"
+      # `web` precisa constar aqui (default ou na env do servidor): é o
+      # hostname que o juvia-worker usa na pandora_net (card #106).
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-api.project-pandora.com.br,localhost,127.0.0.1,web}"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
       CORS_ALLOW_ALL_ORIGINS: "${CORS_ALLOW_ALL_ORIGINS:-True}"
       DATABASE_NAME: "${POSTGRES_DB}"
@@ -61,7 +63,12 @@ services:
       GOOGLE_REDIRECT_URI: "${GOOGLE_REDIRECT_URI}"
       MEDIA_ROOT: "/app/uploads"
     networks:
-      - pandora_net
+      pandora_net:
+        # Alias RFC-válido do serviço: o nome `pandora_web` tem underscore,
+        # hostname inválido — o Django rejeita o Host antes de checar
+        # ALLOWED_HOSTS. O juvia-worker chama http://web:8000 (card #106).
+        aliases:
+          - web
 
 volumes:
   pgdata:
