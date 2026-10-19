@@ -202,6 +202,23 @@ def complete_job(job: AnalysisJob, result_payload: dict) -> dict:
     if job.status != AnalysisJob.STATUS_PROCESSING:
         raise Conflict(f"Job {job.id} não está em processamento (status={job.status}).")
 
+    # Job ancorado num SuggestionRun (BE-40): o complete grava candidatas
+    # pendentes — gate só nasce no accept do analista, nunca aqui.
+    from analytics.services.suggestions import complete_suggestion_run
+
+    suggestion_run = getattr(job, "suggestion_run", None)
+    if suggestion_run is not None:
+        candidates = complete_suggestion_run(suggestion_run, result_payload)
+        job.result = {
+            "worker_result": result_payload,
+            "suggestion_run_id": suggestion_run.id,
+            "candidate_ids": [c.id for c in candidates],
+        }
+        job.status = AnalysisJob.STATUS_DONE
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "finished_at", "result"])
+        return {"already_done": False}
+
     gates_payload = result_payload.get("gates") or []
     created = []
     if gates_payload:

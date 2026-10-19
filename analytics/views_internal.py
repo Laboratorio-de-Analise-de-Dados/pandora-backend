@@ -161,6 +161,7 @@ class InternalJobCompleteView(InternalServiceView):
             "created_gate_ids": (job.result or {}).get("created_gate_ids", []),
             "revision_id": (job.result or {}).get("revision_id"),
             "checkpoint_id": (job.result or {}).get("checkpoint_id"),
+            "suggestion_run_id": (job.result or {}).get("suggestion_run_id"),
         }
         return Response(response, status=status.HTTP_200_OK)
 

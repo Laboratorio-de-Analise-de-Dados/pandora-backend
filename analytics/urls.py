@@ -16,6 +16,7 @@ from .views import (
     ExperimentBranchListCreateView,
     ExperimentFigureListCreateView,
     ExperimentHistoryView,
+    ExperimentSuggestionListCreateView,
     FigureDetailView,
     FigureRecomputeView,
     GateDensityView,
@@ -24,6 +25,8 @@ from .views import (
     HistoryRestoreView,
     HistoryRevertView,
     HistoryStateView,
+    SuggestionAcceptView,
+    SuggestionDiscardView,
     UpdateGateView,
 )
 
@@ -125,5 +128,20 @@ urlpatterns = [
         "analysis-jobs/<int:job_id>/",
         AnalysisJobDetailView.as_view(),
         name="analysis-job-detail",
+    ),
+    path(
+        "experiment/<int:experiment_id>/suggestions/",
+        ExperimentSuggestionListCreateView.as_view(),
+        name="experiment-suggestions",
+    ),
+    path(
+        "suggestions/<int:pk>/accept/",
+        SuggestionAcceptView.as_view(),
+        name="suggestion-accept",
+    ),
+    path(
+        "suggestions/<int:pk>/discard/",
+        SuggestionDiscardView.as_view(),
+        name="suggestion-discard",
     ),
 ]
