@@ -710,3 +710,157 @@ class AnalysisJob(models.Model):
 
     def __str__(self) -> str:
         return f"AnalysisJob {self.id} – {self.operation}/{self.model} [{self.status}]"
+
+
+class SuggestionRun(models.Model):
+    """Uma execução de sugestão de populações via Juvia (BE-40).
+
+    O front pede sugestão num contexto (amostra + gate pai + canais); o
+    run ancora o `AnalysisJob` na fila (BE-27) e agrupa as candidatas
+    (`GateSuggestion`) devolvidas no `complete` — nenhuma vira gate antes
+    do aceite do analista. Junto com `accepted` e `GateModel.automatic`,
+    é o dataset de supervisão do juvia ADR-0003: aceita/ajustada/
+    descartada são sinal de treino futuro.
+
+    `intent`/`control_files` são o contexto do pedido — o worker v1 só
+    consome `gate_type` (JV-04); intents e modo controle (JV-03) são
+    fases posteriores, mas ficam gravados porque já são sinal do que o
+    analista quis. `experiment_type` é snapshot do vocabulário no momento
+    do run — agregação por tipo não pode depender do nome mudar depois.
+    """
+
+    class Meta:
+        db_table = "suggestion_run"
+        indexes = [models.Index(fields=["experiment", "-created_at"])]
+
+    INTENT_SEPARATE = "separate"
+    INTENT_POSITIVE_NEGATIVE = "positive_negative"
+    INTENT_QUADRANT = "quadrant"
+    INTENT_RARE = "rare"
+    INTENT_CONTROL = "control"
+    INTENT_CHOICES = [
+        (INTENT_SEPARATE, "Separar populações"),
+        (INTENT_POSITIVE_NEGATIVE, "Positivo × negativo"),
+        (INTENT_QUADRANT, "Quadrante"),
+        (INTENT_RARE, "População rara"),
+        (INTENT_CONTROL, "Derivada de controle"),
+    ]
+
+    GATE_TYPE_POLYGON = "polygon"
+    GATE_TYPE_RECTANGLE = "rectangle"
+    GATE_TYPE_QUADRANT = "quadrant"
+    GATE_TYPE_INTERVAL = "interval"
+    GATE_TYPE_CHOICES = [
+        (GATE_TYPE_POLYGON, "Polígono"),
+        (GATE_TYPE_RECTANGLE, "Retângulo"),
+        (GATE_TYPE_QUADRANT, "Quadrante"),
+        (GATE_TYPE_INTERVAL, "Intervalo (histograma)"),
+    ]
+
+    experiment = models.ForeignKey(
+        ExperimentModel,
+        on_delete=models.CASCADE,
+        related_name="suggestion_runs",
+    )
+    file_data = models.ForeignKey(
+        FileDataModel,
+        on_delete=models.CASCADE,
+        related_name="suggestion_runs",
+    )
+    # Contexto do recorte: gate pai (null = população raiz) e branch onde
+    # as candidatas materializam. SET_NULL preserva o run se o gate sumir.
+    parent = models.ForeignKey(
+        GateModel,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="suggestion_runs",
+    )
+    branch = models.ForeignKey(
+        AnalysisBranch,
+        on_delete=models.CASCADE,
+        related_name="suggestion_runs",
+    )
+    job = models.OneToOneField(
+        AnalysisJob,
+        on_delete=models.CASCADE,
+        related_name="suggestion_run",
+    )
+    # Contrato do pedido: canais crus (par X/Y — ou 1D no interval),
+    # geometria pedida e intenção declarada.
+    channels = models.JSONField(default=list)
+    gate_type = models.CharField(
+        max_length=20, choices=GATE_TYPE_CHOICES, default=GATE_TYPE_POLYGON
+    )
+    intent = models.CharField(
+        max_length=30, choices=INTENT_CHOICES, default=INTENT_SEPARATE
+    )
+    control_files = models.JSONField(default=dict, blank=True)
+    # Preenchidos no complete do worker.
+    algorithm = models.CharField(max_length=50, blank=True, default="")
+    params = models.JSONField(default=dict, blank=True)
+    metrics = models.JSONField(default=dict, blank=True)
+    # "Sem separação confiável" fecha o run com motivo legível — o front
+    # exibe como feedback, não como erro (JV-04 §5).
+    reason = models.TextField(blank=True, default="")
+    experiment_type = models.CharField(max_length=100, blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="suggestion_runs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"SuggestionRun {self.id} – {self.file_data_id} [{self.gate_type}]"
+
+
+class GateSuggestion(models.Model):
+    """Candidata de população dentro de um run — pendente de revisão.
+
+    Objeto separado do `GateModel`: não entra em `build_tree`, stats,
+    apply em lote nem export até materializar via accept. `accepted`:
+    `null` pendente · `True` aceita · `False` descartada ou substituída
+    por run novo no mesmo contexto (decisão do FE-42: não distinguir
+    descarte de substituição — ambos são "não usada").
+    """
+
+    class Meta:
+        db_table = "gate_suggestion"
+        ordering = ["sort_index", "id"]
+
+    run = models.ForeignKey(
+        SuggestionRun,
+        on_delete=models.CASCADE,
+        related_name="candidates",
+    )
+    name = models.CharField(max_length=50)
+    # Mesmo formato do `gate_coordinates` do GateModel — opaco pro back.
+    gate_coordinates = models.JSONField(default=dict)
+    # {pct_parent, events} computados pelo Juvia (ele tem os labels).
+    stats = models.JSONField(default=dict, blank=True)
+    sort_index = models.PositiveIntegerField(default=0)
+    # Sugestão aninhada do Hierárquico aponta pra candidata mãe do mesmo
+    # run (v1 devolve flat — campo já existe pro aninhamento futuro).
+    parent_candidate = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="children",
+    )
+    accepted = models.BooleanField(null=True, blank=True, default=None)
+    # Gate materializado no accept — nulo enquanto não vira gate.
+    gate = models.ForeignKey(
+        GateModel,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="source_suggestions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"GateSuggestion {self.id} – {self.name} (run {self.run_id})"

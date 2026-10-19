@@ -50,6 +50,8 @@ from analytics.models import (
     AnalysisRevision,
     DashboardModel,
     GateModel,
+    GateSuggestion,
+    SuggestionRun,
 )
 from analytics.serializers import (
     AnalysisCheckpointSerializer,
@@ -68,6 +70,15 @@ from analytics.serializers import (
     GateUpdateSerializer,
     RestoreSerializer,
     RevertRevisionSerializer,
+    GateSuggestionSerializer,
+    SuggestionAcceptSerializer,
+    SuggestionRunCreateSerializer,
+    SuggestionRunSerializer,
+)
+from analytics.services.suggestions import (
+    accept_suggestion,
+    create_suggestion_run,
+    discard_suggestion,
 )
 from analytics.gate_filter import (
     apply_gate_filter,
@@ -2242,3 +2253,102 @@ class AnalysisJobDetailView(generics.RetrieveAPIView):
         return AnalysisJob.objects.filter(
             experiment__in=experiments_visible_to(self.request.user)
         )
+
+
+class ExperimentSuggestionListCreateView(APIView):
+    """GET/POST /analytics/experiment/<id>/suggestions/ (BE-40).
+
+    Camada de revisão sobre a fila do BE-27: o POST cria o
+    `SuggestionRun` + job `pending` (e marca substituídas as candidatas
+    pendentes do mesmo contexto); o complete do worker grava
+    `GateSuggestion` pendentes — gate só nasce no accept.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _experiment(self, request, experiment_id):
+        return get_object_or_404(experiments_visible_to(request.user), pk=experiment_id)
+
+    @extend_schema(
+        parameters=[OpenApiParameter("file", int, required=False)],
+        responses={200: SuggestionRunSerializer(many=True)},
+    )
+    def get(self, request, experiment_id):
+        experiment = self._experiment(request, experiment_id)
+        qs = (
+            SuggestionRun.objects.filter(experiment=experiment)
+            .select_related("job")
+            .prefetch_related("candidates")
+            .order_by("-created_at")
+        )
+        file_id = request.query_params.get("file")
+        if file_id:
+            qs = qs.filter(file_data_id=file_id)
+        return Response(SuggestionRunSerializer(qs[:20], many=True).data)
+
+    @extend_schema(
+        request=SuggestionRunCreateSerializer,
+        responses={201: SuggestionRunSerializer},
+    )
+    def post(self, request, experiment_id):
+        experiment = self._experiment(request, experiment_id)
+        require_can_edit_experiment(request.user, experiment)
+        serializer = SuggestionRunCreateSerializer(
+            data=request.data, context={"experiment": experiment}
+        )
+        serializer.is_valid(raise_exception=True)
+        run = create_suggestion_run(
+            experiment=experiment, user=request.user, **serializer.validated_data
+        )
+        return Response(
+            SuggestionRunSerializer(run).data, status=status.HTTP_201_CREATED
+        )
+
+
+def _suggestions_visible_to(user):
+    """Candidatas alcançáveis via experimento do run (ADR-0014)."""
+    return GateSuggestion.objects.filter(
+        run__experiment__in=experiments_visible_to(user)
+    )
+
+
+class SuggestionAcceptView(APIView):
+    """POST /analytics/suggestions/<id>/accept/ — materializa a candidata
+    em gate (revisão + checkpoint `origin=juvia`)."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=SuggestionAcceptSerializer,
+        responses={201: GateSerializer},
+    )
+    def post(self, request, pk):
+        suggestion = get_object_or_404(
+            _suggestions_visible_to(request.user).select_related(
+                "run__experiment", "run__file_data", "parent_candidate"
+            ),
+            pk=pk,
+        )
+        require_can_edit_experiment(request.user, suggestion.run.experiment)
+        serializer = SuggestionAcceptSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        gate = accept_suggestion(
+            suggestion, user=request.user, **serializer.validated_data
+        )
+        return Response(GateSerializer(gate).data, status=status.HTTP_201_CREATED)
+
+
+class SuggestionDiscardView(APIView):
+    """POST /analytics/suggestions/<id>/discard/ — outcome `accepted=false`."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: GateSuggestionSerializer})
+    def post(self, request, pk):
+        suggestion = get_object_or_404(
+            _suggestions_visible_to(request.user).select_related("run__experiment"),
+            pk=pk,
+        )
+        require_can_edit_experiment(request.user, suggestion.run.experiment)
+        suggestion = discard_suggestion(suggestion)
+        return Response(GateSuggestionSerializer(suggestion).data)

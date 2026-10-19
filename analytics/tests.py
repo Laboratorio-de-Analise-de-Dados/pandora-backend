@@ -18,6 +18,8 @@ from analytics.models import (
     AnalysisRevision,
     DashboardModel,
     GateModel,
+    GateSuggestion,
+    SuggestionRun,
 )
 from analytics.services.jobs import claim_next_job
 from analytics.tasks import calculate_cytometry_metrics, recalculate_gate_analysis
@@ -2974,3 +2976,384 @@ class CleanupAnalysisJobsTests(JobFixtureMixin, TestCase):
         call_command("cleanup_analysis_jobs", days=14, dry_run=True, stdout=out)
         self.assertIn("1 job", out.getvalue())
         self.assertTrue(AnalysisJob.objects.filter(id=old_done.id).exists())
+
+
+# ---------------------------------------------------------------------------
+# BE-40 — sugestões de população (camada de revisão sobre a fila do BE-27)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(JUVIA_INTERNAL_TOKEN=INTERNAL_TOKEN)
+class SuggestionRunTests(JobFixtureMixin, TestCase):
+    """POST/GET suggestions + complete gravando candidatas pendentes."""
+
+    COORDS = {
+        "type": "rectangle",
+        "x_axis": "FSC-A",
+        "y_axis": "SSC-A",
+        "startX": 0,
+        "endX": 3,
+        "startY": 0,
+        "endY": 3,
+    }
+    COORDS_2 = {
+        "type": "rectangle",
+        "x_axis": "FSC-A",
+        "y_axis": "SSC-A",
+        "startX": 5,
+        "endX": 9,
+        "startY": 5,
+        "endY": 9,
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(self.user)
+
+    def _url(self, suffix=""):
+        return f"/analytics/experiment/{self.experiment.id}/suggestions/{suffix}"
+
+    def _create_run(self, **overrides):
+        payload = {
+            "file_id": self.file_data.id,
+            "channels": ["FSC-A", "SSC-A"],
+            "gate_type": "polygon",
+        }
+        payload.update(overrides)
+        response = self.client.post(self._url(), payload, format="json")
+        self.assertEqual(response.status_code, 201, response.json())
+        return SuggestionRun.objects.get(id=response.json()["id"])
+
+    def _complete(self, run, body):
+        self._internal().post("/internal/jobs/claim", {}, format="json")
+        return self._internal().post(
+            f"/internal/jobs/{run.job_id}/complete", body, format="json"
+        )
+
+    def _candidates(self):
+        return [
+            {
+                "name": "KMeans C1 (J9)",
+                "gate_coordinates": dict(self.COORDS),
+                "stats": {"pct_parent": 60.0, "events": 30},
+            },
+            {
+                "name": "KMeans C2 (J9)",
+                "gate_coordinates": dict(self.COORDS_2),
+                "stats": {"pct_parent": 40.0, "events": 20},
+            },
+        ]
+
+    def test_create_run_enqueues_pending_job(self):
+        response = self.client.post(
+            self._url(),
+            {
+                "file_id": self.file_data.id,
+                "parent_id": self.gate.id,
+                "channels": ["FSC-A", "SSC-A"],
+                "gate_type": "rectangle",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        body = response.json()
+        self.assertEqual(body["job_status"], "pending")
+        self.assertEqual(body["candidates"], [])
+        self.assertEqual(body["parent_id"], self.gate.id)
+
+        run = SuggestionRun.objects.get(id=body["id"])
+        self.assertEqual(run.parent_id, self.gate.id)
+        self.assertEqual(run.branch_id, self.gate.branch_id)
+        self.assertEqual(run.job.status, AnalysisJob.STATUS_PENDING)
+        self.assertEqual(run.job.payload["gate_type"], "rectangle")
+        self.assertEqual(run.job.gate_id, self.gate.id)
+        self.assertEqual(run.experiment_type, self.experiment.type)
+
+    def test_create_run_rejects_foreign_parent(self):
+        other_file_model = FileModel.objects.create(
+            experiment=self.experiment, file_name="other.zip"
+        )
+        other_file = FileDataModel.objects.create(
+            experiment=self.experiment,
+            file_name="b.fcs",
+            headers=[],
+            file=other_file_model,
+        )
+        other_dash = DashboardModel.objects.create(name="d2", file_data=other_file)
+        foreign_gate = GateModel.objects.create(
+            file_data=other_file, name="X", dashboard=other_dash
+        )
+        response = self.client.post(
+            self._url(),
+            {
+                "file_id": self.file_data.id,
+                "parent_id": foreign_gate.id,
+                "channels": ["FSC-A"],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_create_run_rejects_unknown_channel(self):
+        response = self.client.post(
+            self._url(),
+            {"file_id": self.file_data.id, "channels": ["NAO-EXISTE"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_complete_writes_pending_candidates_not_gates(self):
+        run = self._create_run()
+        response = self._complete(
+            run,
+            {
+                "candidates": self._candidates(),
+                "model": "KMeans",
+                "metrics": {"calinski_harabasz": 123.4},
+                "n_total": 50,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["suggestion_run_id"], run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.algorithm, "KMeans")
+        self.assertEqual(run.metrics["calinski_harabasz"], 123.4)
+
+        candidates = list(run.candidates.order_by("sort_index"))
+        self.assertEqual(len(candidates), 2)
+        self.assertIsNone(candidates[0].accepted)
+        self.assertEqual(candidates[0].stats["pct_parent"], 60.0)
+        # Nenhum gate nasce do complete de sugestão.
+        self.assertEqual(GateModel.objects.count(), 1)
+        self.assertFalse(
+            AnalysisRevision.objects.filter(experiment=self.experiment).exists()
+        )
+        self.assertFalse(
+            AnalysisCheckpoint.objects.filter(experiment=self.experiment).exists()
+        )
+
+        job = AnalysisJob.objects.get(id=run.job_id)
+        self.assertEqual(job.status, AnalysisJob.STATUS_DONE)
+        self.assertEqual(job.result["suggestion_run_id"], run.id)
+        self.assertEqual(len(job.result["candidate_ids"]), 2)
+
+    def test_complete_no_candidates_closes_run_with_reason(self):
+        run = self._create_run()
+        response = self._complete(
+            run,
+            {"candidates": [], "reason": "sem separação confiável aqui"},
+        )
+        self.assertEqual(response.status_code, 200)
+        run.refresh_from_db()
+        self.assertEqual(run.reason, "sem separação confiável aqui")
+        self.assertEqual(run.candidates.count(), 0)
+        self.assertEqual(
+            AnalysisJob.objects.get(id=run.job_id).status, AnalysisJob.STATUS_DONE
+        )
+
+    def test_get_lists_runs_with_candidates_and_stats(self):
+        run = self._create_run()
+        self._complete(
+            run,
+            {"candidates": self._candidates(), "model": "KMeans", "metrics": {}},
+        )
+        response = self.client.get(self._url(), {"file": self.file_data.id})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["id"], run.id)
+        self.assertEqual(body[0]["job_status"], "done")
+        self.assertEqual(len(body[0]["candidates"]), 2)
+        self.assertEqual(body[0]["candidates"][0]["stats"]["events"], 30)
+        self.assertIsNone(body[0]["candidates"][0]["accepted"])
+
+    def test_accept_materializes_gate_automatic_with_checkpoint(self):
+        run = self._create_run(parent_id=self.gate.id)
+        self._complete(run, {"candidates": self._candidates(), "model": "KMeans"})
+        suggestion = run.candidates.first()
+
+        response = self.client.post(
+            f"/analytics/suggestions/{suggestion.id}/accept/", {}, format="json"
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+
+        gate = GateModel.objects.get(id=response.json()["id"])
+        self.assertTrue(gate.automatic)
+        self.assertEqual(gate.parent_id, self.gate.id)
+        self.assertEqual(gate.branch_id, run.branch_id)
+        self.assertEqual(gate.name, suggestion.name)
+        self.assertEqual(gate.gate_coordinates, suggestion.gate_coordinates)
+        self.assertEqual(gate.created_by, self.user)
+
+        suggestion.refresh_from_db()
+        self.assertTrue(suggestion.accepted)
+        self.assertEqual(suggestion.gate_id, gate.id)
+
+        revision = AnalysisRevision.objects.get(
+            experiment=self.experiment, target_id=gate.id
+        )
+        self.assertEqual(revision.origin, "juvia")
+        self.assertEqual(revision.user, self.user)
+        self.assertEqual(revision.action, "create")
+        checkpoint = AnalysisCheckpoint.objects.get(experiment=self.experiment)
+        self.assertEqual(checkpoint.origin, "juvia")
+        self.assertEqual(checkpoint.revision_id, revision.id)
+        # Stats calculadas como na criação manual.
+        self.assertTrue(hasattr(gate, "analysis_result"))
+
+    def test_accept_with_edited_coordinates_is_not_automatic(self):
+        run = self._create_run()
+        self._complete(run, {"candidates": self._candidates(), "model": "KMeans"})
+        suggestion = run.candidates.first()
+        edited = dict(self.COORDS, endX=4)
+
+        response = self.client.post(
+            f"/analytics/suggestions/{suggestion.id}/accept/",
+            {"name": "Pop custom", "gate_coordinates": edited},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        gate = GateModel.objects.get(id=response.json()["id"])
+        self.assertFalse(gate.automatic)
+        self.assertEqual(gate.name, "Pop custom")
+        self.assertEqual(gate.gate_coordinates["endX"], 4)
+
+    def test_discard_marks_candidate_not_accepted(self):
+        run = self._create_run()
+        self._complete(run, {"candidates": self._candidates()})
+        suggestion = run.candidates.first()
+
+        response = self.client.post(
+            f"/analytics/suggestions/{suggestion.id}/discard/", {}, format="json"
+        )
+        self.assertEqual(response.status_code, 200)
+        suggestion.refresh_from_db()
+        self.assertFalse(suggestion.accepted)
+        self.assertIsNone(suggestion.gate_id)
+        self.assertEqual(GateModel.objects.count(), 1)
+
+    def test_decided_candidate_cannot_be_decided_again(self):
+        run = self._create_run()
+        self._complete(run, {"candidates": self._candidates()})
+        suggestion = run.candidates.first()
+        self.client.post(f"/analytics/suggestions/{suggestion.id}/discard/")
+
+        for action in ("accept", "discard"):
+            response = self.client.post(
+                f"/analytics/suggestions/{suggestion.id}/{action}/", {}, format="json"
+            )
+            self.assertEqual(response.status_code, 400)
+
+    def test_new_run_same_context_replaces_pending_candidates(self):
+        run1 = self._create_run()
+        self._complete(run1, {"candidates": self._candidates()})
+        pending_ids = list(run1.candidates.values_list("id", flat=True))
+
+        run2 = self._create_run()
+        replaced = GateSuggestion.objects.filter(
+            id__in=pending_ids, accepted=False
+        ).count()
+        self.assertEqual(replaced, 2)
+        self.assertEqual(run2.candidates.count(), 0)
+
+    def test_run_in_different_context_keeps_candidates_pending(self):
+        run1 = self._create_run()
+        self._complete(run1, {"candidates": self._candidates()})
+
+        # Contexto diferente (com gate pai) — não substitui.
+        self._create_run(parent_id=self.gate.id)
+        self.assertEqual(
+            GateSuggestion.objects.filter(run=run1, accepted__isnull=True).count(),
+            2,
+        )
+
+    def test_nested_candidate_materializes_under_parent_gate(self):
+        run = self._create_run()
+        candidates = self._candidates()
+        candidates[1]["parent_index"] = 0
+        self._complete(run, {"candidates": candidates, "model": "Hierárquico"})
+        parent_c, child_c = list(run.candidates.order_by("sort_index"))
+        self.assertEqual(child_c.parent_candidate_id, parent_c.id)
+
+        self.client.post(f"/analytics/suggestions/{parent_c.id}/accept/")
+        response = self.client.post(
+            f"/analytics/suggestions/{child_c.id}/accept/", {}, format="json"
+        )
+        self.assertEqual(response.status_code, 201)
+        child_gate = GateModel.objects.get(id=response.json()["id"])
+        parent_c.refresh_from_db()
+        self.assertEqual(child_gate.parent_id, parent_c.gate_id)
+
+    def test_outsider_gets_404_and_cannot_write(self):
+        run = self._create_run()
+        self._complete(run, {"candidates": self._candidates()})
+        suggestion = run.candidates.first()
+        client = APIClient()
+        client.force_authenticate(self.outsider)
+
+        self.assertEqual(client.get(self._url()).status_code, 404)
+        for url in (
+            self._url(),
+            f"/analytics/suggestions/{suggestion.id}/accept/",
+            f"/analytics/suggestions/{suggestion.id}/discard/",
+        ):
+            method = client.post
+            self.assertIn(method(url, {}, format="json").status_code, (403, 404))
+
+    def test_requires_authentication(self):
+        self.assertEqual(APIClient().get(self._url()).status_code, 401)
+        self.assertEqual(
+            APIClient()
+            .post(
+                self._url(),
+                {"file_id": self.file_data.id, "channels": ["FSC-A"]},
+                format="json",
+            )
+            .status_code,
+            401,
+        )
+
+    def test_control_intent_requires_marked_control_files(self):
+        response = self.client.post(
+            self._url(),
+            {
+                "file_id": self.file_data.id,
+                "channels": ["FSC-A"],
+                "intent": "control",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+        unmarked = FileDataModel.objects.create(
+            experiment=self.experiment,
+            file_name="c.fcs",
+            headers=[],
+            file=self.file_model,
+        )
+        response = self.client.post(
+            self._url(),
+            {
+                "file_id": self.file_data.id,
+                "channels": ["FSC-A"],
+                "intent": "control",
+                "control_files": {"x": unmarked.id},
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+        unmarked.control_type = "fmo"
+        unmarked.save(update_fields=["control_type"])
+        response = self.client.post(
+            self._url(),
+            {
+                "file_id": self.file_data.id,
+                "channels": ["FSC-A"],
+                "intent": "control",
+                "control_files": {"x": unmarked.id, "y": None},
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)

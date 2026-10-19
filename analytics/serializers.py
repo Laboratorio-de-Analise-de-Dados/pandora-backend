@@ -13,6 +13,8 @@ from analytics.models import (
     CompensationMatrix,
     DashboardModel,
     GateModel,
+    GateSuggestion,
+    SuggestionRun,
 )
 from fcs_parser.models import ExperimentModel, FileDataModel, SubsampleModel
 
@@ -1103,16 +1105,7 @@ class AnalysisJobCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"gate": "O gate não pertence à amostra do job."}
             )
-        available = file_data_channels(file_data)
-        missing = [
-            channel
-            for channel in attrs["channels"]
-            if normalize_column_name(channel) not in available
-        ]
-        if missing:
-            raise serializers.ValidationError(
-                {"channels": ("Canais ausentes nesta amostra: " + ", ".join(missing))}
-            )
+        _validate_file_channels(file_data, attrs["channels"])
         return attrs
 
     def create(self, validated_data):
@@ -1124,6 +1117,24 @@ class AnalysisJobCreateSerializer(serializers.Serializer):
         return AnalysisJob.objects.create(
             created_by=self.context["request"].user,
             **validated_data,
+        )
+
+
+def _validate_file_channels(file_data, channels):
+    """Canais do job precisam existir na amostra — um job mal referenciado
+    falharia só no worker, depois de ocupar a fila."""
+    from analytics.gate_filter import file_data_channels
+    from utils.density import normalize_column_name
+
+    available = file_data_channels(file_data)
+    missing = [
+        channel
+        for channel in channels
+        if normalize_column_name(channel) not in available
+    ]
+    if missing:
+        raise serializers.ValidationError(
+            {"channels": ("Canais ausentes nesta amostra: " + ", ".join(missing))}
         )
 
 
@@ -1182,14 +1193,189 @@ class JobResultGateSerializer(serializers.Serializer):
     )
 
 
+class JobResultCandidateSerializer(serializers.Serializer):
+    """Candidata de sugestão no `complete` (BE-40): vira GateSuggestion
+    pendente quando o job está ancorado num SuggestionRun. `parent_index`
+    aponta pra outra candidata do mesmo payload (aninhado do Hierárquico)."""
+
+    name = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    gate_coordinates = serializers.DictField(allow_empty=False)
+    stats = serializers.DictField(required=False, default=dict)
+    parent_index = serializers.IntegerField(
+        required=False, allow_null=True, min_value=0
+    )
+
+
 class JobCompleteSerializer(serializers.Serializer):
-    """Body do complete: o resultado livre do worker; `gates` é validado
-    porque é a parte materializada — o resto é gravado opaco em `result`."""
+    """Body do complete: o resultado livre do worker; `gates`/`candidates`
+    são validados porque são a parte materializada — o resto é gravado
+    opaco em `result`. `reason` acompanha a falha honesta (JV-04 §5)."""
 
     gates = serializers.ListField(
         child=JobResultGateSerializer(), required=False, default=list
     )
+    candidates = serializers.ListField(
+        child=JobResultCandidateSerializer(), required=False, default=list
+    )
+    reason = serializers.CharField(required=False, allow_blank=True)
 
 
 class JobFailSerializer(serializers.Serializer):
     error = serializers.CharField(max_length=4000)
+
+
+# ---------------------------------------------------------------------------
+# BE-40 — sugestões de população (camada de revisão sobre a fila do BE-27)
+# ---------------------------------------------------------------------------
+
+
+class GateSuggestionSerializer(serializers.ModelSerializer):
+    """Candidata pendente de revisão — geometria + stats do worker."""
+
+    class Meta:
+        model = GateSuggestion
+        fields = [
+            "id",
+            "run",
+            "name",
+            "gate_coordinates",
+            "stats",
+            "sort_index",
+            "parent_candidate",
+            "accepted",
+            "gate",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class SuggestionRunSerializer(serializers.ModelSerializer):
+    """Run de sugestão com as candidatas aninhadas — resposta do
+    POST e do GET de polling/listagem."""
+
+    file_id = serializers.IntegerField(source="file_data_id", read_only=True)
+    parent_id = serializers.IntegerField(read_only=True)
+    job_id = serializers.IntegerField(read_only=True)
+    job_status = serializers.CharField(source="job.status", read_only=True)
+    candidates = GateSuggestionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = SuggestionRun
+        fields = [
+            "id",
+            "experiment",
+            "file_id",
+            "parent_id",
+            "branch",
+            "job_id",
+            "job_status",
+            "channels",
+            "gate_type",
+            "intent",
+            "control_files",
+            "algorithm",
+            "params",
+            "metrics",
+            "reason",
+            "experiment_type",
+            "candidates",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class SuggestionRunCreateSerializer(serializers.Serializer):
+    """POST /experiment/<id>/suggestions/ — pedido de sugestão (BE-40).
+
+    A amostra precisa ser do experimento da URL e o gate pai dela; os
+    canais são validados contra o arquivo (mesma regra do job direto).
+    """
+
+    file_id = serializers.PrimaryKeyRelatedField(
+        queryset=FileDataModel.objects.filter(active=True), source="file_data"
+    )
+    parent_id = serializers.PrimaryKeyRelatedField(
+        queryset=GateModel.objects.all(),
+        required=False,
+        allow_null=True,
+        default=None,
+        source="parent",
+    )
+    branch_id = serializers.PrimaryKeyRelatedField(
+        queryset=AnalysisBranch.objects.filter(active=True),
+        required=False,
+        allow_null=True,
+        default=None,
+        source="branch",
+    )
+    channels = serializers.ListField(
+        child=serializers.CharField(), min_length=1, max_length=2
+    )
+    gate_type = serializers.ChoiceField(
+        choices=SuggestionRun.GATE_TYPE_CHOICES,
+        default=SuggestionRun.GATE_TYPE_POLYGON,
+    )
+    intent = serializers.ChoiceField(
+        choices=SuggestionRun.INTENT_CHOICES,
+        default=SuggestionRun.INTENT_SEPARATE,
+    )
+    control_files = serializers.DictField(required=False, default=dict)
+    transform = serializers.ChoiceField(
+        choices=JUVIA_TRANSFORM_CHOICES, default="linear"
+    )
+    params = serializers.DictField(required=False, default=dict)
+
+    def validate(self, attrs):
+        experiment = self.context["experiment"]
+        file_data = attrs["file_data"]
+        if file_data.experiment_id != experiment.id:
+            raise serializers.ValidationError(
+                {"file_id": "A amostra não pertence ao experimento."}
+            )
+        parent = attrs.get("parent")
+        if parent is not None and parent.file_data_id != file_data.id:
+            raise serializers.ValidationError(
+                {"parent_id": "O gate não pertence à amostra do run."}
+            )
+        branch = attrs.get("branch")
+        if branch is not None and branch.experiment_id != experiment.id:
+            raise serializers.ValidationError(
+                {"branch_id": "A branch não pertence ao experimento."}
+            )
+        _validate_file_channels(file_data, attrs["channels"])
+
+        control_files = attrs.get("control_files") or {}
+        if attrs.get("intent") == SuggestionRun.INTENT_CONTROL and not control_files:
+            raise serializers.ValidationError(
+                {"control_files": "Obrigatório quando intent=control."}
+            )
+        control_ids = [v for v in control_files.values() if v is not None]
+        if control_ids:
+            marked = set(
+                FileDataModel.objects.filter(
+                    pk__in=control_ids,
+                    experiment_id=experiment.id,
+                    control_type__isnull=False,
+                ).values_list("pk", flat=True)
+            )
+            if len(marked) != len(set(control_ids)):
+                raise serializers.ValidationError(
+                    {
+                        "control_files": (
+                            "Arquivos de controle precisam ser do mesmo "
+                            "experimento e estar marcados como controle (BE-26)."
+                        )
+                    }
+                )
+        return attrs
+
+
+class SuggestionAcceptSerializer(serializers.Serializer):
+    """Body opcional do accept: nome/label semântico e ajuste manual da
+    geometria (que derruba `automatic` no gate materializado)."""
+
+    name = serializers.CharField(max_length=50, required=False)
+    color = serializers.CharField(
+        max_length=7, required=False, allow_blank=True, allow_null=True
+    )
+    gate_coordinates = serializers.DictField(required=False, allow_empty=False)
