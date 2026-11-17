@@ -89,6 +89,7 @@ from fcs_parser.serializers import (
     FileControlsBatchSerializer,
     FileHashCheckSerializer,
     FilePlotConfigSerializer,
+    FilesPlotConfigBatchSerializer,
     FileSubsampleSerializer,
     FileTagsUpdateSerializer,
     ListExperimentSerializer,
@@ -1578,6 +1579,49 @@ class FilePlotConfigView(APIView):
         file_data.save(update_fields=["plot_config"])
         return Response(
             ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
+        )
+
+
+class FilesPlotConfigView(APIView):
+    """PATCH /experiment/<id>/files/plot-config — config de visualização
+    em lote (BE-46).
+
+    Mesma preferência de exibição do ``FilePlotConfigView`` aplicada a
+    todas as amostras ativas do experimento — ou às ``file_ids``
+    listadas — num único UPDATE. Sem revisão, sem invalidar densidade.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=FilesPlotConfigBatchSerializer,
+        responses={200: ListFileDataSerializer(many=True)},
+    )
+    def patch(self, request, experiment_id):
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+
+        payload = FilesPlotConfigBatchSerializer(
+            data=request.data, context={"experiment": experiment}
+        )
+        payload.is_valid(raise_exception=True)
+
+        targets = FileDataModel.objects.filter(experiment=experiment, active=True)
+        file_ids = payload.validated_data.get("file_ids")
+        if file_ids is not None:
+            targets = targets.filter(id__in=file_ids)
+        targets.update(plot_config=payload.validated_data["plot_config"])
+
+        return Response(
+            ListFileDataSerializer(
+                targets.select_related("subsample").prefetch_related(
+                    "tags", "subsample__tags"
+                ),
+                many=True,
+            ).data,
+            status=status.HTTP_200_OK,
         )
 
 

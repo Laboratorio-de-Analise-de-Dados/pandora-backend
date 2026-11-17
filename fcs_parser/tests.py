@@ -3892,6 +3892,138 @@ class FilePlotConfigApiTestCase(TestCase):
         )
 
 
+class FilesPlotConfigBatchApiTestCase(TestCase):
+    """BE-46: PATCH /experiment/<id>/files/plot-config — mesma config em
+    todas as amostras (ou nas `file_ids` listadas) numa única transação."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, status="done"
+        )
+        self.other_experiment = ExperimentModel.objects.create(
+            title="exp2", type="t", created_by=self.owner, status="done"
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip", experiment=self.experiment
+        )
+        self.sample_a = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+        )
+        self.sample_b = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="b1.fcs",
+            file=self.file_model,
+        )
+        self.inactive = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="old.fcs",
+            file=self.file_model,
+            active=False,
+        )
+        self.foreign = FileDataModel.objects.create(
+            headers={},
+            experiment=self.other_experiment,
+            file_name="ext.fcs",
+            file=FileModel.objects.create(
+                file_name="outro.zip", experiment=self.other_experiment
+            ),
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def url(self):
+        return f"/experiment/{self.experiment.id}/files/plot-config"
+
+    def test_sem_file_ids_grava_em_todas_ativas(self):
+        config = {"xAxis": "FITC-A", "yAxis": "PE-A", "xScale": "log"}
+
+        res = self.client.patch(self.url(), {"plot_config": config}, format="json")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data), 2)
+        self.sample_a.refresh_from_db()
+        self.sample_b.refresh_from_db()
+        self.inactive.refresh_from_db()
+        self.assertEqual(self.sample_a.plot_config, config)
+        self.assertEqual(self.sample_b.plot_config, config)
+        self.assertEqual(self.inactive.plot_config, {})
+
+    def test_file_ids_aplica_so_nos_listados(self):
+        config = {"xAxis": "SSC-A"}
+
+        res = self.client.patch(
+            self.url(),
+            {"plot_config": config, "file_ids": [self.sample_a.id]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([f["id"] for f in res.data], [self.sample_a.id])
+        self.sample_a.refresh_from_db()
+        self.sample_b.refresh_from_db()
+        self.assertEqual(self.sample_a.plot_config, config)
+        self.assertEqual(self.sample_b.plot_config, {})
+
+    def test_file_id_de_outro_experimento_da_400_sem_gravar(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "plot_config": {"xAxis": "FITC-A"},
+                "file_ids": [self.sample_a.id, self.foreign.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.sample_a.refresh_from_db()
+        self.assertEqual(self.sample_a.plot_config, {})
+
+    def test_file_id_inativo_da_400_sem_gravar(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "plot_config": {"xAxis": "FITC-A"},
+                "file_ids": [self.sample_a.id, self.inactive.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.sample_a.refresh_from_db()
+        self.assertEqual(self.sample_a.plot_config, {})
+
+    def test_lote_nao_grava_revisao(self):
+        self.client.patch(
+            self.url(), {"plot_config": {"xAxis": "FITC-A"}}, format="json"
+        )
+
+        self.assertFalse(
+            AnalysisRevision.objects.filter(experiment=self.experiment).exists()
+        )
+
+    def test_usuario_sem_acesso_recebe_404(self):
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.patch(
+            self.url(), {"plot_config": {"xAxis": "FITC-A"}}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 404)
+        self.sample_a.refresh_from_db()
+        self.assertEqual(self.sample_a.plot_config, {})
+
+
 class FileStatsTestCase(TestCase):
     """Auditoria de stats: /file/<id>/stats compartilha a implementação de
     métricas dos gates — mesmas chaves, mesmas convenções (n, rcv)."""

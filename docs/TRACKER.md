@@ -36,6 +36,7 @@ ou alinhe com o responsável.
 | plot_config da amostra raiz (card #71) | ✅ concluído — mergeado (PR #118) | — | — | — |
 | BE-35 compensação manual (card #73) | ✅ concluído — mergeado (PR #119) | — | — | — |
 | Backport dívida #112 (paths relativos MEDIA_ROOT) — release pré-feature | ✅ concluído — mergeado (PR #132), deploy v0.6.0 | — | — | — |
+| BE-46/47/48/49 leva feedback JLAB (plot-config lote, channel labels, subsample lote, source_path upload) | `fcs_parser/{views,serializers,urls,models,tests}.py`, `services/process_experiment_file.py` | `feat/jlab-feedback-be46-49` | devin | 2026-11-17 |
 | BE-43 escalas/eixos por canal (Cytoflex) | ✅ concluído — mergeado (PR #133), deploy v0.6.0 | — | — | — |
 | BE-42 upload multi-arquivo sequencial | ✅ concluído — mergeado (PR #134), deploy v0.6.0 | — | — | — |
 | BE-41 aceite de convite com e-mail divergente | ✅ concluído — mergeado (PR #135), deploy v0.6.0 | — | — | — |

@@ -597,6 +597,46 @@ class FilePlotConfigSerializer(serializers.Serializer):
     plot_config = serializers.JSONField()
 
 
+class FilesPlotConfigBatchSerializer(FilePlotConfigSerializer):
+    """PATCH /experiment/<id>/files/plot-config — mesma config em lote (BE-46).
+
+    Sem ``file_ids`` aplica a todas as amostras ativas do experimento;
+    com a lista, só às listadas — qualquer id fora do experimento ou
+    inativo reprova o lote inteiro (padrão FileControlsView).
+    """
+
+    file_ids = serializers.ListField(child=serializers.IntegerField(), required=False)
+
+    def validate_file_ids(self, file_ids):
+        if len(file_ids) != len(set(file_ids)):
+            raise serializers.ValidationError("file_id duplicado no lote.")
+        return file_ids
+
+    def validate(self, attrs):
+        file_ids = attrs.get("file_ids")
+        if file_ids is None:
+            return attrs
+        found = set(
+            FileDataModel.objects.filter(
+                experiment=self.context["experiment"],
+                id__in=file_ids,
+                active=True,
+            ).values_list("id", flat=True)
+        )
+        invalid = [fid for fid in file_ids if fid not in found]
+        if invalid:
+            raise serializers.ValidationError(
+                {
+                    "file_ids": (
+                        "Amostras inválidas para este experimento: "
+                        + ", ".join(str(fid) for fid in invalid)
+                        + "."
+                    )
+                }
+            )
+        return attrs
+
+
 class ListFileDataSerializer(serializers.ModelSerializer):
 
     gates = ListGateSerializer(many=True, read_only=True)
@@ -687,6 +727,7 @@ class ListFileDataSerializer(serializers.ModelSerializer):
         from fcs_parser.services.channel_meta import parse_cytometer
 
         return parse_cytometer(obj.headers)
+
 
 class ParamListDataSerializer(serializers.ModelSerializer):
     gates = ListGateSerializer(many=True, read_only=True)
