@@ -8,3 +8,6 @@ db.sqlite3
 /storage
 /uploads/
 /staticfiles/
+
+# artefatos locais do pipeline de spec (tasks, previews — nunca commita)
+.scratch/
