@@ -6,7 +6,7 @@ from accounts.models import Organization
 from accounts.serializers import OrganizationListSerializer
 from fcs_parser.permissions import can_create_experiment_type, is_org_member
 from analytics.serializers import ListGateSerializer
-from utils.validators import experiment_file_extension
+from utils.validators import experiment_file_extension, sanitize_relative_path
 from .models import (
     ExperimentModel,
     ExperimentTypeModel,
@@ -184,6 +184,9 @@ class ExperimentFileInitSerializer(serializers.Serializer):
 
     fileName = serializers.CharField()
     totalChunks = serializers.IntegerField(min_value=1)
+    # BE-49: diretório de origem do `.fcs` solto — opcional; validado na
+    # borda e repassado ao wrap no complete.
+    relativePath = serializers.CharField(required=False, allow_null=True)
 
     def validate_fileName(self, value):
         try:
@@ -191,6 +194,9 @@ class ExperimentFileInitSerializer(serializers.Serializer):
         except DjangoValidationError as exc:
             raise serializers.ValidationError(_extension_error_detail(exc))
         return value
+
+    def validate(self, attrs):
+        return _validate_relative_path(attrs)
 
 
 class ChunkUploadSerializer(serializers.Serializer):
@@ -212,6 +218,8 @@ class ExperimentCompleteSerializer(serializers.Serializer):
 
     fileId = serializers.IntegerField()
     fileName = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    # BE-49: diretório de origem do `.fcs` solto — opcional.
+    relativePath = serializers.CharField(required=False, allow_null=True)
 
     def validate_fileName(self, value):
         if value in (None, ""):
@@ -221,6 +229,27 @@ class ExperimentCompleteSerializer(serializers.Serializer):
         except DjangoValidationError as exc:
             raise serializers.ValidationError(_extension_error_detail(exc))
         return value
+
+    def validate(self, attrs):
+        return _validate_relative_path(attrs)
+
+
+def _validate_relative_path(attrs):
+    """``relativePath`` opcional (BE-49): shape + basename == ``fileName``.
+
+    Só roda quando ``fileName`` veio no payload — no complete o fallback
+    é ``upload.file_name`` e o ``ExperimentFileCompleteView`` refaz a
+    checagem com o nome resolvido (mesmo padrão da extensão).
+    """
+    rel = attrs.get("relativePath")
+    file_name = attrs.get("fileName")
+    if not rel or not file_name:
+        return attrs
+    try:
+        attrs["relativePath"] = sanitize_relative_path(rel, file_name)
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError({"relativePath": exc.messages[0]})
+    return attrs
 
 
 class SampleTagSerializer(serializers.ModelSerializer):
@@ -425,6 +454,53 @@ class FileSubsampleSerializer(serializers.Serializer):
         return subsample
 
 
+class FileSubsampleMoveSerializer(FileSubsampleSerializer):
+    """Um item do PATCH em lote de subsample (BE-48)."""
+
+    file_id = serializers.IntegerField()
+
+
+class FileSubsampleBatchSerializer(serializers.Serializer):
+    """PATCH /experiment/<id>/files/subsample — move N amostras numa
+    transação (BE-48).
+
+    ``subsample`` por item é o id destino (ativo, do mesmo experimento)
+    ou ``null`` (desagrupar); qualquer ``file_id`` inativo ou estranho
+    ao experimento reprova o lote inteiro (padrão FileControlsView).
+    """
+
+    moves = FileSubsampleMoveSerializer(many=True)
+
+    def validate_moves(self, moves):
+        if not moves:
+            raise serializers.ValidationError("Informe ao menos uma movimentação.")
+        file_ids = [m["file_id"] for m in moves]
+        if len(file_ids) != len(set(file_ids)):
+            raise serializers.ValidationError("file_id duplicado no lote.")
+        return moves
+
+    def validate(self, attrs):
+        experiment = self.context["experiment"]
+        file_ids = [m["file_id"] for m in attrs["moves"]]
+        found = set(
+            FileDataModel.objects.filter(
+                experiment=experiment, id__in=file_ids, active=True
+            ).values_list("id", flat=True)
+        )
+        invalid = [fid for fid in file_ids if fid not in found]
+        if invalid:
+            raise serializers.ValidationError(
+                {
+                    "moves": (
+                        "Amostras inválidas para este experimento: "
+                        + ", ".join(str(fid) for fid in invalid)
+                        + "."
+                    )
+                }
+            )
+        return attrs
+
+
 class ExperimentMoveSerializer(serializers.Serializer):
     """PATCH /experiment/<id>/ com ``organization_id`` — troca de contexto
     (BE-11): ``null`` move para o espaço pessoal."""
@@ -597,6 +673,73 @@ class FilePlotConfigSerializer(serializers.Serializer):
     plot_config = serializers.JSONField()
 
 
+class FilesPlotConfigBatchSerializer(FilePlotConfigSerializer):
+    """PATCH /experiment/<id>/files/plot-config — mesma config em lote (BE-46).
+
+    Sem ``file_ids`` aplica a todas as amostras ativas do experimento;
+    com a lista, só às listadas — qualquer id fora do experimento ou
+    inativo reprova o lote inteiro (padrão FileControlsView).
+    """
+
+    file_ids = serializers.ListField(child=serializers.IntegerField(), required=False)
+
+    def validate_file_ids(self, file_ids):
+        if len(file_ids) != len(set(file_ids)):
+            raise serializers.ValidationError("file_id duplicado no lote.")
+        return file_ids
+
+    def validate(self, attrs):
+        file_ids = attrs.get("file_ids")
+        if file_ids is None:
+            return attrs
+        found = set(
+            FileDataModel.objects.filter(
+                experiment=self.context["experiment"],
+                id__in=file_ids,
+                active=True,
+            ).values_list("id", flat=True)
+        )
+        invalid = [fid for fid in file_ids if fid not in found]
+        if invalid:
+            raise serializers.ValidationError(
+                {
+                    "file_ids": (
+                        "Amostras inválidas para este experimento: "
+                        + ", ".join(str(fid) for fid in invalid)
+                        + "."
+                    )
+                }
+            )
+        return attrs
+
+
+class FileChannelLabelsSerializer(serializers.Serializer):
+    """PATCH /experiment/file/<id>/channel-labels — labels custom por canal
+    (BE-47, ADR-0032).
+
+    ``{labels: {<canal>: <label|null>}}`` — merge por chave: label grava,
+    ``null``/vazio remove a entrada. Canal precisa existir nos canais do
+    arquivo (``channel_meta`` do header, contexto ``file_data``).
+    """
+
+    labels = serializers.DictField(
+        child=serializers.CharField(allow_null=True, allow_blank=True),
+        allow_empty=True,
+    )
+
+    def validate_labels(self, labels):
+        file_data = self.context["file_data"]
+        from fcs_parser.services.channel_meta import parse_channel_meta
+
+        valid = {m["name"] for m in parse_channel_meta(file_data.headers)}
+        invalid = [channel for channel in labels if channel not in valid]
+        if invalid:
+            raise serializers.ValidationError(
+                "Canais inexistentes no arquivo: " + ", ".join(invalid) + "."
+            )
+        return labels
+
+
 class ListFileDataSerializer(serializers.ModelSerializer):
 
     gates = ListGateSerializer(many=True, read_only=True)
@@ -630,6 +773,7 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "subsample",
             "gates",
             "plot_config",
+            "channel_labels",
             "active",
             "deactivated_at",
             "has_embedded_compensation",
@@ -687,6 +831,7 @@ class ListFileDataSerializer(serializers.ModelSerializer):
         from fcs_parser.services.channel_meta import parse_cytometer
 
         return parse_cytometer(obj.headers)
+
 
 class ParamListDataSerializer(serializers.ModelSerializer):
     gates = ListGateSerializer(many=True, read_only=True)

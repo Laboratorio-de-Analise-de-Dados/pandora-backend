@@ -86,9 +86,12 @@ from fcs_parser.serializers import (
     ExperimentInitSerializer,
     ExperimentMoveSerializer,
     ExperimentTypeSerializer,
+    FileChannelLabelsSerializer,
     FileControlsBatchSerializer,
     FileHashCheckSerializer,
     FilePlotConfigSerializer,
+    FilesPlotConfigBatchSerializer,
+    FileSubsampleBatchSerializer,
     FileSubsampleSerializer,
     FileTagsUpdateSerializer,
     ListExperimentSerializer,
@@ -105,7 +108,7 @@ from fcs_parser.services.process_experiment_file import (
     file_sha256,
     wrap_fcs_as_zip,
 )
-from utils.validators import experiment_file_extension
+from utils.validators import experiment_file_extension, sanitize_relative_path
 
 logger = logging.getLogger(__name__)
 
@@ -1553,6 +1556,80 @@ class FileSubsampleView(APIView):
         )
 
 
+class FilesSubsampleView(APIView):
+    """PATCH /experiment/<id>/files/subsample — atribuição de subsample
+    em lote (BE-48).
+
+    ``{moves: [{file_id, subsample}]}`` numa única transação — subsample
+    é o id destino ou ``null`` (desagrupar). Uma ``AnalysisRevision``
+    agrega os alvos que mudaram de fato, no mesmo formato
+    ``{"targets": {"<id>": {"subsample_id": ...}}}`` do singular.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=FileSubsampleBatchSerializer,
+        responses={200: ListFileDataSerializer(many=True)},
+    )
+    def patch(self, request, experiment_id):
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+
+        payload = FileSubsampleBatchSerializer(
+            data=request.data, context={"experiment": experiment}
+        )
+        payload.is_valid(raise_exception=True)
+        moves = payload.validated_data["moves"]
+
+        by_id = {
+            f.id: f
+            for f in FileDataModel.objects.filter(
+                experiment=experiment,
+                id__in=[m["file_id"] for m in moves],
+            )
+        }
+        before, after = {}, {}
+        with transaction.atomic():
+            for move in moves:
+                file_data = by_id[move["file_id"]]
+                subsample = move["subsample"]
+                new_id = subsample.id if subsample else None
+                if file_data.subsample_id == new_id:
+                    continue
+                before[str(file_data.id)] = {"subsample_id": file_data.subsample_id}
+                after[str(file_data.id)] = {"subsample_id": new_id}
+                file_data.subsample = subsample
+                file_data.save(update_fields=["subsample"])
+            if after:
+                record_revision(
+                    experiment=experiment,
+                    action=AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
+                    target_type=AnalysisRevision.TARGET_FILE,
+                    target_id=int(next(iter(after))),
+                    user=request.user,
+                    payload_before={"targets": before},
+                    payload_after={"targets": after},
+                    affected_ids=[int(tid) for tid in after],
+                    summary=f"moveu {len(after)} amostra(s) de subsample",
+                )
+
+        return Response(
+            ListFileDataSerializer(
+                FileDataModel.objects.filter(
+                    experiment=experiment,
+                    id__in=[m["file_id"] for m in moves],
+                )
+                .select_related("subsample")
+                .prefetch_related("tags", "subsample__tags"),
+                many=True,
+            ).data,
+            status=status.HTTP_200_OK,
+        )
+
+
 class FilePlotConfigView(APIView):
     """PATCH /experiment/file/<file_id>/plot-config — config de visualização
     da amostra raiz.
@@ -1578,6 +1655,88 @@ class FilePlotConfigView(APIView):
         file_data.save(update_fields=["plot_config"])
         return Response(
             ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
+        )
+
+
+class FileChannelLabelsView(APIView):
+    """PATCH /experiment/file/<file_id>/channel-labels — labels custom de
+    canal da amostra (BE-47, ADR-0032).
+
+    Mesma borda do ``FilePlotConfigView``: preferência de exibição, sem
+    revisão. ``{labels: {<canal>: <label>}}`` faz merge por chave —
+    ``null``/vazio remove a entrada do canal.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=FileChannelLabelsSerializer, responses=ListFileDataSerializer
+    )
+    def patch(self, request, file_id):
+        file_data = get_object_or_404(
+            file_data_visible_to(request.user).select_related("experiment"),
+            id=file_id,
+        )
+        require_can_edit_file_data(request.user, file_data)
+
+        payload = FileChannelLabelsSerializer(
+            data=request.data, context={"file_data": file_data}
+        )
+        payload.is_valid(raise_exception=True)
+
+        labels = dict(file_data.channel_labels or {})
+        for channel, label in payload.validated_data["labels"].items():
+            if label is None or not label.strip():
+                labels.pop(channel, None)
+            else:
+                labels[channel] = label.strip()
+        file_data.channel_labels = labels
+        file_data.save(update_fields=["channel_labels"])
+        return Response(
+            ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
+        )
+
+
+class FilesPlotConfigView(APIView):
+    """PATCH /experiment/<id>/files/plot-config — config de visualização
+    em lote (BE-46).
+
+    Mesma preferência de exibição do ``FilePlotConfigView`` aplicada a
+    todas as amostras ativas do experimento — ou às ``file_ids``
+    listadas — num único UPDATE. Sem revisão, sem invalidar densidade.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=FilesPlotConfigBatchSerializer,
+        responses={200: ListFileDataSerializer(many=True)},
+    )
+    def patch(self, request, experiment_id):
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+
+        payload = FilesPlotConfigBatchSerializer(
+            data=request.data, context={"experiment": experiment}
+        )
+        payload.is_valid(raise_exception=True)
+
+        targets = FileDataModel.objects.filter(experiment=experiment, active=True)
+        file_ids = payload.validated_data.get("file_ids")
+        if file_ids is not None:
+            targets = targets.filter(id__in=file_ids)
+        targets.update(plot_config=payload.validated_data["plot_config"])
+
+        return Response(
+            ListFileDataSerializer(
+                targets.select_related("subsample").prefetch_related(
+                    "tags", "subsample__tags"
+                ),
+                many=True,
+            ).data,
+            status=status.HTTP_200_OK,
         )
 
 
@@ -2423,6 +2582,18 @@ class ExperimentFileCompleteView(APIView):
                 {"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST
             )
 
+        # BE-49: diretório de origem do `.fcs` solto — a checagem com o
+        # nome resolvido (payload ou upload) cobre fileName ausente.
+        relative_path = serializer.validated_data.get("relativePath")
+        if relative_path:
+            try:
+                relative_path = sanitize_relative_path(relative_path, raw_file_name)
+            except DjangoValidationError as exc:
+                return Response(
+                    {"detail": exc.messages[0]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         upload_key = f"f{upload.id}"
         try:
             final_path = assemble_chunks(upload_key, upload.total_chunks, extension)
@@ -2432,7 +2603,10 @@ class ExperimentFileCompleteView(APIView):
         if extension == ".fcs":
             zip_path = os.path.join(settings.MEDIA_ROOT, f"{upload_key}.zip")
             final_path = wrap_fcs_as_zip(
-                final_path, raw_file_name or upload_key, zip_path
+                final_path,
+                raw_file_name or upload_key,
+                zip_path,
+                arcname=relative_path,
             )
 
         try:

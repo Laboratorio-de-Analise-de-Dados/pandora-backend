@@ -963,6 +963,91 @@ class ExperimentFilesApiTestCase(TestCase):
         mock_extract.assert_called_once()
 
     @patch("fcs_parser.services.process_experiment_file.readfcs")
+    def test_relative_path_preserva_diretorio_em_subsample(self, mock_readfcs):
+        """BE-49: `.fcs` solto com relativePath entra no ZIP com o
+        diretório — subsample_for_path deriva o grupo sozinho."""
+        mock_readfcs.view.return_value = ({}, None)
+        mock_readfcs.ReadFCS.return_value.channels = pd.DataFrame({"PnN": ["FL1"]})
+
+        file_id = self._upload("a.fcs", b"fcs-bytes")
+        res = self.client.post(
+            "/experiment/files/complete/",
+            {
+                "fileId": file_id,
+                "fileName": "a.fcs",
+                "relativePath": "Pasta/a.fcs",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        fd = FileDataModel.objects.get(file_id=file_id)
+        self.assertEqual(fd.source_path, "Pasta/a.fcs")
+        self.assertEqual(fd.subsample.name, "Pasta")
+
+    @patch("fcs_parser.services.process_experiment_file.readfcs")
+    def test_sem_relative_path_cai_na_raiz(self, mock_readfcs):
+        """BE-49: upload sem relativePath segue no root — retrocompatível."""
+        mock_readfcs.view.return_value = ({}, None)
+        mock_readfcs.ReadFCS.return_value.channels = pd.DataFrame({"PnN": ["FL1"]})
+
+        file_id = self._upload("a.fcs", b"fcs-bytes")
+        res = self._complete(file_id, "a.fcs")
+
+        self.assertEqual(res.status_code, 200)
+        fd = FileDataModel.objects.get(file_id=file_id)
+        self.assertEqual(fd.source_path, "a.fcs")
+        self.assertIsNone(fd.subsample)
+
+    def test_relative_path_invalido_da_400(self):
+        for bad in (
+            "../a.fcs",
+            "/a.fcs",
+            "C:/win/a.fcs",
+            "Pasta/../a.fcs",
+            "./a.fcs",
+        ):
+            with self.subTest(relativePath=bad):
+                file_id = self._upload("a.fcs", b"fcs-bytes")
+                res = self.client.post(
+                    "/experiment/files/complete/",
+                    {
+                        "fileId": file_id,
+                        "fileName": "a.fcs",
+                        "relativePath": bad,
+                    },
+                    format="json",
+                )
+                self.assertEqual(res.status_code, 400)
+
+    def test_relative_path_basename_divergente_da_400(self):
+        file_id = self._upload("a.fcs", b"fcs-bytes")
+        res = self.client.post(
+            "/experiment/files/complete/",
+            {
+                "fileId": file_id,
+                "fileName": "a.fcs",
+                "relativePath": "Pasta/outro.fcs",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_init_relative_path_invalido_da_400(self):
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/files/init",
+            {
+                "fileName": "a.fcs",
+                "totalChunks": 1,
+                "relativePath": "../a.fcs",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    @patch("fcs_parser.services.process_experiment_file.readfcs")
     def test_duplicate_sample_within_experiment_is_skipped(self, mock_readfcs):
         mock_readfcs.view.return_value = ({}, None)
         payload = b"dup-bytes"
@@ -3890,6 +3975,392 @@ class FilePlotConfigApiTestCase(TestCase):
         self.assertFalse(
             AnalysisRevision.objects.filter(experiment=self.experiment).exists()
         )
+
+
+class FilesPlotConfigBatchApiTestCase(TestCase):
+    """BE-46: PATCH /experiment/<id>/files/plot-config — mesma config em
+    todas as amostras (ou nas `file_ids` listadas) numa única transação."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, status="done"
+        )
+        self.other_experiment = ExperimentModel.objects.create(
+            title="exp2", type="t", created_by=self.owner, status="done"
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip", experiment=self.experiment
+        )
+        self.sample_a = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+        )
+        self.sample_b = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="b1.fcs",
+            file=self.file_model,
+        )
+        self.inactive = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="old.fcs",
+            file=self.file_model,
+            active=False,
+        )
+        self.foreign = FileDataModel.objects.create(
+            headers={},
+            experiment=self.other_experiment,
+            file_name="ext.fcs",
+            file=FileModel.objects.create(
+                file_name="outro.zip", experiment=self.other_experiment
+            ),
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def url(self):
+        return f"/experiment/{self.experiment.id}/files/plot-config"
+
+    def test_sem_file_ids_grava_em_todas_ativas(self):
+        config = {"xAxis": "FITC-A", "yAxis": "PE-A", "xScale": "log"}
+
+        res = self.client.patch(self.url(), {"plot_config": config}, format="json")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data), 2)
+        self.sample_a.refresh_from_db()
+        self.sample_b.refresh_from_db()
+        self.inactive.refresh_from_db()
+        self.assertEqual(self.sample_a.plot_config, config)
+        self.assertEqual(self.sample_b.plot_config, config)
+        self.assertEqual(self.inactive.plot_config, {})
+
+    def test_file_ids_aplica_so_nos_listados(self):
+        config = {"xAxis": "SSC-A"}
+
+        res = self.client.patch(
+            self.url(),
+            {"plot_config": config, "file_ids": [self.sample_a.id]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([f["id"] for f in res.data], [self.sample_a.id])
+        self.sample_a.refresh_from_db()
+        self.sample_b.refresh_from_db()
+        self.assertEqual(self.sample_a.plot_config, config)
+        self.assertEqual(self.sample_b.plot_config, {})
+
+    def test_file_id_de_outro_experimento_da_400_sem_gravar(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "plot_config": {"xAxis": "FITC-A"},
+                "file_ids": [self.sample_a.id, self.foreign.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.sample_a.refresh_from_db()
+        self.assertEqual(self.sample_a.plot_config, {})
+
+    def test_file_id_inativo_da_400_sem_gravar(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "plot_config": {"xAxis": "FITC-A"},
+                "file_ids": [self.sample_a.id, self.inactive.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.sample_a.refresh_from_db()
+        self.assertEqual(self.sample_a.plot_config, {})
+
+    def test_lote_nao_grava_revisao(self):
+        self.client.patch(
+            self.url(), {"plot_config": {"xAxis": "FITC-A"}}, format="json"
+        )
+
+        self.assertFalse(
+            AnalysisRevision.objects.filter(experiment=self.experiment).exists()
+        )
+
+    def test_usuario_sem_acesso_recebe_404(self):
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.patch(
+            self.url(), {"plot_config": {"xAxis": "FITC-A"}}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 404)
+        self.sample_a.refresh_from_db()
+        self.assertEqual(self.sample_a.plot_config, {})
+
+
+class FileChannelLabelsApiTestCase(TestCase):
+    """BE-47/ADR-0032: label custom de canal por arquivo — mapa
+    ``{canal: label}`` na FileData, precedência resolvida no front
+    (custom > $PnS > $PnN)."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, status="done"
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip", experiment=self.experiment
+        )
+        self.file_data = FileDataModel.objects.create(
+            headers={"$P1N": "FSC-A", "$P2N": "FL11-A", "$P2S": "CD11b"},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def url(self):
+        return f"/experiment/file/{self.file_data.id}/channel-labels"
+
+    def test_patch_grava_e_remove_label_com_null(self):
+        res = self.client.patch(
+            self.url(), {"labels": {"FL11-A": "F4/80"}}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.channel_labels, {"FL11-A": "F4/80"})
+
+        # null remove a entrada do canal sem tocar nas demais.
+        res = self.client.patch(self.url(), {"labels": {"FL11-A": None}}, format="json")
+
+        self.assertEqual(res.status_code, 200)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.channel_labels, {})
+
+    def test_leitura_expoe_channel_labels(self):
+        self.client.patch(self.url(), {"labels": {"FL11-A": "F4/80"}}, format="json")
+
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+
+        entry = next(f for f in res.data if f["id"] == self.file_data.id)
+        self.assertEqual(entry["channel_labels"], {"FL11-A": "F4/80"})
+
+    def test_canal_inexistente_da_400(self):
+        res = self.client.patch(self.url(), {"labels": {"FL99-A": "X"}}, format="json")
+
+        self.assertEqual(res.status_code, 400)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.channel_labels, {})
+
+    def test_channel_meta_permanece_intacto(self):
+        self.client.patch(self.url(), {"labels": {"FL11-A": "F4/80"}}, format="json")
+
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+
+        entry = next(f for f in res.data if f["id"] == self.file_data.id)
+        meta = {m["name"]: m for m in entry["channel_meta"]}
+        self.assertEqual(meta["FL11-A"]["stain"], "CD11b")
+        self.assertNotIn("F4/80", str(entry["channel_meta"]))
+
+    def test_usuario_sem_acesso_recebe_404(self):
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.patch(
+            self.url(), {"labels": {"FL11-A": "F4/80"}}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 404)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.channel_labels, {})
+
+
+class FilesSubsampleBatchApiTestCase(TestCase):
+    """BE-48: PATCH /experiment/<id>/files/subsample — ``{moves: [{file_id,
+    subsample}]}`` atômico; uma AnalysisRevision agrega os N alvos."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, status="done"
+        )
+        self.other_experiment = ExperimentModel.objects.create(
+            title="exp2", type="t", created_by=self.owner, status="done"
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip", experiment=self.experiment
+        )
+        self.sub_a = SubsampleModel.objects.create(
+            experiment=self.experiment, name="grupo_a"
+        )
+        self.sub_b = SubsampleModel.objects.create(
+            experiment=self.experiment, name="grupo_b"
+        )
+        self.foreign_sub = SubsampleModel.objects.create(
+            experiment=self.other_experiment, name="externo"
+        )
+        self.sample_a = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+        )
+        self.sample_b = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="b1.fcs",
+            subsample=self.sub_a,
+            file=self.file_model,
+        )
+        self.inactive = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="old.fcs",
+            file=self.file_model,
+            active=False,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def url(self):
+        return f"/experiment/{self.experiment.id}/files/subsample"
+
+    def test_lote_move_e_grava_revisao_agregada(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "moves": [
+                    {"file_id": self.sample_a.id, "subsample": self.sub_b.id},
+                    {"file_id": self.sample_b.id, "subsample": self.sub_b.id},
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data), 2)
+        self.sample_a.refresh_from_db()
+        self.sample_b.refresh_from_db()
+        self.assertEqual(self.sample_a.subsample_id, self.sub_b.id)
+        self.assertEqual(self.sample_b.subsample_id, self.sub_b.id)
+
+        revision = AnalysisRevision.objects.get(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
+        )
+        targets = revision.payload_after["targets"]
+        self.assertEqual(targets[str(self.sample_a.id)]["subsample_id"], self.sub_b.id)
+        self.assertEqual(targets[str(self.sample_b.id)]["subsample_id"], self.sub_b.id)
+        self.assertEqual(
+            revision.payload_before["targets"][str(self.sample_b.id)]["subsample_id"],
+            self.sub_a.id,
+        )
+        self.assertEqual(
+            sorted(revision.affected_ids), sorted([self.sample_a.id, self.sample_b.id])
+        )
+
+    def test_null_desagrupa_em_lote(self):
+        res = self.client.patch(
+            self.url(),
+            {"moves": [{"file_id": self.sample_b.id, "subsample": None}]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.sample_b.refresh_from_db()
+        self.assertIsNone(self.sample_b.subsample_id)
+
+    def test_subsample_de_outro_experimento_da_400_sem_gravar(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "moves": [
+                    {"file_id": self.sample_a.id, "subsample": self.sub_b.id},
+                    {
+                        "file_id": self.sample_b.id,
+                        "subsample": self.foreign_sub.id,
+                    },
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.sample_a.refresh_from_db()
+        self.sample_b.refresh_from_db()
+        self.assertIsNone(self.sample_a.subsample_id)
+        self.assertEqual(self.sample_b.subsample_id, self.sub_a.id)
+
+    def test_file_id_inativo_da_400_sem_gravar(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "moves": [
+                    {"file_id": self.sample_a.id, "subsample": self.sub_b.id},
+                    {"file_id": self.inactive.id, "subsample": self.sub_b.id},
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.sample_a.refresh_from_db()
+        self.assertIsNone(self.sample_a.subsample_id)
+
+    def test_noop_nao_grava_revisao_nem_conta_no_resumo(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "moves": [
+                    # sample_b já está no sub_a — no-op honesto.
+                    {"file_id": self.sample_b.id, "subsample": self.sub_a.id},
+                    {"file_id": self.sample_a.id, "subsample": self.sub_b.id},
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        revision = AnalysisRevision.objects.get(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
+        )
+        self.assertNotIn(str(self.sample_b.id), revision.payload_after["targets"])
+
+    def test_usuario_sem_acesso_recebe_404(self):
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.patch(
+            self.url(),
+            {"moves": [{"file_id": self.sample_a.id, "subsample": self.sub_b.id}]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 404)
+        self.sample_a.refresh_from_db()
+        self.assertIsNone(self.sample_a.subsample_id)
 
 
 class FileStatsTestCase(TestCase):

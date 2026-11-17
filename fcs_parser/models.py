@@ -360,6 +360,10 @@ class FileDataModel(models.Model):
     # raiz — mesmo papel do `plot_config` de GateModel, mas para quando a
     # fonte do plot é o arquivo inteiro (sem gate selecionado).
     plot_config = models.JSONField(default=dict, blank=True)
+    # ADR-0032: label custom de canal — mapa {nome cru do canal ($PnN):
+    # label}. Preferência de exibição (custom > $PnS > $PnN resolvida no
+    # front); nunca reescreve `headers`/`channel_meta`.
+    channel_labels = models.JSONField(default=dict, blank=True)
 
     class Meta:
         db_table = "file_data"

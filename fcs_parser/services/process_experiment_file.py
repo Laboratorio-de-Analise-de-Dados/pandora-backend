@@ -79,15 +79,19 @@ def assemble_chunks(upload_key: str, total_chunks: int, extension: str = ".zip")
     return final_path
 
 
-def wrap_fcs_as_zip(fcs_path: str, fcs_name: str, zip_path: str) -> str:
+def wrap_fcs_as_zip(
+    fcs_path: str, fcs_name: str, zip_path: str, arcname: str | None = None
+) -> str:
     """Aglutina um `.fcs` solto num ZIP — a unidade física é sempre ZIP.
 
     O `.fcs` dentro é byte-a-byte o enviado; o hash do upload vive em
-    ``FileDataModel.content_sha256``.
+    ``FileDataModel.content_sha256``. ``arcname`` (BE-49) é o caminho
+    relativo sanitizado — o diretório entra no ZIP e
+    ``subsample_for_path`` deriva o subsample no fluxo normal.
     """
     os.makedirs(os.path.dirname(zip_path) or ".", exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(fcs_path, arcname=os.path.basename(fcs_name))
+        zf.write(fcs_path, arcname=arcname or os.path.basename(fcs_name))
     os.remove(fcs_path)
     return zip_path
 
