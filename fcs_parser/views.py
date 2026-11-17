@@ -108,7 +108,7 @@ from fcs_parser.services.process_experiment_file import (
     file_sha256,
     wrap_fcs_as_zip,
 )
-from utils.validators import experiment_file_extension
+from utils.validators import experiment_file_extension, sanitize_relative_path
 
 logger = logging.getLogger(__name__)
 
@@ -2582,6 +2582,18 @@ class ExperimentFileCompleteView(APIView):
                 {"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST
             )
 
+        # BE-49: diretório de origem do `.fcs` solto — a checagem com o
+        # nome resolvido (payload ou upload) cobre fileName ausente.
+        relative_path = serializer.validated_data.get("relativePath")
+        if relative_path:
+            try:
+                relative_path = sanitize_relative_path(relative_path, raw_file_name)
+            except DjangoValidationError as exc:
+                return Response(
+                    {"detail": exc.messages[0]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         upload_key = f"f{upload.id}"
         try:
             final_path = assemble_chunks(upload_key, upload.total_chunks, extension)
@@ -2591,7 +2603,10 @@ class ExperimentFileCompleteView(APIView):
         if extension == ".fcs":
             zip_path = os.path.join(settings.MEDIA_ROOT, f"{upload_key}.zip")
             final_path = wrap_fcs_as_zip(
-                final_path, raw_file_name or upload_key, zip_path
+                final_path,
+                raw_file_name or upload_key,
+                zip_path,
+                arcname=relative_path,
             )
 
         try:

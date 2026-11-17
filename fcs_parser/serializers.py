@@ -6,7 +6,7 @@ from accounts.models import Organization
 from accounts.serializers import OrganizationListSerializer
 from fcs_parser.permissions import can_create_experiment_type, is_org_member
 from analytics.serializers import ListGateSerializer
-from utils.validators import experiment_file_extension
+from utils.validators import experiment_file_extension, sanitize_relative_path
 from .models import (
     ExperimentModel,
     ExperimentTypeModel,
@@ -184,6 +184,9 @@ class ExperimentFileInitSerializer(serializers.Serializer):
 
     fileName = serializers.CharField()
     totalChunks = serializers.IntegerField(min_value=1)
+    # BE-49: diretório de origem do `.fcs` solto — opcional; validado na
+    # borda e repassado ao wrap no complete.
+    relativePath = serializers.CharField(required=False, allow_null=True)
 
     def validate_fileName(self, value):
         try:
@@ -191,6 +194,9 @@ class ExperimentFileInitSerializer(serializers.Serializer):
         except DjangoValidationError as exc:
             raise serializers.ValidationError(_extension_error_detail(exc))
         return value
+
+    def validate(self, attrs):
+        return _validate_relative_path(attrs)
 
 
 class ChunkUploadSerializer(serializers.Serializer):
@@ -212,6 +218,8 @@ class ExperimentCompleteSerializer(serializers.Serializer):
 
     fileId = serializers.IntegerField()
     fileName = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    # BE-49: diretório de origem do `.fcs` solto — opcional.
+    relativePath = serializers.CharField(required=False, allow_null=True)
 
     def validate_fileName(self, value):
         if value in (None, ""):
@@ -221,6 +229,27 @@ class ExperimentCompleteSerializer(serializers.Serializer):
         except DjangoValidationError as exc:
             raise serializers.ValidationError(_extension_error_detail(exc))
         return value
+
+    def validate(self, attrs):
+        return _validate_relative_path(attrs)
+
+
+def _validate_relative_path(attrs):
+    """``relativePath`` opcional (BE-49): shape + basename == ``fileName``.
+
+    Só roda quando ``fileName`` veio no payload — no complete o fallback
+    é ``upload.file_name`` e o ``ExperimentFileCompleteView`` refaz a
+    checagem com o nome resolvido (mesmo padrão da extensão).
+    """
+    rel = attrs.get("relativePath")
+    file_name = attrs.get("fileName")
+    if not rel or not file_name:
+        return attrs
+    try:
+        attrs["relativePath"] = sanitize_relative_path(rel, file_name)
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError({"relativePath": exc.messages[0]})
+    return attrs
 
 
 class SampleTagSerializer(serializers.ModelSerializer):

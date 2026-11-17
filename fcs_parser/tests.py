@@ -963,6 +963,91 @@ class ExperimentFilesApiTestCase(TestCase):
         mock_extract.assert_called_once()
 
     @patch("fcs_parser.services.process_experiment_file.readfcs")
+    def test_relative_path_preserva_diretorio_em_subsample(self, mock_readfcs):
+        """BE-49: `.fcs` solto com relativePath entra no ZIP com o
+        diretório — subsample_for_path deriva o grupo sozinho."""
+        mock_readfcs.view.return_value = ({}, None)
+        mock_readfcs.ReadFCS.return_value.channels = pd.DataFrame({"PnN": ["FL1"]})
+
+        file_id = self._upload("a.fcs", b"fcs-bytes")
+        res = self.client.post(
+            "/experiment/files/complete/",
+            {
+                "fileId": file_id,
+                "fileName": "a.fcs",
+                "relativePath": "Pasta/a.fcs",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        fd = FileDataModel.objects.get(file_id=file_id)
+        self.assertEqual(fd.source_path, "Pasta/a.fcs")
+        self.assertEqual(fd.subsample.name, "Pasta")
+
+    @patch("fcs_parser.services.process_experiment_file.readfcs")
+    def test_sem_relative_path_cai_na_raiz(self, mock_readfcs):
+        """BE-49: upload sem relativePath segue no root — retrocompatível."""
+        mock_readfcs.view.return_value = ({}, None)
+        mock_readfcs.ReadFCS.return_value.channels = pd.DataFrame({"PnN": ["FL1"]})
+
+        file_id = self._upload("a.fcs", b"fcs-bytes")
+        res = self._complete(file_id, "a.fcs")
+
+        self.assertEqual(res.status_code, 200)
+        fd = FileDataModel.objects.get(file_id=file_id)
+        self.assertEqual(fd.source_path, "a.fcs")
+        self.assertIsNone(fd.subsample)
+
+    def test_relative_path_invalido_da_400(self):
+        for bad in (
+            "../a.fcs",
+            "/a.fcs",
+            "C:/win/a.fcs",
+            "Pasta/../a.fcs",
+            "./a.fcs",
+        ):
+            with self.subTest(relativePath=bad):
+                file_id = self._upload("a.fcs", b"fcs-bytes")
+                res = self.client.post(
+                    "/experiment/files/complete/",
+                    {
+                        "fileId": file_id,
+                        "fileName": "a.fcs",
+                        "relativePath": bad,
+                    },
+                    format="json",
+                )
+                self.assertEqual(res.status_code, 400)
+
+    def test_relative_path_basename_divergente_da_400(self):
+        file_id = self._upload("a.fcs", b"fcs-bytes")
+        res = self.client.post(
+            "/experiment/files/complete/",
+            {
+                "fileId": file_id,
+                "fileName": "a.fcs",
+                "relativePath": "Pasta/outro.fcs",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    def test_init_relative_path_invalido_da_400(self):
+        res = self.client.post(
+            f"/experiment/{self.experiment.id}/files/init",
+            {
+                "fileName": "a.fcs",
+                "totalChunks": 1,
+                "relativePath": "../a.fcs",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+
+    @patch("fcs_parser.services.process_experiment_file.readfcs")
     def test_duplicate_sample_within_experiment_is_skipped(self, mock_readfcs):
         mock_readfcs.view.return_value = ({}, None)
         payload = b"dup-bytes"
