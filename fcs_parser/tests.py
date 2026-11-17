@@ -4107,6 +4107,177 @@ class FileChannelLabelsApiTestCase(TestCase):
         self.assertEqual(self.file_data.channel_labels, {})
 
 
+class FilesSubsampleBatchApiTestCase(TestCase):
+    """BE-48: PATCH /experiment/<id>/files/subsample — ``{moves: [{file_id,
+    subsample}]}`` atômico; uma AnalysisRevision agrega os N alvos."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, status="done"
+        )
+        self.other_experiment = ExperimentModel.objects.create(
+            title="exp2", type="t", created_by=self.owner, status="done"
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip", experiment=self.experiment
+        )
+        self.sub_a = SubsampleModel.objects.create(
+            experiment=self.experiment, name="grupo_a"
+        )
+        self.sub_b = SubsampleModel.objects.create(
+            experiment=self.experiment, name="grupo_b"
+        )
+        self.foreign_sub = SubsampleModel.objects.create(
+            experiment=self.other_experiment, name="externo"
+        )
+        self.sample_a = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+        )
+        self.sample_b = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="b1.fcs",
+            subsample=self.sub_a,
+            file=self.file_model,
+        )
+        self.inactive = FileDataModel.objects.create(
+            headers={},
+            experiment=self.experiment,
+            file_name="old.fcs",
+            file=self.file_model,
+            active=False,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def url(self):
+        return f"/experiment/{self.experiment.id}/files/subsample"
+
+    def test_lote_move_e_grava_revisao_agregada(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "moves": [
+                    {"file_id": self.sample_a.id, "subsample": self.sub_b.id},
+                    {"file_id": self.sample_b.id, "subsample": self.sub_b.id},
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data), 2)
+        self.sample_a.refresh_from_db()
+        self.sample_b.refresh_from_db()
+        self.assertEqual(self.sample_a.subsample_id, self.sub_b.id)
+        self.assertEqual(self.sample_b.subsample_id, self.sub_b.id)
+
+        revision = AnalysisRevision.objects.get(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
+        )
+        targets = revision.payload_after["targets"]
+        self.assertEqual(targets[str(self.sample_a.id)]["subsample_id"], self.sub_b.id)
+        self.assertEqual(targets[str(self.sample_b.id)]["subsample_id"], self.sub_b.id)
+        self.assertEqual(
+            revision.payload_before["targets"][str(self.sample_b.id)]["subsample_id"],
+            self.sub_a.id,
+        )
+        self.assertEqual(
+            sorted(revision.affected_ids), sorted([self.sample_a.id, self.sample_b.id])
+        )
+
+    def test_null_desagrupa_em_lote(self):
+        res = self.client.patch(
+            self.url(),
+            {"moves": [{"file_id": self.sample_b.id, "subsample": None}]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.sample_b.refresh_from_db()
+        self.assertIsNone(self.sample_b.subsample_id)
+
+    def test_subsample_de_outro_experimento_da_400_sem_gravar(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "moves": [
+                    {"file_id": self.sample_a.id, "subsample": self.sub_b.id},
+                    {
+                        "file_id": self.sample_b.id,
+                        "subsample": self.foreign_sub.id,
+                    },
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.sample_a.refresh_from_db()
+        self.sample_b.refresh_from_db()
+        self.assertIsNone(self.sample_a.subsample_id)
+        self.assertEqual(self.sample_b.subsample_id, self.sub_a.id)
+
+    def test_file_id_inativo_da_400_sem_gravar(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "moves": [
+                    {"file_id": self.sample_a.id, "subsample": self.sub_b.id},
+                    {"file_id": self.inactive.id, "subsample": self.sub_b.id},
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.sample_a.refresh_from_db()
+        self.assertIsNone(self.sample_a.subsample_id)
+
+    def test_noop_nao_grava_revisao_nem_conta_no_resumo(self):
+        res = self.client.patch(
+            self.url(),
+            {
+                "moves": [
+                    # sample_b já está no sub_a — no-op honesto.
+                    {"file_id": self.sample_b.id, "subsample": self.sub_a.id},
+                    {"file_id": self.sample_a.id, "subsample": self.sub_b.id},
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        revision = AnalysisRevision.objects.get(
+            experiment=self.experiment,
+            action=AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
+        )
+        self.assertNotIn(str(self.sample_b.id), revision.payload_after["targets"])
+
+    def test_usuario_sem_acesso_recebe_404(self):
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.patch(
+            self.url(),
+            {"moves": [{"file_id": self.sample_a.id, "subsample": self.sub_b.id}]},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 404)
+        self.sample_a.refresh_from_db()
+        self.assertIsNone(self.sample_a.subsample_id)
+
+
 class FileStatsTestCase(TestCase):
     """Auditoria de stats: /file/<id>/stats compartilha a implementação de
     métricas dos gates — mesmas chaves, mesmas convenções (n, rcv)."""

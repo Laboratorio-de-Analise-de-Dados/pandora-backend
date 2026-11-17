@@ -91,6 +91,7 @@ from fcs_parser.serializers import (
     FileHashCheckSerializer,
     FilePlotConfigSerializer,
     FilesPlotConfigBatchSerializer,
+    FileSubsampleBatchSerializer,
     FileSubsampleSerializer,
     FileTagsUpdateSerializer,
     ListExperimentSerializer,
@@ -1552,6 +1553,80 @@ class FileSubsampleView(APIView):
 
         return Response(
             ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
+        )
+
+
+class FilesSubsampleView(APIView):
+    """PATCH /experiment/<id>/files/subsample — atribuição de subsample
+    em lote (BE-48).
+
+    ``{moves: [{file_id, subsample}]}`` numa única transação — subsample
+    é o id destino ou ``null`` (desagrupar). Uma ``AnalysisRevision``
+    agrega os alvos que mudaram de fato, no mesmo formato
+    ``{"targets": {"<id>": {"subsample_id": ...}}}`` do singular.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=FileSubsampleBatchSerializer,
+        responses={200: ListFileDataSerializer(many=True)},
+    )
+    def patch(self, request, experiment_id):
+        experiment = get_object_or_404(
+            experiments_visible_to(request.user), id=experiment_id
+        )
+        require_can_edit_experiment(request.user, experiment)
+
+        payload = FileSubsampleBatchSerializer(
+            data=request.data, context={"experiment": experiment}
+        )
+        payload.is_valid(raise_exception=True)
+        moves = payload.validated_data["moves"]
+
+        by_id = {
+            f.id: f
+            for f in FileDataModel.objects.filter(
+                experiment=experiment,
+                id__in=[m["file_id"] for m in moves],
+            )
+        }
+        before, after = {}, {}
+        with transaction.atomic():
+            for move in moves:
+                file_data = by_id[move["file_id"]]
+                subsample = move["subsample"]
+                new_id = subsample.id if subsample else None
+                if file_data.subsample_id == new_id:
+                    continue
+                before[str(file_data.id)] = {"subsample_id": file_data.subsample_id}
+                after[str(file_data.id)] = {"subsample_id": new_id}
+                file_data.subsample = subsample
+                file_data.save(update_fields=["subsample"])
+            if after:
+                record_revision(
+                    experiment=experiment,
+                    action=AnalysisRevision.ACTION_MOVE_SUBSAMPLE,
+                    target_type=AnalysisRevision.TARGET_FILE,
+                    target_id=int(next(iter(after))),
+                    user=request.user,
+                    payload_before={"targets": before},
+                    payload_after={"targets": after},
+                    affected_ids=[int(tid) for tid in after],
+                    summary=f"moveu {len(after)} amostra(s) de subsample",
+                )
+
+        return Response(
+            ListFileDataSerializer(
+                FileDataModel.objects.filter(
+                    experiment=experiment,
+                    id__in=[m["file_id"] for m in moves],
+                )
+                .select_related("subsample")
+                .prefetch_related("tags", "subsample__tags"),
+                many=True,
+            ).data,
+            status=status.HTTP_200_OK,
         )
 
 

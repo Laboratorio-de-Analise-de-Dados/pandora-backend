@@ -425,6 +425,53 @@ class FileSubsampleSerializer(serializers.Serializer):
         return subsample
 
 
+class FileSubsampleMoveSerializer(FileSubsampleSerializer):
+    """Um item do PATCH em lote de subsample (BE-48)."""
+
+    file_id = serializers.IntegerField()
+
+
+class FileSubsampleBatchSerializer(serializers.Serializer):
+    """PATCH /experiment/<id>/files/subsample — move N amostras numa
+    transação (BE-48).
+
+    ``subsample`` por item é o id destino (ativo, do mesmo experimento)
+    ou ``null`` (desagrupar); qualquer ``file_id`` inativo ou estranho
+    ao experimento reprova o lote inteiro (padrão FileControlsView).
+    """
+
+    moves = FileSubsampleMoveSerializer(many=True)
+
+    def validate_moves(self, moves):
+        if not moves:
+            raise serializers.ValidationError("Informe ao menos uma movimentação.")
+        file_ids = [m["file_id"] for m in moves]
+        if len(file_ids) != len(set(file_ids)):
+            raise serializers.ValidationError("file_id duplicado no lote.")
+        return moves
+
+    def validate(self, attrs):
+        experiment = self.context["experiment"]
+        file_ids = [m["file_id"] for m in attrs["moves"]]
+        found = set(
+            FileDataModel.objects.filter(
+                experiment=experiment, id__in=file_ids, active=True
+            ).values_list("id", flat=True)
+        )
+        invalid = [fid for fid in file_ids if fid not in found]
+        if invalid:
+            raise serializers.ValidationError(
+                {
+                    "moves": (
+                        "Amostras inválidas para este experimento: "
+                        + ", ".join(str(fid) for fid in invalid)
+                        + "."
+                    )
+                }
+            )
+        return attrs
+
+
 class ExperimentMoveSerializer(serializers.Serializer):
     """PATCH /experiment/<id>/ com ``organization_id`` — troca de contexto
     (BE-11): ``null`` move para o espaço pessoal."""
