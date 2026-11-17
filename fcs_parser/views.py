@@ -86,6 +86,7 @@ from fcs_parser.serializers import (
     ExperimentInitSerializer,
     ExperimentMoveSerializer,
     ExperimentTypeSerializer,
+    FileChannelLabelsSerializer,
     FileControlsBatchSerializer,
     FileHashCheckSerializer,
     FilePlotConfigSerializer,
@@ -1577,6 +1578,45 @@ class FilePlotConfigView(APIView):
         payload.is_valid(raise_exception=True)
         file_data.plot_config = payload.validated_data["plot_config"]
         file_data.save(update_fields=["plot_config"])
+        return Response(
+            ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
+        )
+
+
+class FileChannelLabelsView(APIView):
+    """PATCH /experiment/file/<file_id>/channel-labels — labels custom de
+    canal da amostra (BE-47, ADR-0032).
+
+    Mesma borda do ``FilePlotConfigView``: preferência de exibição, sem
+    revisão. ``{labels: {<canal>: <label>}}`` faz merge por chave —
+    ``null``/vazio remove a entrada do canal.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=FileChannelLabelsSerializer, responses=ListFileDataSerializer
+    )
+    def patch(self, request, file_id):
+        file_data = get_object_or_404(
+            file_data_visible_to(request.user).select_related("experiment"),
+            id=file_id,
+        )
+        require_can_edit_file_data(request.user, file_data)
+
+        payload = FileChannelLabelsSerializer(
+            data=request.data, context={"file_data": file_data}
+        )
+        payload.is_valid(raise_exception=True)
+
+        labels = dict(file_data.channel_labels or {})
+        for channel, label in payload.validated_data["labels"].items():
+            if label is None or not label.strip():
+                labels.pop(channel, None)
+            else:
+                labels[channel] = label.strip()
+        file_data.channel_labels = labels
+        file_data.save(update_fields=["channel_labels"])
         return Response(
             ListFileDataSerializer(file_data).data, status=status.HTTP_200_OK
         )

@@ -22,6 +22,7 @@ from .views import (
     ExperimentPreviewView,
     ExperimentRestoreView,
     ExperimentTypeListCreateView,
+    FileChannelLabelsView,
     FileControlsView,
     FileDensityView,
     FileHashCheckView,
@@ -117,6 +118,11 @@ urlpatterns = [
         "file/<int:file_id>/plot-config",
         FilePlotConfigView.as_view(),
         name="file_plot_config",
+    ),
+    path(
+        "file/<int:file_id>/channel-labels",
+        FileChannelLabelsView.as_view(),
+        name="file_channel_labels",
     ),
     path(
         "file/<int:file_id>/tags",

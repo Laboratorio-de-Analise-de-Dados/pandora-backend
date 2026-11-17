@@ -637,6 +637,33 @@ class FilesPlotConfigBatchSerializer(FilePlotConfigSerializer):
         return attrs
 
 
+class FileChannelLabelsSerializer(serializers.Serializer):
+    """PATCH /experiment/file/<id>/channel-labels — labels custom por canal
+    (BE-47, ADR-0032).
+
+    ``{labels: {<canal>: <label|null>}}`` — merge por chave: label grava,
+    ``null``/vazio remove a entrada. Canal precisa existir nos canais do
+    arquivo (``channel_meta`` do header, contexto ``file_data``).
+    """
+
+    labels = serializers.DictField(
+        child=serializers.CharField(allow_null=True, allow_blank=True),
+        allow_empty=True,
+    )
+
+    def validate_labels(self, labels):
+        file_data = self.context["file_data"]
+        from fcs_parser.services.channel_meta import parse_channel_meta
+
+        valid = {m["name"] for m in parse_channel_meta(file_data.headers)}
+        invalid = [channel for channel in labels if channel not in valid]
+        if invalid:
+            raise serializers.ValidationError(
+                "Canais inexistentes no arquivo: " + ", ".join(invalid) + "."
+            )
+        return labels
+
+
 class ListFileDataSerializer(serializers.ModelSerializer):
 
     gates = ListGateSerializer(many=True, read_only=True)
@@ -670,6 +697,7 @@ class ListFileDataSerializer(serializers.ModelSerializer):
             "subsample",
             "gates",
             "plot_config",
+            "channel_labels",
             "active",
             "deactivated_at",
             "has_embedded_compensation",

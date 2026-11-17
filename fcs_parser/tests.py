@@ -4024,6 +4024,89 @@ class FilesPlotConfigBatchApiTestCase(TestCase):
         self.assertEqual(self.sample_a.plot_config, {})
 
 
+class FileChannelLabelsApiTestCase(TestCase):
+    """BE-47/ADR-0032: label custom de canal por arquivo — mapa
+    ``{canal: label}`` na FileData, precedência resolvida no front
+    (custom > $PnS > $PnN)."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="dono", email="dono@pandora.test", password="senha-forte-123"
+        )
+        self.stranger = User.objects.create_user(
+            username="outro", email="outro@pandora.test", password="senha-forte-123"
+        )
+        self.experiment = ExperimentModel.objects.create(
+            title="exp", type="t", created_by=self.owner, status="done"
+        )
+        self.file_model = FileModel.objects.create(
+            file_name="upload.zip", experiment=self.experiment
+        )
+        self.file_data = FileDataModel.objects.create(
+            headers={"$P1N": "FSC-A", "$P2N": "FL11-A", "$P2S": "CD11b"},
+            experiment=self.experiment,
+            file_name="a1.fcs",
+            file=self.file_model,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def url(self):
+        return f"/experiment/file/{self.file_data.id}/channel-labels"
+
+    def test_patch_grava_e_remove_label_com_null(self):
+        res = self.client.patch(
+            self.url(), {"labels": {"FL11-A": "F4/80"}}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.channel_labels, {"FL11-A": "F4/80"})
+
+        # null remove a entrada do canal sem tocar nas demais.
+        res = self.client.patch(self.url(), {"labels": {"FL11-A": None}}, format="json")
+
+        self.assertEqual(res.status_code, 200)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.channel_labels, {})
+
+    def test_leitura_expoe_channel_labels(self):
+        self.client.patch(self.url(), {"labels": {"FL11-A": "F4/80"}}, format="json")
+
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+
+        entry = next(f for f in res.data if f["id"] == self.file_data.id)
+        self.assertEqual(entry["channel_labels"], {"FL11-A": "F4/80"})
+
+    def test_canal_inexistente_da_400(self):
+        res = self.client.patch(self.url(), {"labels": {"FL99-A": "X"}}, format="json")
+
+        self.assertEqual(res.status_code, 400)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.channel_labels, {})
+
+    def test_channel_meta_permanece_intacto(self):
+        self.client.patch(self.url(), {"labels": {"FL11-A": "F4/80"}}, format="json")
+
+        res = self.client.get(f"/experiment/list/data/{self.experiment.id}/")
+
+        entry = next(f for f in res.data if f["id"] == self.file_data.id)
+        meta = {m["name"]: m for m in entry["channel_meta"]}
+        self.assertEqual(meta["FL11-A"]["stain"], "CD11b")
+        self.assertNotIn("F4/80", str(entry["channel_meta"]))
+
+    def test_usuario_sem_acesso_recebe_404(self):
+        self.client.force_authenticate(self.stranger)
+
+        res = self.client.patch(
+            self.url(), {"labels": {"FL11-A": "F4/80"}}, format="json"
+        )
+
+        self.assertEqual(res.status_code, 404)
+        self.file_data.refresh_from_db()
+        self.assertEqual(self.file_data.channel_labels, {})
+
+
 class FileStatsTestCase(TestCase):
     """Auditoria de stats: /file/<id>/stats compartilha a implementação de
     métricas dos gates — mesmas chaves, mesmas convenções (n, rcv)."""
